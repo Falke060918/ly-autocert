@@ -55,6 +55,12 @@ func NewServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder) http.Ha
 	s.protected("POST /api/v1/discovery/scans", handleCreateScan(disc),
 		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
 	s.protected("GET /api/v1/discovery/scans/{id}", handleGetScan(st), domain.AllRoles...)
+	// 감사 로그 조회·무결성 검증 — 00-spec 7.11에서 감사 로그 조회 권한은
+	// Security Administrator와 Auditor에만 명시되어 있다.
+	s.protected("GET /api/v1/audit/events", s.handleListAuditEvents,
+		domain.RoleSecurityAdministrator, domain.RoleAuditor)
+	s.protected("GET /api/v1/audit/verify", s.handleVerifyAuditChain,
+		domain.RoleSecurityAdministrator, domain.RoleAuditor)
 
 	return withRequestID(s.mux)
 }

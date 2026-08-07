@@ -140,5 +140,6 @@ type AuditEvent struct {
 	Result        AuditResult     `json:"result"`
 	SourceIP      *string         `json:"source_ip"`
 	CreatedAt     time.Time       `json:"created_at"`
-	IntegrityHash string          `json:"integrity_hash"` // 무결성 검증값 (이슈 #7)
+	IntegrityHash string          `json:"integrity_hash"` // SHA-256 해시 체인 무결성 검증값 (이슈 #7)
+	PrevHash      string          `json:"prev_hash"`      // 직전 이벤트의 integrity_hash (첫 이벤트는 '0' 64자)
 }

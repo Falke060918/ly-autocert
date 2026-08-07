@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/auth"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/domain"
 )
 
@@ -49,10 +50,10 @@ func TestDiscoveryScanInventoryAndRBAC(t *testing.T) {
 
 	adminPW := randomPassword(t)
 	viewerPW := randomPassword(t)
-	if _, err := env.svc.CreateUser(ctx, "disc-admin", adminPW, nil, domain.RoleSystemAdministrator); err != nil {
+	if _, err := env.svc.CreateUser(ctx, "disc-admin", adminPW, nil, domain.RoleSystemAdministrator, nil, auth.AuditMeta{}); err != nil {
 		t.Fatalf("create admin: %v", err)
 	}
-	if _, err := env.svc.CreateUser(ctx, "disc-viewer", viewerPW, nil, domain.RoleViewer); err != nil {
+	if _, err := env.svc.CreateUser(ctx, "disc-viewer", viewerPW, nil, domain.RoleViewer, nil, auth.AuditMeta{}); err != nil {
 		t.Fatalf("create viewer: %v", err)
 	}
 	adminToken, status := env.login(t, "disc-admin", adminPW)

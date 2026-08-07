@@ -55,15 +55,21 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Fatalf("migrate: %v", err)
 	}
 	// 테스트 격리: 이전 실행 잔류 제거 (테스트 전용 DB에서만 허용되는 정리다).
+	// audit_events는 append-only 트리거(0007)가 DELETE를 차단하므로, 테이블 소유자
+	// 권한으로 트리거를 잠시 내리고 지운다 — 운영 DB에서는 절대 하지 않는 조작이다.
 	for _, stmt := range []string{
-		`DELETE FROM sessions`, `DELETE FROM users`, `DELETE FROM audit_events`,
+		`DELETE FROM sessions`, `DELETE FROM users`,
+		`ALTER TABLE audit_events DISABLE TRIGGER USER`,
+		`DELETE FROM audit_events`,
+		`ALTER TABLE audit_events ENABLE TRIGGER USER`,
 	} {
 		if _, err := pool.Exec(stmt); err != nil {
 			t.Fatalf("cleanup %q: %v", stmt, err)
 		}
 	}
-	svc := auth.NewServiceForTest(pool, time.Hour)
-	server := httptest.NewServer(NewServer(pool, svc, audit.NewRecorder(pool)))
+	rec := audit.NewRecorder(pool)
+	svc := auth.NewServiceForTest(pool, time.Hour, rec)
+	server := httptest.NewServer(NewServer(pool, svc, rec))
 	t.Cleanup(server.Close)
 	return &testEnv{pool: pool, svc: svc, server: server}
 }
@@ -128,10 +134,10 @@ func TestLoginRBACAndAudit(t *testing.T) {
 
 	adminPW := randomPassword(t)
 	viewerPW := randomPassword(t)
-	if _, err := env.svc.CreateUser(ctx, "it-admin", adminPW, nil, domain.RoleSystemAdministrator); err != nil {
+	if _, err := env.svc.CreateUser(ctx, "it-admin", adminPW, nil, domain.RoleSystemAdministrator, nil, auth.AuditMeta{}); err != nil {
 		t.Fatalf("create admin: %v", err)
 	}
-	if _, err := env.svc.CreateUser(ctx, "it-viewer", viewerPW, nil, domain.RoleViewer); err != nil {
+	if _, err := env.svc.CreateUser(ctx, "it-viewer", viewerPW, nil, domain.RoleViewer, nil, auth.AuditMeta{}); err != nil {
 		t.Fatalf("create viewer: %v", err)
 	}
 
@@ -207,8 +213,10 @@ func TestLoginRBACAndAudit(t *testing.T) {
 		if resp.StatusCode != http.StatusCreated {
 			t.Fatalf("admin create user = %d, want 201", resp.StatusCode)
 		}
-		if n := env.auditCount(t, "user.created", domain.AuditSuccess); n != 1 {
-			t.Errorf("user.created audit events = %d, want 1", n)
+		// 3 = 셋업의 svc.CreateUser 2건 + API 생성 1건 — CreateUser가 서비스
+		// 레벨에서 감사하므로 어떤 경로든 기록된다 (이슈 #7).
+		if n := env.auditCount(t, "user.created", domain.AuditSuccess); n != 3 {
+			t.Errorf("user.created audit events = %d, want 3", n)
 		}
 	})
 

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/audit"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/certparse"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/domain"
 )
@@ -108,8 +109,8 @@ func (s *Store) CreateScanJob(ctx context.Context, in ScanInput) (string, error)
 		"timeout_ms":  in.TimeoutMs,
 		"concurrency": in.Concurrency,
 	}
-	if err := insertAuditEvent(ctx, tx, auditEvent{
-		EventType:  EventDiscoveryScan,
+	if err := audit.Insert(ctx, tx, audit.Event{
+		Type:       EventDiscoveryScan,
 		ActorID:    in.ActorID,
 		TargetType: "scan_job",
 		TargetID:   &id,
@@ -216,8 +217,8 @@ func (s *Store) MarkScanFinished(ctx context.Context, jobID, status string, scan
 		"certificates_found":  found,
 		"certificates_new":    newCerts,
 	}
-	if err := insertAuditEvent(ctx, tx, auditEvent{
-		EventType:  EventDiscoveryScan,
+	if err := audit.Insert(ctx, tx, audit.Event{
+		Type:       EventDiscoveryScan,
 		TargetType: "scan_job",
 		TargetID:   &jobID,
 		After:      after,

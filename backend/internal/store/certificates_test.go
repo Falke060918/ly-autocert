@@ -44,6 +44,15 @@ func testPool(t *testing.T) *sql.DB {
 	return pool
 }
 
+// cleanupAuditByRequestID는 테스트가 남긴 감사 이벤트를 정리한다 (best-effort).
+// audit_events는 append-only 트리거(0007)가 DELETE를 차단하므로, 테이블 소유자
+// 권한으로 트리거를 잠시 내리고 지운다 — 테스트 전용 DB에서만 허용되는 조작이다.
+func cleanupAuditByRequestID(pool *sql.DB, reqID string) {
+	_, _ = pool.Exec(`ALTER TABLE audit_events DISABLE TRIGGER USER`)
+	_, _ = pool.Exec(`DELETE FROM audit_events WHERE request_id = $1`, reqID)
+	_, _ = pool.Exec(`ALTER TABLE audit_events ENABLE TRIGGER USER`)
+}
+
 func newTestCert(t *testing.T) domain.Certificate {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -136,7 +145,7 @@ func TestImportDeduplicatesByFingerprint(t *testing.T) {
 	t.Cleanup(func() {
 		// 테스트 데이터 정리 (locations는 FK CASCADE로 함께 삭제).
 		_, _ = pool.Exec(`DELETE FROM certificates WHERE fingerprint_sha256 = $1`, d.FingerprintSHA256)
-		_, _ = pool.Exec(`DELETE FROM audit_events WHERE request_id = $1`, reqID)
+		cleanupAuditByRequestID(pool, reqID)
 	})
 
 	in := ImportInput{
@@ -221,7 +230,7 @@ func TestImportAttachesLocationToLeaf(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = pool.Exec(`DELETE FROM certificates WHERE fingerprint_sha256 IN ($1, $2)`,
 			ca.FingerprintSHA256, leaf.FingerprintSHA256)
-		_, _ = pool.Exec(`DELETE FROM audit_events WHERE request_id = $1`, reqID)
+		cleanupAuditByRequestID(pool, reqID)
 	})
 
 	res, err := st.ImportCertificates(ctx, ImportInput{
@@ -259,7 +268,7 @@ func TestRecordImportFailure(t *testing.T) {
 	st := New(pool)
 	reqID := "test-req-import-failure"
 	t.Cleanup(func() {
-		_, _ = pool.Exec(`DELETE FROM audit_events WHERE request_id = $1`, reqID)
+		cleanupAuditByRequestID(pool, reqID)
 	})
 
 	if err := st.RecordImportFailure(context.Background(), "private_key_rejected", &reqID, nil); err != nil {
