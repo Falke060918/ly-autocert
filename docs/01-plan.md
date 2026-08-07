@@ -35,7 +35,7 @@
 ### Phase 2 이후 (이번 범위 밖, 설계만 고려)
 
 - **Phase 2**: CA 공통 인터페이스, ACME / Microsoft AD CS / HashiCorp Vault PKI 커넥터, 프로파일, CSR 생성, 발급
-- **Phase 3**: Linux/Windows 에이전트(단일 Go 바이너리, outbound mTLS), Nginx/IIS/파일 배포, 배포 검증, 롤백
+- **Phase 3**: 센서(원격 수집기) 선행 — **3a**: 격리 세그먼트 원격 스캔용 센서, 아웃바운드 전용 mTLS pull 워커 → **3b**: Linux/Windows 배포 에이전트(단일 Go 바이너리, outbound mTLS), Nginx/IIS/파일 배포, 배포 검증, 롤백
 - **Phase 4**: 갱신 정책·스케줄러·승인 워크플로·자동 배포·재시도·알림
 - **Phase 5**: AI 운영 지원(자연어 검색, 위험 설명, 실패 로그 요약, 소유자 후보 추천)
 
@@ -75,7 +75,7 @@
 
 ## 이번 범위에서 제외 (명시적 제외)
 
-- **Phase 2~5 전체** — CA 커넥터·발급, 에이전트·배포·롤백, 자동 갱신·승인 워크플로, AI 기능
+- **Phase 2~5 전체** — CA 커넥터·발급, 원격 수집기(센서)·에이전트·배포·롤백, 자동 갱신·승인 워크플로, AI 기능
 - 정책 엔진 실행(정책 데이터 모델 자리만 확보, 평가 로직은 Phase 4)
 - MFA(TOTP), LDAP/AD/OIDC/SAML 연동
 - 알림(이메일/Webhook)
