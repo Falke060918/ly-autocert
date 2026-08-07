@@ -14,6 +14,7 @@
   - `internal/audit/` — AuditEvent 기록(`Insert`는 pool/tx 겸용)·조회(`List`)·무결성 검증(`Verify`). 변경+감사는 단일 트랜잭션(감사 실패 시 변경도 롤백 — auth 서비스·store 모두). 해시 체인(prev_hash+SHA-256)은 DB BEFORE INSERT 트리거가 계산 — 검증도 같은 SQL 함수(audit_event_hash)로 재계산해 표현 불일치 오탐 없음. 꼬리 삭제는 체인만으로 탐지 불가 → verify 응답 head_hash 외부 기록으로 보완
   - `internal/api/` — 라우팅·핸들러·미들웨어. 라우트 등록은 `public()`/`protected(roles...)` 둘뿐 — 보호 라우트는 역할 명시 강제(빈 역할은 panic), 등록 패턴은 `Server.routes`에 기록되어 OpenAPI 정합 테스트(`openapi_conformance_test.go`)가 명세와 양방향 대조(누락/초과 검출, DB 불필요). 모든 응답에 X-Request-ID + 보안 헤더(nosniff·X-Frame-Options DENY·no-referrer·CSP default-src 'none', `/api/*`는 Cache-Control no-store — `withSecurityHeaders`)
     - 라우트: `/healthz`·`POST /api/v1/auth/login`(public) / logout·me(전 역할) / `GET|POST /api/v1/users`(system_administrator만) / `POST /api/v1/certificates/import`·`POST /api/v1/discovery/scans`(system_administrator·pki_administrator·operator) / `GET /api/v1/certificates`·`GET /api/v1/certificates/summary`·`GET /api/v1/certificates/{id}`·`GET /api/v1/discovery/scans/{id}`(전 역할, 읽기 전용 — 감사 이벤트 없음. summary는 리터럴 세그먼트라 {id}보다 우선 매칭) / `GET /api/v1/certificates/export`(전 역할, 목록과 같은 필터로 CSV — 읽기지만 데이터 유출 경로라 certificate.export 감사 전건 기록, 7.12) / `GET /api/v1/audit/events`·`GET /api/v1/audit/verify`(security_administrator·auditor만 — 7.11) / `GET /api/v1/openapi.yaml`(전 역할 — 임베드 명세 원문, 폐쇄망이라 인증 뒤)
+    - users API는 생성(POST)/조회(GET)만 존재 — 수정·비활성 핸들러 없음(`handlers_users.go`)
     - `discovery.go` — 스캔 생성(202 즉시 반환)·상태 조회 핸들러. UUID 경로값은 `isUUID`로 검증(잘못된 값은 404, DB `::uuid` 캐스트 500 방지)
   - `migrations/` — SQL 마이그레이션. `go:embed`로 바이너리에 포함되어 **서버 기동 시 자동 적용**
     - `0002_core_schema` — 완전 구현 4테이블 + placeholder 4테이블(certificate_authorities/policies/renewal_jobs/deployment_jobs). fingerprint_sha256 UNIQUE(소문자 hex 64자 CHECK), status·type CHECK, 만료·상태·이름 인덱스
@@ -31,6 +32,7 @@
   - `lib/` — api.ts(타입+엔드포인트 함수+ApiError), auth.tsx(useAuth·역할 게이트 — 업로드·스캔은 3역할), format.ts
   - `app/fonts.css` — 폰트는 npm 패키지 셀프호스팅 `@font-face` (폐쇄망 대응, CDN 없음)
 - `docker-compose.yml` / `.env.example` — 루트. backend + postgres + frontend
+  - 베이스 이미지 3종: `golang:1.25-alpine`·`gcr.io/distroless/static-debian12`(backend/Dockerfile), `node:24-alpine`(frontend/Dockerfile) — 폐쇄망 빌드 시 내부 레지스트리 미러 필요
 - `mockup/index.html` — 승인된 4화면 정적 목업 (제품 코드 아님)
 - `docs/` — 00-spec(명세) / 01-plan(기획) / 02-goals(목표) / STATE / GOTCHAS
   - 00-spec 15장=Phase 1~5 로드맵, 16장=MVP 제외 목록, 02-goals=성공 기준 7개+M1~M3(Phase 판정 시 대조 출처)

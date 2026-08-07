@@ -141,7 +141,6 @@ cp .env.example .env
 | `SESSION_TTL` | `8h` | 로그인 세션 유효기간. Go duration 형식 (`8h`, `30m`, `12h30m` 등) |
 
 - `POSTGRES_PASSWORD`가 비어 있으면 기동이 거부된다(의도된 안전장치).
-- **주의**: 현재 `.env.example`에는 인증 관련 3개 변수(`BOOTSTRAP_ADMIN_USERNAME`/`BOOTSTRAP_ADMIN_PASSWORD`/`SESSION_TTL`)가 아직 들어 있지 않다. `.env`에 위 이름 그대로 **직접 추가**한다 — `docker-compose.yml`이 backend 컨테이너로 전달하도록 이미 배선되어 있다.
 
 ### 5.3 기동
 
