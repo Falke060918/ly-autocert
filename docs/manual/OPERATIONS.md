@@ -52,9 +52,25 @@ docker compose logs -f db
 docker compose logs --since 1h backend   # 최근 1시간
 ```
 
-- **구조화 JSON 로그 / Trace·Request ID** (예정): 로그 포맷이 구조화되면 이 절에 필드 설명과 조회 예시를 추가한다.
-- **감사 로그** (예정): 생성·수정·삭제·내보내기 등 모든 변경 작업의 감사 이벤트(AuditEvent)는 애플리케이션 로그와 분리되어 DB에 저장되며, 웹 콘솔 감사 로그 화면에서 조회한다. 구현 완료 후 갱신.
+- **구조화 JSON 로그 / Request ID**: backend 로그는 구조화 JSON이다. 모든 API 응답에 `X-Request-ID` 헤더가 붙고, 오류 로그·감사 이벤트에 같은 `request_id`가 기록되므로 이 값으로 요청 단위 추적이 가능하다. OpenTelemetry Trace 연동은 **(예정)**.
 - 보안 원칙: 인증서 본문·개인키는 로그에 출력되지 않는다. 로그에서 발견되면 제품 결함이므로 즉시 보고할 것.
+
+### 3.1 감사 로그
+
+다음 이벤트는 애플리케이션 로그와 분리되어 DB의 `audit_events` 테이블에 기록된다.
+
+- 로그인 성공·실패 (`user.login`), 로그아웃 (`user.logout`)
+- 사용자 생성 (`user.created`)
+- 권한 거부 — 허용되지 않은 역할의 API 호출 (`authz.denied`, HTTP 403과 함께)
+- 인증서 업로드 — 성공은 물론 거부(개인키 포함·파싱 실패 등)도 사유 코드와 함께 기록
+
+웹 콘솔 감사 로그 화면과 무결성 검증은 **(예정)** 이다. 그 전까지는 DB에서 직접 조회한다 (읽기만 할 것 — `audit_events`는 추가 전용이며 수정·삭제는 감사 무결성 훼손이다):
+
+```sh
+docker compose exec db psql -U autocert -d autocert -c \
+  "SELECT created_at, event_type, actor_id, target_type, target_id, result, source_ip
+     FROM audit_events ORDER BY created_at DESC LIMIT 20;"
+```
 
 ## 4. 업그레이드 절차
 
@@ -78,6 +94,10 @@ docker compose logs --since 1h backend   # 최근 1시간
 | 웹 콘솔은 뜨는데 데이터 로드 실패 | 브라우저→8080 방화벽 차단, 또는 `NEXT_PUBLIC_API_URL`이 접속 환경과 불일치 | 관리자 PC에서 `http://<서버 IP>:8080/healthz` 접근 확인. 주소가 다르면 compose의 빌드 인자 수정 후 **frontend 재빌드** (INSTALL.md 4.4절) |
 | 포트 충돌 (`address already in use`) | 3000/8080/5432를 다른 프로세스가 점유 | 점유 프로세스 정리 또는 compose `ports` 좌측(호스트 포트) 변경 |
 | 업그레이드 후 backend 기동 실패, 로그에 마이그레이션 오류 | 스키마 적용 실패 | 로그의 실패 마이그레이션 확인 후 지원 채널에 보고. 임의로 테이블을 수정하지 말 것 |
+| 로그인할 계정이 없음 | 초기 관리자 미생성 — `BOOTSTRAP_ADMIN_PASSWORD` 미설정 상태로 최초 기동 | `docker compose logs backend`에서 `BOOTSTRAP_ADMIN_PASSWORD is not set` 경고 확인 → `.env`에 설정 후 backend 재기동. 초기 생성은 사용자가 0명일 때만 동작한다 (INSTALL.md 5.1절) |
+| API가 401 반환 | 미로그인 또는 세션 만료 (`SESSION_TTL` 기본 8시간) | 재로그인 후 `Authorization: Bearer <token>` 헤더(또는 세션 쿠키) 확인 |
+| API가 403 반환 | 계정 역할에 허용되지 않은 작업 (RBAC 정상 동작) | INSTALL.md 5.2절 역할 표 확인. 반복되면 `audit_events`의 `authz.denied` 이벤트로 누가 무엇을 시도했는지 추적 (3.1절) |
+| 인증서 업로드가 400 `private_key_rejected` | 업로드 파일에 개인키 포함 (의도된 거부) | 개인키를 제외하고 인증서(PEM·DER)만 업로드 |
 | 웹 콘솔 글꼴이 시스템 폰트로 보임 | 정적 자원 로드 실패 (비정상) | 브라우저 개발자도구 네트워크 탭에서 실패 요청 확인 — 외부 요청이 있어서는 안 된다 |
 | 디스크 사용량 증가 | DB 볼륨(`pgdata`)·Docker 이미지 누적 | 오래된 이미지 정리 `docker image prune`. **`docker volume` 정리 명령에 `pgdata`가 포함되지 않도록 주의** |
 
@@ -90,8 +110,9 @@ Prometheus 메트릭 엔드포인트와 OpenTelemetry 연동은 추후 제공한
 아래 기능은 스펙에 정의되어 있으나 아직 미구현이다. 완료 시 본 매뉴얼에 운영 절차가 추가된다.
 
 - **(예정)** Discovery 네트워크 TLS 스캔 — 대상 CIDR·포트·주기·동시 연결 수 등록, 비동기 Job 조회
-- **(예정)** 인증서 수동 업로드 (PEM·DER 우선)
-- **(예정)** 로그인·RBAC 계정/역할 관리 (6개 역할)
-- **(예정)** 감사 로그 조회·무결성 검증
+- **(예정)** 인증서 목록·상세 조회 API와 만료 대시보드·웹 콘솔 로그인 화면
+- **(예정)** 감사 로그 웹 콘솔 조회·무결성 검증 — 기록 자체는 구현되어 동작 중이다 (3.1절)
 - **(예정)** 만료 임박 알림 채널
 - **(예정, Phase 2 이후)** CA 연동·발급·갱신·배포 자동화·에이전트
+
+구현 완료되어 이 표에서 빠진 항목: 인증서 수동 업로드 (INSTALL.md 5.3절), 로그인·RBAC 계정/역할 관리 (INSTALL.md 5.1–5.2절).

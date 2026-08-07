@@ -74,8 +74,12 @@ cp .env.example .env
 | `POSTGRES_USER` | `autocert` | DB 사용자 |
 | `POSTGRES_PASSWORD` | (없음 — 필수 입력) | DB 비밀번호. **반드시 강한 값으로 변경한다.** 예시 값 그대로 운영 금지 |
 | `POSTGRES_DB` | `autocert` | DB 이름 |
+| `BOOTSTRAP_ADMIN_USERNAME` | `admin` | 초기 관리자(System Administrator) 계정명 |
+| `BOOTSTRAP_ADMIN_PASSWORD` | (없음) | 초기 관리자 비밀번호. 최초 기동 시 사용자가 하나도 없으면 이 값으로 초기 관리자를 **1회** 생성한다. 미설정 시 계정이 생성되지 않고 경고 로그만 남는다 (5.1절) |
+| `SESSION_TTL` | `8h` | 로그인 세션 유효기간. Go duration 형식 (`8h`, `30m`, `12h30m` 등) |
 
-`POSTGRES_PASSWORD`가 비어 있으면 기동이 거부된다(의도된 안전장치).
+- `POSTGRES_PASSWORD`가 비어 있으면 기동이 거부된다(의도된 안전장치).
+- **주의**: 현재 `.env.example`에는 인증 관련 3개 변수(`BOOTSTRAP_ADMIN_USERNAME`/`BOOTSTRAP_ADMIN_PASSWORD`/`SESSION_TTL`)가 아직 들어 있지 않다. `.env`에 위 이름 그대로 **직접 추가**한다 — `docker-compose.yml`이 backend 컨테이너로 전달하도록 이미 배선되어 있다.
 
 ### 4.3 기동
 
@@ -102,9 +106,66 @@ curl http://localhost:8080/healthz   # HTTP 200이면 정상
 
 ## 5. 초기 설정
 
-- **관리자 계정 / 로그인** (예정): 사용자 로그인과 6개 역할 기반 RBAC(System/PKI/Security Administrator, Operator, Auditor, Viewer)는 Phase 1 범위이며 구현 중이다. 현재 버전은 인증 없이 접근된다 — **신뢰된 관리망에서만 접속을 허용할 것.**
-- **인증서 등록** (예정): 수동 업로드(PEM·DER 등)와 네트워크 TLS 스캔(Discovery)이 구현되면 이 절에 초기 인벤토리 확보 절차를 기술한다.
-- **알림 채널** (예정): 만료 임박 알림 설정은 추후 제공한다.
+### 5.1 초기 관리자 계정과 로그인
+
+최초 기동 시 사용자가 하나도 없고 `BOOTSTRAP_ADMIN_PASSWORD`가 설정되어 있으면, backend가 `BOOTSTRAP_ADMIN_USERNAME`(기본 `admin`) 계정을 **System Administrator** 역할로 1회 생성한다.
+
+- `BOOTSTRAP_ADMIN_PASSWORD`를 설정하지 않으면 계정은 생성되지 않고 backend 로그에 경고만 남는다 — `no users exist and BOOTSTRAP_ADMIN_PASSWORD is not set; login is impossible until it is provided`. 이 경우 `.env`에 값을 넣고 `docker compose up -d backend`로 재기동하면 된다.
+- 사용자가 1명이라도 존재하면 이 변수는 무시된다(재기동해도 덮어쓰지 않는다). 초기 생성 후에는 `.env`에서 `BOOTSTRAP_ADMIN_PASSWORD`를 지우는 것을 권장한다 — 파일에 비밀번호가 남지 않게 한다.
+- **비밀번호 정책**: 최소 12자, 최대 72바이트, 계정명과 동일 금지. 정책 위반 비밀번호로는 계정이 생성되지 않는다.
+
+로그인은 REST API로 한다 (웹 콘솔 로그인 화면은 **(예정)**):
+
+```sh
+curl -X POST http://localhost:8080/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"<비밀번호>"}'
+```
+
+- 응답의 `token`을 이후 요청에 `Authorization: Bearer <token>` 헤더로 넣는다. 브라우저에는 HttpOnly 세션 쿠키(`autocert_session`)도 함께 설정된다.
+- 세션 유효기간은 `SESSION_TTL`(기본 8시간)이다. 만료 시 재로그인한다.
+- 로그아웃: `POST /api/v1/auth/logout` (세션 즉시 폐기). 현재 사용자 확인: `GET /api/v1/auth/me`.
+
+### 5.2 사용자와 역할 (RBAC)
+
+역할은 6개다 (역할 변경·부여 권한은 System Administrator에게만 있다).
+
+| 역할 | `role` 값 | 권한 |
+| --- | --- | --- |
+| System Administrator | `system_administrator` | 시스템 설정, 사용자 관리, 모든 인증서 관리, CA 관리 |
+| PKI Administrator | `pki_administrator` | CA 연결, 인증서 프로파일 관리, 인증서 발급·폐기 |
+| Security Administrator | `security_administrator` | 정책 관리, 승인, 감사 로그 조회 |
+| Operator | `operator` | 인증서 조회, 갱신 실행, 배포 실행 |
+| Auditor | `auditor` | 읽기 전용, 감사 로그·보고서 조회 |
+| Viewer | `viewer` | 제한된 인증서 조회 |
+
+- 모든 API는 요청마다 인증 **과** 역할 검사를 거친다. 허용되지 않은 역할의 호출은 **HTTP 403**으로 거부되고, 거부 자체가 감사 이벤트(`authz.denied`)로 기록된다.
+- 사용자 생성/조회: `POST /api/v1/users` / `GET /api/v1/users` — **System Administrator 전용**.
+
+```sh
+curl -X POST http://localhost:8080/api/v1/users \
+  -H "Authorization: Bearer <token>" -H 'Content-Type: application/json' \
+  -d '{"username":"auditor1","password":"<12자 이상>","display_name":"감사 담당","role":"auditor"}'
+```
+
+### 5.3 초기 인증서 등록 (수동 업로드)
+
+`POST /api/v1/certificates/import` — 허용 역할: **System Administrator, PKI Administrator, Operator**.
+
+```sh
+curl -X POST http://localhost:8080/api/v1/certificates/import \
+  -H "Authorization: Bearer <token>" \
+  -F "file=@server-cert.pem"
+```
+
+- 지원 형식: **PEM**(체인 포함 가능)·**DER**. `multipart/form-data`의 `file` 필드 또는 원시 본문(raw body) 둘 다 가능. 본문 상한 1 MiB.
+- 중복 판정은 SHA-256 fingerprint 기준이다 — 이미 등록된 인증서를 다시 올리면 새 항목을 만들지 않고 **설치 위치만 추가**된다 (응답의 `duplicate: true`).
+- **개인키가 포함된 파일은 전체가 400으로 거부된다** (`private_key_rejected`). 개인키는 저장·로그되지 않는다. 개인키를 제외하고 인증서만 업로드할 것.
+- 네트워크 TLS 스캔(Discovery)으로 인벤토리를 자동 확보하는 기능은 **(예정)** 이다.
+
+### 5.4 알림 채널 (예정)
+
+만료 임박 알림 설정은 추후 제공한다.
 
 ## 6. 제거
 
