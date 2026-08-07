@@ -20,6 +20,7 @@
 - `docker-compose.yml` / `.env.example` — 루트. backend + postgres + frontend
 - `mockup/index.html` — 승인된 4화면 정적 목업 (제품 코드 아님)
 - `docs/` — 00-spec(명세) / 01-plan(기획) / 02-goals(목표) / STATE / GOTCHAS
+  - `docs/manual/` — 고객용 매뉴얼 (INSTALL/OPERATIONS, 미구현 기능은 "(예정)" 표기 — 이슈 완료 시마다 갱신)
 
 ## 포트
 - backend: 8080 / PostgreSQL: 5432 / frontend: 3000
