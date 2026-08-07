@@ -29,7 +29,7 @@
 
 ## 검증 명령
 - backend: `go build ./...`, `go vet ./...` (backend/ 에서. 로컬 Go 없으면 Docker 경유)
-- 마이그레이션 테스트: compose db 기동 후 `TEST_DATABASE_URL=postgres://autocert:<pw>@db:5432/autocert?sslmode=disable go test ./internal/db/` — up/down/up 전체를 돌리므로 **전용 테스트 DB에서만**. 로컬 Go 없으면 compose 네트워크(`inherit_autocert_default`)에 붙인 golang 컨테이너 경유
+- 마이그레이션 테스트: compose db 기동 후 전용 테스트 DB 생성(`docker compose exec db createdb -U autocert autocert_test`) 뒤 `TEST_DATABASE_URL=postgres://autocert:<pw>@db:5432/autocert_test?sslmode=disable go test ./internal/db/` — up/down/up 전체를 돌리므로 **메인 DB(autocert)에는 돌리지 않는다**. 로컬 Go 없으면 compose 네트워크(`inherit_autocert_default`)에 붙인 golang 컨테이너 경유
 - frontend: `npm run build`, `npm run lint` (frontend/ 에서)
 
 ## GitHub
