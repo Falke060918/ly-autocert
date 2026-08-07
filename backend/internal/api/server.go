@@ -44,6 +44,11 @@ func NewServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder) http.Ha
 	// 업로드는 인벤토리 변경이므로 관리자·운영자급만 (00-spec 7.11).
 	s.protected("POST /api/v1/certificates/import", handleImportCertificates(st),
 		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
+	// 조회는 인증된 전 역할 허용 — 7.11에서 6개 역할 모두 인증서 조회 권한을 가진다
+	// (Viewer의 "제한된 조회" 세분화는 필드 제한 정의가 생기는 시점에). 읽기 전용이라
+	// 감사 이벤트는 남기지 않는다 (7.12 기록 대상에 조회 없음; 내보내기는 범위 외).
+	s.protected("GET /api/v1/certificates", handleListCertificates(st), domain.AllRoles...)
+	s.protected("GET /api/v1/certificates/{id}", handleGetCertificate(st), domain.AllRoles...)
 
 	return withRequestID(s.mux)
 }

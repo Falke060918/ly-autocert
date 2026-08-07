@@ -90,6 +90,99 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/certificates:
+    get:
+      operationId: listCertificates
+      summary: 인증서 목록 (검색·필터·정렬·페이지네이션)
+      description: >
+        인벤토리 인증서 목록을 조회한다. 인증된 전 역할(6종) 접근 가능.
+        만료 관련 필터(expired, expires_within_days)는 저장된 status가 아니라
+        not_after에서 파생 계산한다. 읽기 전용이라 감사 이벤트를 남기지 않는다.
+      tags: [certificates]
+      parameters:
+        - name: q
+          in: query
+          description: CN·Subject DN·Issuer DN·Serial·Fingerprint·SAN 부분 일치 검색 (대소문자 무시, 200자 이하)
+          schema: { type: string, maxLength: 200 }
+        - name: status
+          in: query
+          description: 상태 필터. 반복 지정 또는 쉼표 구분 다중 값 허용.
+          schema:
+            type: string
+            enum: [active, expired, revoked, replaced, unknown]
+        - name: type
+          in: query
+          description: 인증서 유형 필터. 반복 지정 또는 쉼표 구분 다중 값 허용.
+          schema:
+            type: string
+            enum: [server, client, ca, code_signing, email, other]
+        - name: expired
+          in: query
+          description: not_after 기준 만료 여부 (파생 필터)
+          schema: { type: boolean }
+        - name: expires_within_days
+          in: query
+          description: 오늘부터 N일 이내 만료 예정 (이미 만료된 것 제외)
+          schema: { type: integer, minimum: 1, maximum: 3650 }
+        - name: sort
+          in: query
+          description: 정렬 필드 (기본 not_after)
+          schema:
+            type: string
+            enum: [not_after, not_before, common_name, created_at, updated_at,
+                   status, certificate_type, public_key_size]
+        - name: order
+          in: query
+          schema: { type: string, enum: [asc, desc], default: asc }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: 인증서 목록 페이지
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CertificateList"
+        "400":
+          description: 잘못된 쿼리 파라미터. code는 invalid_* 형태.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/certificates/{id}:
+    get:
+      operationId: getCertificate
+      summary: 인증서 상세 (설치 위치 목록 포함)
+      description: 인증된 전 역할(6종) 접근 가능. 응답에 인증서 원문(PEM/DER)은 포함되지 않는다.
+      tags: [certificates]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 인증서 상세
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CertificateDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: 해당 id의 인증서 없음 (잘못된 uuid 형식 포함)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /api/v1/auth/login:
     post:
       operationId: login
@@ -271,6 +364,91 @@ components:
         duplicate:
           type: boolean
           description: true면 fingerprint 중복 — 기존 레코드 재사용
+    Certificate:
+      type: object
+      description: 인벤토리 인증서. 개인키·인증서 원문은 포함하지 않는다.
+      required:
+        [id, fingerprint_sha256, serial_number, subject_dn, issuer_dn, common_name,
+         sans, not_before, not_after, public_key_algorithm, public_key_size,
+         signature_algorithm, certificate_type, status, auto_renew, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        fingerprint_sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+        serial_number: { type: string }
+        subject_dn: { type: string }
+        issuer_dn: { type: string }
+        common_name: { type: string }
+        sans:
+          type: array
+          items: { type: string }
+        not_before: { type: string, format: date-time }
+        not_after: { type: string, format: date-time }
+        public_key_algorithm: { type: string }
+        public_key_size: { type: integer }
+        signature_algorithm: { type: string }
+        certificate_type:
+          type: string
+          enum: [server, client, ca, code_signing, email, other]
+        status:
+          type: string
+          enum: [active, expired, revoked, replaced, unknown]
+        ca_id: { type: string, format: uuid, nullable: true }
+        owner_id: { type: string, format: uuid, nullable: true }
+        department_id: { type: string, format: uuid, nullable: true }
+        environment: { type: string, nullable: true }
+        auto_renew: { type: boolean }
+        renewal_policy_id: { type: string, format: uuid, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CertificateList:
+      type: object
+      required: [request_id, items, total, page, page_size]
+      properties:
+        request_id: { type: string }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Certificate" }
+        total: { type: integer, description: 필터 적용 후 전체 건수 }
+        page: { type: integer }
+        page_size: { type: integer }
+    TargetRef:
+      type: object
+      description: 설치 위치에 붙는 대상 시스템 요약
+      required: [id, name, target_type]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        target_type: { type: string }
+        hostname: { type: string, nullable: true }
+        ip_address: { type: string, nullable: true }
+    CertificateLocation:
+      type: object
+      required: [id, certificate_id, target_id, location_type, deployment_status, target]
+      properties:
+        id: { type: string, format: uuid }
+        certificate_id: { type: string, format: uuid }
+        target_id: { type: string, format: uuid }
+        location_type:
+          type: string
+          enum: [network_endpoint, file, windows_store, keystore, other]
+        file_path: { type: string, nullable: true }
+        store_name: { type: string, nullable: true }
+        service_name: { type: string, nullable: true }
+        port: { type: integer, nullable: true, minimum: 1, maximum: 65535 }
+        last_verified_at: { type: string, format: date-time, nullable: true }
+        deployment_status:
+          type: string
+          enum: [unknown, deployed, pending, failed, removed]
+        target: { $ref: "#/components/schemas/TargetRef" }
+    CertificateDetail:
+      type: object
+      required: [request_id, certificate, locations]
+      properties:
+        request_id: { type: string }
+        certificate: { $ref: "#/components/schemas/Certificate" }
+        locations:
+          type: array
+          items: { $ref: "#/components/schemas/CertificateLocation" }
     Healthz:
       type: object
       required: [status, database]
