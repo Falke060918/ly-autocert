@@ -69,7 +69,7 @@
 
 - **Backend**: Go, REST API, OpenAPI 3, PostgreSQL, SQL migration, 비동기 작업 큐
 - **Frontend**: React + TypeScript + Next.js
-- **Agent**: Go 단일 바이너리 (Windows/Linux) — Phase 3
+- **Agent/Sensor**: Go 단일 바이너리 (Windows/Linux) — 센서(원격 수집기)는 Phase 3a, 배포 에이전트는 Phase 3b
 - **배포**: Docker, Docker Compose, Helm Chart, Kubernetes
 - **관측성**: OpenTelemetry, Prometheus Metrics, 구조화 JSON 로그, Trace/Request ID
 
