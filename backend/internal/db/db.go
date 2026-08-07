@@ -47,20 +47,30 @@ func Connect(ctx context.Context, dsn string) (*sql.DB, error) {
 	return nil, fmt.Errorf("db: ping failed after %d attempts: %w", maxAttempts, lastErr)
 }
 
-// Migrate는 backend/migrations에 임베드된 SQL 마이그레이션을 최신 버전까지 적용한다.
-// 이미 최신이면 아무것도 하지 않는다(중복 실행 안전).
-func Migrate(pool *sql.DB) error {
+// newMigrator는 임베드된 마이그레이션 소스로 migrate 인스턴스를 만든다.
+// Migrate(up)와 테스트의 up/down 검증이 공유한다.
+func newMigrator(pool *sql.DB) (*migrate.Migrate, error) {
 	src, err := iofs.New(migrations.FS, ".")
 	if err != nil {
-		return fmt.Errorf("db: load migration source: %w", err)
+		return nil, fmt.Errorf("db: load migration source: %w", err)
 	}
 	driver, err := migratepgx.WithInstance(pool, &migratepgx.Config{})
 	if err != nil {
-		return fmt.Errorf("db: init migration driver: %w", err)
+		return nil, fmt.Errorf("db: init migration driver: %w", err)
 	}
 	m, err := migrate.NewWithInstance("iofs", src, "pgx5", driver)
 	if err != nil {
-		return fmt.Errorf("db: init migrate: %w", err)
+		return nil, fmt.Errorf("db: init migrate: %w", err)
+	}
+	return m, nil
+}
+
+// Migrate는 backend/migrations에 임베드된 SQL 마이그레이션을 최신 버전까지 적용한다.
+// 이미 최신이면 아무것도 하지 않는다(중복 실행 안전).
+func Migrate(pool *sql.DB) error {
+	m, err := newMigrator(pool)
+	if err != nil {
+		return err
 	}
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("db: migrate up: %w", err)

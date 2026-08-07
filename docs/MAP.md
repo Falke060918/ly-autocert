@@ -5,9 +5,11 @@
 - `backend/` — Go 백엔드
   - `cmd/server/main.go` — 엔트리포인트. config 로드 → DB 연결 → 마이그레이션 → HTTP 서버 기동
   - `internal/config/` — 환경변수 기반 설정
-  - `internal/db/` — PostgreSQL 연결 + 마이그레이션 적용
+  - `internal/db/` — PostgreSQL 연결 + 마이그레이션 적용. `migrate_test.go`는 `TEST_DATABASE_URL` 설정 시에만 실행(미설정 시 스킵)
+  - `internal/domain/` — 핵심 데이터 모델 Go 타입 (00-spec 12장 기준: Certificate/CertificateLocation/Target/AuditEvent + 상태 enum)
   - `internal/api/` — HTTP 라우팅·핸들러 (`/healthz` 등)
   - `migrations/` — SQL 마이그레이션. `go:embed`로 바이너리에 포함되어 **서버 기동 시 자동 적용**
+    - `0002_core_schema` — 완전 구현 4테이블 + placeholder 4테이블(certificate_authorities/policies/renewal_jobs/deployment_jobs). fingerprint_sha256 UNIQUE(소문자 hex 64자 CHECK), status·type CHECK, 만료·상태·이름 인덱스
   - `api/openapi.yaml` — OpenAPI 3 명세
 - `frontend/` — Next.js (App Router) + TypeScript
   - `app/` — 4화면: `/`(대시보드), `/certificates`(목록), `/certificates/[id]`(상세), `/discovery`
@@ -27,6 +29,7 @@
 
 ## 검증 명령
 - backend: `go build ./...`, `go vet ./...` (backend/ 에서. 로컬 Go 없으면 Docker 경유)
+- 마이그레이션 테스트: compose db 기동 후 `TEST_DATABASE_URL=postgres://autocert:<pw>@db:5432/autocert?sslmode=disable go test ./internal/db/` — up/down/up 전체를 돌리므로 **전용 테스트 DB에서만**. 로컬 Go 없으면 compose 네트워크(`inherit_autocert_default`)에 붙인 golang 컨테이너 경유
 - frontend: `npm run build`, `npm run lint` (frontend/ 에서)
 
 ## GitHub
