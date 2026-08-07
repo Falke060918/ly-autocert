@@ -22,6 +22,11 @@ export function canManageInventory(user: User | null): boolean {
   return user != null && MANAGE_ROLES.includes(user.role);
 }
 
+/** 센서 비활성화 등 시스템 관리자 전용 작업 여부. */
+export function isSystemAdministrator(user: User | null): boolean {
+  return user?.role === "system_administrator";
+}
+
 const ROLE_LABELS: Record<Role, string> = {
   system_administrator: "시스템 관리자",
   pki_administrator: "PKI 관리자",

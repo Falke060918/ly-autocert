@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Radar, ShieldCheck } from "lucide-react";
+import { LayoutDashboard, Radar, RadioTower, ShieldCheck } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -10,6 +10,7 @@ const NAV_ITEMS = [
   { href: "/", label: "대시보드", icon: LayoutDashboard },
   { href: "/certificates", label: "인증서", icon: ShieldCheck },
   { href: "/discovery", label: "Discovery", icon: Radar },
+  { href: "/sensors", label: "센서", icon: RadioTower },
 ] as const;
 
 function isActive(pathname: string, href: string) {
