@@ -22,14 +22,23 @@ import (
 )
 
 // Server는 라우터와 의존성(인증 서비스·감사 기록기)을 묶는다.
+// routes는 등록된 "METHOD /path" 패턴 전체다 — OpenAPI 명세 정합 테스트가
+// 이 목록과 api/openapi.yaml을 대조한다 (openapi_conformance_test.go).
 type Server struct {
-	mux   *http.ServeMux
-	auth  *auth.Service
-	audit *audit.Recorder
+	mux    *http.ServeMux
+	auth   *auth.Service
+	audit  *audit.Recorder
+	routes []string
 }
 
 // NewServer는 모든 라우트가 등록된 HTTP 핸들러를 반환한다.
 func NewServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder) http.Handler {
+	return withSecurityHeaders(withRequestID(newServer(pool, authSvc, rec).mux))
+}
+
+// newServer는 라우트를 등록한 Server를 만든다. 핸들러를 호출하지 않는 한
+// 의존성은 nil이어도 안전하다 — 정합 테스트가 라우트 목록만 뽑을 때 쓴다.
+func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder) *Server {
 	st := store.New(pool)
 	disc := discovery.NewManager(st)
 	s := &Server{mux: http.NewServeMux(), auth: authSvc, audit: rec}
@@ -63,17 +72,22 @@ func NewServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder) http.Ha
 		domain.RoleSecurityAdministrator, domain.RoleAuditor)
 	s.protected("GET /api/v1/audit/verify", s.handleVerifyAuditChain,
 		domain.RoleSecurityAdministrator, domain.RoleAuditor)
+	// OpenAPI 명세 제공 — 읽기 전용이라 전 역할, 폐쇄망 제품이므로 인증 뒤에 둔다
+	// (public은 healthz·login뿐이라는 원칙 유지).
+	s.protected("GET /api/v1/openapi.yaml", handleOpenAPISpec, domain.AllRoles...)
 
-	return withSecurityHeaders(withRequestID(s.mux))
+	return s
 }
 
 // public은 인증 없이 접근 가능한 라우트를 등록한다. 추가는 신중히.
 func (s *Server) public(pattern string, h http.HandlerFunc) {
+	s.routes = append(s.routes, pattern)
 	s.mux.HandleFunc(pattern, h)
 }
 
 // protected는 인증 + 역할 검사를 거치는 라우트를 등록한다. roles가 비면 panic.
 func (s *Server) protected(pattern string, h http.HandlerFunc, roles ...domain.Role) {
+	s.routes = append(s.routes, pattern)
 	s.mux.HandleFunc(pattern, s.requireRoles(h, roles...))
 }
 

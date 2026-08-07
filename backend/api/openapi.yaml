@@ -381,9 +381,6 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
-security:
-  - bearerAuth: []
-  - cookieAuth: []
   /api/v1/audit/events:
     get:
       operationId: listAuditEvents
@@ -446,6 +443,26 @@ security:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+  /api/v1/openapi.yaml:
+    get:
+      operationId: getOpenAPISpec
+      summary: 이 OpenAPI 명세 원문 조회
+      description: >
+        서버 바이너리에 임베드된 이 명세(YAML)를 그대로 반환한다.
+        폐쇄망 제품이므로 명세도 인증 뒤에 둔다 (전 역할 조회 가능).
+        명세와 라우트의 정합은 빌드 시 테스트로 검증된다.
+      tags: [system]
+      responses:
+        "200":
+          description: OpenAPI 3 명세 (YAML 원문)
+          content:
+            application/yaml:
+              schema: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+security:
+  - bearerAuth: []
+  - cookieAuth: []
 components:
   securitySchemes:
     bearerAuth:
