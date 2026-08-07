@@ -48,6 +48,12 @@ paths=(
 #                                derived project. Derivations still get the
 #                                initial copy at template-clone time; after
 #                                that it is theirs.
+#   .mcp.json                    same failure mode as ci.yml — projects add
+#                                their own MCP servers (internal API, DB, …)
+#                                to this file, and a wholesale sync would
+#                                silently drop them. The template copy is a
+#                                one-time starting point at clone time; after
+#                                that MCP servers are project-owned.
 #   any product code             obviously project-owned.
 
 main() {

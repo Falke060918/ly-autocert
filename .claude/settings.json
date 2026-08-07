@@ -5,6 +5,7 @@
   "effortLevel": "medium",
   "alwaysThinkingEnabled": true,
   "autoCompactEnabled": true,
+  "enableAllProjectMcpServers": true,
   "worktree": {
     "baseRef": "head"
   },
@@ -44,7 +45,9 @@
       "Bash(python:*)",
       "Bash(pip install:*)",
       "Bash(ls:*)",
-      "Bash(mkdir:*)"
+      "Bash(mkdir:*)",
+      "mcp__playwright__*",
+      "mcp__chrome-devtools__*"
     ],
     "ask": [
       "Bash(git push --force:*)",

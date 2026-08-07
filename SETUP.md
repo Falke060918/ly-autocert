@@ -73,7 +73,14 @@ gh label list                                            # feat / bug / chore �
 `CLAUDE.md` **하단**에 이 프로젝트에만 해당하는 규칙을 덧붙인다. 예: 기술 스택, 디렉토리 컨벤션,
 빌드·테스트 명령, 건드리면 안 되는 영역. 상단의 운영 원칙(지시 우선 원칙 / 하드 규칙 / 역할)은 건드리지 않는다.
 
+템플릿은 **스택 중립**이다 — 쓰는 스택은 여기에 적는다. 단 React 웹 UI면 컴포넌트 기본값이 이미 shadcn/ui이고,
+새로 만들기 전에 기존 `components/ui/`와 shadcn/ui를 먼저 확인하라는 규칙이 걸려 있다(CLAUDE.md "프론트엔드 기본 스택"). 다른 스택이면 적용되지 않는다.
+
+MCP 서버는 파생 프로젝트가 직접 관리한다 — 템플릿의 `.mcp.json`(playwright · chrome-devtools)은 최초 1회 참고용이고,
+`/template-update`가 덮지 않으므로 사내 API·DB 등 프로젝트 서버를 여기에 마음대로 추가해도 된다.
+
 자주 쓰는 명령이 권한 프롬프트에 걸리면 `.claude/settings.json`의 `permissions.allow`에 추가한다.
+MCP 도구 권한(`.mcp.json`의 playwright·chrome-devtools)은 템플릿 `settings.json`에 이미 설정돼 있다 — 새로 클론한 폴더는 최초 1회 워크스페이스 신뢰 확인만 거치면 프롬프트 없이 붙는다.
 답변 스타일(기본 `brief` — 짧고 명료한 답변)이 마음에 안 들면 `.claude/output-styles/brief.md`를 고치거나 `/config` → Output style에서 바꾼다.
 
 ⚠️ 위 세 파일(`CLAUDE.md`·`.claude/settings.json`·`.claude/output-styles/`)과 `.claude/conventions/`(폰트 등 기본 강제값)는 `/template-update`가 통째로 덮어쓴다 —
@@ -128,4 +135,4 @@ git commit -m "chore: template-update 부트스트랩"
 bash scripts/template-update.sh
 ```
 
-이후 최신화는 `/template-update` 가 처리한다 — 템플릿 소유 파일(CLAUDE.md, SETUP.md 자신, scripts, `.claude/agents`·`.claude/skills`·`.claude/output-styles`·`.claude/conventions`, settings.json)만 갱신하고 `docs/`·`README.md`·`.github/workflows/ci.yml`·제품 코드는 건드리지 않는다.
+이후 최신화는 `/template-update` 가 처리한다 — 템플릿 소유 파일(CLAUDE.md, SETUP.md 자신, scripts, `.claude/agents`·`.claude/skills`·`.claude/output-styles`·`.claude/conventions`, settings.json)만 갱신하고 `docs/`·`README.md`·`.mcp.json`·`.github/workflows/ci.yml`·제품 코드는 건드리지 않는다.
