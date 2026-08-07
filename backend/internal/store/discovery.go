@@ -71,7 +71,7 @@ type EndpointObservation struct {
 	Port       int
 	Reachable  bool
 	TLSVersion string
-	ServerName string
+	Hostname   string
 	Chain      []*x509.Certificate
 }
 
@@ -307,75 +307,59 @@ func recordDiscoveredChain(ctx context.Context, tx *sql.Tx, obs EndpointObservat
 		}
 	}
 
-	targetID, err := ensureNetworkTarget(ctx, tx, obs.IP, obs.ServerName)
+	targetID, err := ensureNetworkTarget(ctx, tx, obs.IP, obs.Hostname)
 	if err != nil {
 		return 0, err
 	}
-	if err := upsertNetworkLocation(ctx, tx, leaf.id, targetID, obs.Port); err != nil {
+	if err := upsertNetworkLocation(ctx, tx, leaf.id, targetID, obs.Port, obs.TLSVersion); err != nil {
 		return 0, err
 	}
 	return newCount, nil
 }
 
-// ensureNetworkTarget은 IP로 대상 시스템을 찾거나 만들고 reachable로 표시한다.
+// ensureNetworkTarget은 IP로 대상 시스템을 만들거나 reachable로 갱신한다.
+// SELECT-후-INSERT가 아니라 부분 유니크 인덱스(uq_targets_network_ip, 0006)를
+// 아비터로 쓰는 단일 upsert다 — 같은 IP의 여러 포트가 동시 트랜잭션으로
+// 들어와도 대상이 중복 생성되지 않는다.
 func ensureNetworkTarget(ctx context.Context, tx *sql.Tx, ip, hostname string) (string, error) {
+	var hn *string
+	if hostname != "" {
+		hn = &hostname
+	}
 	var id string
-	err := tx.QueryRowContext(ctx,
-		`SELECT id FROM targets WHERE ip_address = $1::inet AND target_type = $2 LIMIT 1`,
-		ip, networkTargetType).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		var hn *string
-		if hostname != "" {
-			hn = &hostname
-		}
-		err = tx.QueryRowContext(ctx, `
-			INSERT INTO targets (name, target_type, hostname, ip_address, connection_status)
-			VALUES ($1, $2, $3, $4::inet, 'reachable') RETURNING id`,
-			ip, networkTargetType, hn, ip).Scan(&id)
-		if err != nil {
-			return "", fmt.Errorf("store: insert network target: %w", err)
-		}
-		return id, nil
-	}
+	err := tx.QueryRowContext(ctx, `
+		INSERT INTO targets (name, target_type, hostname, ip_address, connection_status)
+		VALUES ($1, $2, $3, $4::inet, 'reachable')
+		ON CONFLICT (ip_address) WHERE target_type = 'network'
+		DO UPDATE SET connection_status = 'reachable',
+		              hostname = coalesce(excluded.hostname, targets.hostname)
+		RETURNING id`,
+		ip, networkTargetType, hn, ip).Scan(&id)
 	if err != nil {
-		return "", fmt.Errorf("store: find network target: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE targets SET connection_status = 'reachable' WHERE id = $1`, id); err != nil {
-		return "", fmt.Errorf("store: update target status: %w", err)
+		return "", fmt.Errorf("store: upsert network target: %w", err)
 	}
 	return id, nil
 }
 
-// upsertNetworkLocation은 (인증서, 대상, 포트) 위치를 만들거나 최근 확인 시각을 갱신한다.
-// 재스캔 시 위치가 중복 생성되지 않게 한다(중복 실행 안전).
-func upsertNetworkLocation(ctx context.Context, tx *sql.Tx, certID, targetID string, port int) error {
-	var id string
-	err := tx.QueryRowContext(ctx, `
-		SELECT id FROM certificate_locations
-		 WHERE certificate_id = $1 AND target_id = $2 AND location_type = $3 AND port = $4
-		 LIMIT 1`,
-		certID, targetID, string(domain.LocationNetworkEndpoint), port).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO certificate_locations
-				(certificate_id, target_id, location_type, port, last_verified_at, deployment_status)
-			VALUES ($1, $2, $3, $4, now(), $5)`,
-			certID, targetID, string(domain.LocationNetworkEndpoint), port, string(domain.DeployDeployed))
-		if err != nil {
-			return fmt.Errorf("store: insert network location: %w", err)
-		}
-		return nil
+// upsertNetworkLocation은 (인증서, 대상, 포트) 위치를 만들거나 최근 확인 시각·
+// TLS 버전을 갱신한다. 부분 유니크 인덱스(uq_certificate_locations_network_endpoint,
+// 0006)를 아비터로 쓰는 단일 upsert라 재스캔·동시 실행에도 위치가 증식하지 않는다.
+func upsertNetworkLocation(ctx context.Context, tx *sql.Tx, certID, targetID string, port int, tlsVersion string) error {
+	var tv *string
+	if tlsVersion != "" {
+		tv = &tlsVersion
 	}
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO certificate_locations
+			(certificate_id, target_id, location_type, port, tls_version, last_verified_at, deployment_status)
+		VALUES ($1, $2, $3, $4, $5, now(), $6)
+		ON CONFLICT (certificate_id, target_id, port) WHERE location_type = 'network_endpoint'
+		DO UPDATE SET last_verified_at = now(),
+		              deployment_status = excluded.deployment_status,
+		              tls_version = coalesce(excluded.tls_version, certificate_locations.tls_version)`,
+		certID, targetID, string(domain.LocationNetworkEndpoint), port, tv, string(domain.DeployDeployed))
 	if err != nil {
-		return fmt.Errorf("store: find network location: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE certificate_locations
-		   SET last_verified_at = now(), deployment_status = $2
-		 WHERE id = $1`,
-		id, string(domain.DeployDeployed)); err != nil {
-		return fmt.Errorf("store: update network location: %w", err)
+		return fmt.Errorf("store: upsert network location: %w", err)
 	}
 	return nil
 }

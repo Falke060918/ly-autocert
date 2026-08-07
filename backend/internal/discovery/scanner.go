@@ -44,7 +44,7 @@ type Observation struct {
 	Endpoint
 	Reachable  bool
 	TLSVersion string
-	ServerName string
+	Hostname   string
 	Chain      []*x509.Certificate
 }
 
@@ -140,10 +140,37 @@ func ScanEndpoint(ctx context.Context, ep Endpoint, timeout time.Duration) Obser
 	state := tconn.ConnectionState()
 	obs.Reachable = true
 	obs.TLSVersion = tlsVersionName(state.Version)
-	obs.ServerName = state.ServerName
 	obs.Chain = state.PeerCertificates
 	_ = tconn.Close()
+
+	// 호스트 이름은 스펙 7.1의 수집 항목이다. ConnectionState().ServerName은
+	// 클라이언트가 보낸 SNI(우리는 안 보냄)라 항상 비므로 쓰지 않는다.
+	obs.Hostname = resolveHostname(ctx, ep.IP, obs.Chain)
 	return obs
+}
+
+// hostnameLookupTimeout은 역방향 DNS 조회 상한이다. best-effort —
+// 폐쇄망에는 역방향 존이 없는 경우가 많아 짧게 자르고 폴백한다.
+const hostnameLookupTimeout = 1 * time.Second
+
+// lookupAddr는 역방향 DNS 조회 함수다. 테스트에서 대체한다.
+var lookupAddr = func(ctx context.Context, ip string) ([]string, error) {
+	return net.DefaultResolver.LookupAddr(ctx, ip)
+}
+
+// resolveHostname은 역방향 DNS(짧은 타임아웃) → 실패 시 리프 인증서 CN 폴백으로
+// 호스트 이름을 구한다. 둘 다 없으면 빈 문자열(대상 hostname은 NULL 허용).
+// PeerCertificates[0]은 TLS 규약상 리프다.
+func resolveHostname(ctx context.Context, ip string, chain []*x509.Certificate) string {
+	lctx, cancel := context.WithTimeout(ctx, hostnameLookupTimeout)
+	defer cancel()
+	if names, err := lookupAddr(lctx, ip); err == nil && len(names) > 0 && names[0] != "" {
+		return strings.TrimSuffix(names[0], ".")
+	}
+	if len(chain) > 0 {
+		return chain[0].Subject.CommonName
+	}
+	return ""
 }
 
 // tlsVersionName은 협상된 TLS 버전을 사람이 읽는 이름으로 바꾼다.

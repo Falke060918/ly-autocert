@@ -407,8 +407,12 @@ components:
         ports:
           type: array
           items: { type: integer }
-        timeout_ms: { type: integer }
-        concurrency: { type: integer }
+        timeout_ms:
+          type: integer
+          description: 요청 입력 원문. 0 = 서버 기본값 적용(클램프 규칙 100~30000ms).
+        concurrency:
+          type: integer
+          description: 요청 입력 원문. 0 = 서버 기본값 적용(클램프 규칙 1~256).
         total_endpoints: { type: integer }
         scanned_endpoints: { type: integer }
         reachable_endpoints:

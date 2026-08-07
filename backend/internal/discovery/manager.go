@@ -99,7 +99,7 @@ func toStoreObs(o Observation) store.EndpointObservation {
 		Port:       o.Port,
 		Reachable:  o.Reachable,
 		TLSVersion: o.TLSVersion,
-		ServerName: o.ServerName,
+		Hostname:   o.Hostname,
 		Chain:      o.Chain,
 	}
 }

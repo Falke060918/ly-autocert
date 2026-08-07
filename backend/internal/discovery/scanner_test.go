@@ -2,6 +2,8 @@ package discovery
 
 import (
 	"context"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"errors"
 	"net"
 	"net/http"
@@ -95,4 +97,41 @@ func TestScanEndpointUnreachable(t *testing.T) {
 	if len(obs.Chain) != 0 {
 		t.Error("expected no certificates from closed port")
 	}
+}
+
+// TestResolveHostname은 호스트 이름 수집(스펙 7.1)을 검증한다:
+// 역방향 DNS 성공 시 그 이름(마침표 제거), 실패 시 리프 인증서 CN 폴백,
+// 둘 다 없으면 빈 문자열. lookupAddr 훅으로 실제 DNS 없이 검증한다.
+func TestResolveHostname(t *testing.T) {
+	orig := lookupAddr
+	t.Cleanup(func() { lookupAddr = orig })
+
+	leaf := &x509.Certificate{Subject: pkix.Name{CommonName: "cn-fallback.example.test"}}
+
+	t.Run("reverse dns wins", func(t *testing.T) {
+		lookupAddr = func(ctx context.Context, ip string) ([]string, error) {
+			return []string{"rdns.example.test."}, nil
+		}
+		if got := resolveHostname(context.Background(), "203.0.113.10", []*x509.Certificate{leaf}); got != "rdns.example.test" {
+			t.Errorf("hostname = %q, want %q", got, "rdns.example.test")
+		}
+	})
+
+	t.Run("falls back to leaf CN on lookup failure", func(t *testing.T) {
+		lookupAddr = func(ctx context.Context, ip string) ([]string, error) {
+			return nil, errors.New("no reverse zone")
+		}
+		if got := resolveHostname(context.Background(), "203.0.113.10", []*x509.Certificate{leaf}); got != "cn-fallback.example.test" {
+			t.Errorf("hostname = %q, want CN fallback", got)
+		}
+	})
+
+	t.Run("empty when no rdns and no chain", func(t *testing.T) {
+		lookupAddr = func(ctx context.Context, ip string) ([]string, error) {
+			return nil, errors.New("no reverse zone")
+		}
+		if got := resolveHostname(context.Background(), "203.0.113.10", nil); got != "" {
+			t.Errorf("hostname = %q, want empty", got)
+		}
+	})
 }
