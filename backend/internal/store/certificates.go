@@ -45,7 +45,7 @@ func New(db *sql.DB) *Store {
 }
 
 // ImportInput은 업로드 1건의 저장 요청이다. Certificates는 파일 내 순서를
-// 유지하며 [0]이 리프(설치 위치를 붙일 대상)다.
+// 유지한다. 설치 위치는 첫 비-CA 인증서(리프)에 붙는다 — 순서 가정 없음.
 type ImportInput struct {
 	Certificates []domain.Certificate
 	FileName     *string // 업로드 원본 파일명 (certificate_locations.file_path)
@@ -117,7 +117,15 @@ func (s *Store) ImportCertificates(ctx context.Context, in ImportInput) (*Import
 	}
 
 	// 리프에만 설치 위치를 붙인다. 체인의 CA는 인벤토리 레코드로만 남는다.
+	// 리프 = 첫 비-CA 인증서 (certparse.Describe가 x509 IsCA를 CertTypeCA로 매핑).
+	// 파일 내 순서가 CA 먼저여도 안전하다. 전부 CA면 [0] 폴백.
 	leaf := res.Certificates[0].Certificate
+	for _, ic := range res.Certificates {
+		if ic.Certificate.CertificateType != domain.CertTypeCA {
+			leaf = ic.Certificate
+			break
+		}
+	}
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO certificate_locations (
 			certificate_id, target_id, location_type, file_path, deployment_status

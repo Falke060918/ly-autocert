@@ -70,6 +70,56 @@ func newTestCert(t *testing.T) domain.Certificate {
 	return certparse.Describe(cert, time.Now())
 }
 
+// newTestChain은 [CA, 리프] 순서(리프가 [0]이 아님)의 체인 픽스처를 만든다.
+func newTestChain(t *testing.T) (ca, leaf domain.Certificate) {
+	t.Helper()
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate ca key: %v", err)
+	}
+	caTmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(100),
+		Subject:               pkix.Name{CommonName: "store-fixture-ca.example.test"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign,
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("create ca certificate: %v", err)
+	}
+	caCert, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatalf("parse ca certificate: %v", err)
+	}
+
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate leaf key: %v", err)
+	}
+	leafTmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(101),
+		Subject:      pkix.Name{CommonName: "store-fixture-leaf.example.test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(90 * 24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{"store-fixture-leaf.example.test"},
+	}
+	leafDER, err := x509.CreateCertificate(rand.Reader, leafTmpl, caCert, &leafKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("create leaf certificate: %v", err)
+	}
+	leafCert, err := x509.ParseCertificate(leafDER)
+	if err != nil {
+		t.Fatalf("parse leaf certificate: %v", err)
+	}
+	now := time.Now()
+	return certparse.Describe(caCert, now), certparse.Describe(leafCert, now)
+}
+
 // TestImportDeduplicatesByFingerprint는 이슈 #3 완료 조건을 검증한다:
 // 동일 인증서를 두 번 업로드해도 Certificate 레코드는 1개이고
 // CertificateLocation만 늘어난다. 업로드마다 AuditEvent가 남는다.
@@ -154,6 +204,51 @@ func TestImportDeduplicatesByFingerprint(t *testing.T) {
 	}
 	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(integrity) {
 		t.Errorf("integrity_hash %q is not lowercase hex 64", integrity)
+	}
+}
+
+// TestImportAttachesLocationToLeaf는 체인이 CA 먼저([0]=CA) 순서로 와도
+// 설치 위치가 리프(IsCA=false)에 붙는지 검증한다.
+func TestImportAttachesLocationToLeaf(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool)
+	ctx := context.Background()
+
+	ca, leaf := newTestChain(t)
+	fileName := "store-fixture-chain.pem"
+	reqID := "test-req-import-leaf"
+
+	t.Cleanup(func() {
+		_, _ = pool.Exec(`DELETE FROM certificates WHERE fingerprint_sha256 IN ($1, $2)`,
+			ca.FingerprintSHA256, leaf.FingerprintSHA256)
+		_, _ = pool.Exec(`DELETE FROM audit_events WHERE request_id = $1`, reqID)
+	})
+
+	res, err := st.ImportCertificates(ctx, ImportInput{
+		Certificates: []domain.Certificate{ca, leaf}, // CA가 [0]
+		FileName:     &fileName,
+		RequestID:    &reqID,
+	})
+	if err != nil {
+		t.Fatalf("import chain: %v", err)
+	}
+
+	var gotCertID string
+	if err := pool.QueryRow(`SELECT certificate_id FROM certificate_locations WHERE id = $1`,
+		res.LocationID).Scan(&gotCertID); err != nil {
+		t.Fatalf("read location: %v", err)
+	}
+	var leafID string
+	for _, ic := range res.Certificates {
+		if ic.Certificate.FingerprintSHA256 == leaf.FingerprintSHA256 {
+			leafID = ic.Certificate.ID
+		}
+	}
+	if leafID == "" {
+		t.Fatal("leaf certificate not in import result")
+	}
+	if gotCertID != leafID {
+		t.Errorf("location attached to certificate %s, want leaf %s", gotCertID, leafID)
 	}
 }
 

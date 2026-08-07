@@ -44,28 +44,34 @@ func handleImportCertificates(st *store.Store) http.HandlerFunc {
 		reqID := requestIDFrom(ctx)
 		srcIP := clientIP(r)
 
+		// 거부된 업로드도 감사 이벤트를 남긴다 (보안 하드 규칙 5). 사유 코드만 기록.
+		auditFailure := func(reason string) {
+			if auditErr := st.RecordImportFailure(ctx, reason, &reqID, srcIP); auditErr != nil {
+				slog.Error("audit: record import failure", "error", auditErr.Error(), "request_id", reqID)
+			}
+		}
+
 		r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
 		data, fileName, err := readUpload(r)
 		if err != nil {
+			auditFailure("invalid_upload")
 			writeError(w, r, http.StatusBadRequest, "invalid_upload",
 				"업로드 본문을 읽을 수 없습니다. multipart/form-data의 file 필드 또는 원시 본문으로 보내십시오.")
 			return
 		}
 		if len(data) == 0 {
+			auditFailure("empty_upload")
 			writeError(w, r, http.StatusBadRequest, "empty_upload", "업로드된 파일이 비어 있습니다.")
 			return
 		}
 
 		certs, err := certparse.Parse(data)
 		if err != nil {
-			// 거부된 업로드도 감사 이벤트를 남긴다 (보안 하드 규칙 5). 사유 코드만 기록.
 			reason := "invalid_certificate"
 			if errors.Is(err, certparse.ErrPrivateKeyFound) {
 				reason = "private_key_rejected"
 			}
-			if auditErr := st.RecordImportFailure(ctx, reason, &reqID, srcIP); auditErr != nil {
-				slog.Error("audit: record import failure", "error", auditErr.Error(), "request_id", reqID)
-			}
+			auditFailure(reason)
 			if reason == "private_key_rejected" {
 				// 개인키는 저장·로그 없이 전체 거부한다 (보안 하드 규칙 1·3).
 				writeError(w, r, http.StatusBadRequest, "private_key_rejected",
