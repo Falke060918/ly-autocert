@@ -356,6 +356,68 @@ paths:
 security:
   - bearerAuth: []
   - cookieAuth: []
+  /api/v1/audit/events:
+    get:
+      operationId: listAuditEvents
+      summary: 감사 로그 조회 (Security Administrator·Auditor 전용)
+      description: 사용자(actor_id)·이벤트 유형·기간으로 필터한다. 최신 이벤트 우선.
+      tags: [audit]
+      parameters:
+        - name: actor_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: event_type
+          in: query
+          schema: { type: string, example: user.login }
+        - name: from
+          in: query
+          description: created_at 하한 (RFC3339)
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          description: created_at 상한 (RFC3339)
+          schema: { type: string, format: date-time }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: 감사 이벤트 목록
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditEventList" }
+        "400":
+          description: 잘못된 파라미터 (UUID/RFC3339/범위)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/audit/verify:
+    get:
+      operationId: verifyAuditChain
+      summary: 감사 로그 무결성 검증 (Security Administrator·Auditor 전용)
+      description: >
+        SHA-256 해시 체인 전체를 재계산해 변조 지점을 id 단위로 특정한다.
+        hash_mismatch는 행 내용 변조, chain_broken은 직전 행과의 연결 단절(중간 삭제 등)이다.
+        꼬리(최신) 이벤트 삭제는 체인만으로 탐지할 수 없으므로 head_hash를 외부 매체에
+        주기적으로 기록해 보완한다.
+      tags: [audit]
+      responses:
+        "200":
+          description: 체인 검증 결과
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditVerifyResult" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
 components:
   securitySchemes:
     bearerAuth:
@@ -610,6 +672,62 @@ components:
         created_at: { type: string, format: date-time }
         started_at: { type: string, format: date-time, nullable: true }
         finished_at: { type: string, format: date-time, nullable: true }
+    AuditEvent:
+      type: object
+      description: 감사 이벤트 (00-spec 7.12·12장). before/after에 민감값 없음.
+      required: [id, event_type, target_type, result, created_at, integrity_hash, prev_hash]
+      properties:
+        id: { type: integer, format: int64 }
+        event_type: { type: string, example: user.login }
+        actor_id: { type: string, format: uuid, nullable: true }
+        target_type: { type: string }
+        target_id: { type: string, nullable: true }
+        request_id: { type: string, nullable: true }
+        before_value: { nullable: true }
+        after_value: { nullable: true }
+        result: { type: string, enum: [success, failure, denied] }
+        source_ip: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        integrity_hash:
+          type: string
+          description: SHA-256 해시 체인 무결성 검증값 (hex 64자)
+        prev_hash:
+          type: string
+          description: 직전 이벤트의 integrity_hash (첫 이벤트는 '0' 64자)
+    AuditEventList:
+      type: object
+      required: [request_id, items, total, page, page_size]
+      properties:
+        request_id: { type: string }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/AuditEvent" }
+        total: { type: integer }
+        page: { type: integer }
+        page_size: { type: integer }
+    AuditVerifyResult:
+      type: object
+      required: [request_id, valid, total_events, invalid, invalid_capped]
+      properties:
+        request_id: { type: string }
+        valid: { type: boolean }
+        total_events: { type: integer, format: int64 }
+        head_id: { type: integer, format: int64, nullable: true }
+        head_hash:
+          type: string
+          nullable: true
+          description: 체인 꼬리 해시 — 외부 기록(anchoring)용
+        invalid:
+          type: array
+          description: 변조 의심 행 (최대 100건)
+          items:
+            type: object
+            required: [id, hash_mismatch, chain_broken]
+            properties:
+              id: { type: integer, format: int64 }
+              hash_mismatch: { type: boolean, description: 행 내용 변조 }
+              chain_broken: { type: boolean, description: 직전 행과 연결 단절 }
+        invalid_capped: { type: boolean }
     Error:
       type: object
       description: 통일 오류 응답 (00-spec 13장)

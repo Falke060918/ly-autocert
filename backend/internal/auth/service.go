@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/audit"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/domain"
 )
 
@@ -24,20 +25,29 @@ var (
 )
 
 // Service는 로컬 계정 인증과 세션 관리를 담당한다.
+// 상태를 바꾸는 메서드(Login 성공·Logout·CreateUser)는 변경과 감사 기록을
+// 단일 트랜잭션으로 묶는다 — 감사 실패 시 변경도 롤백된다 (보안 하드 규칙 5).
 type Service struct {
 	pool       *sql.DB
+	rec        *audit.Recorder
 	sessionTTL time.Duration
 	bcryptCost int
 }
 
+// AuditMeta는 감사 이벤트에 붙일 요청 컨텍스트다 (HTTP 계층에서 채운다).
+type AuditMeta struct {
+	RequestID *string
+	SourceIP  *string
+}
+
 // NewService는 운영 기본값(bcrypt cost 12)으로 Service를 만든다.
-func NewService(pool *sql.DB, sessionTTL time.Duration) *Service {
-	return &Service{pool: pool, sessionTTL: sessionTTL, bcryptCost: bcryptCost}
+func NewService(pool *sql.DB, sessionTTL time.Duration, rec *audit.Recorder) *Service {
+	return &Service{pool: pool, rec: rec, sessionTTL: sessionTTL, bcryptCost: bcryptCost}
 }
 
 // NewServiceForTest는 테스트용으로 bcrypt 비용을 최소로 낮춘다.
-func NewServiceForTest(pool *sql.DB, sessionTTL time.Duration) *Service {
-	return &Service{pool: pool, sessionTTL: sessionTTL, bcryptCost: bcrypt.MinCost}
+func NewServiceForTest(pool *sql.DB, sessionTTL time.Duration, rec *audit.Recorder) *Service {
+	return &Service{pool: pool, rec: rec, sessionTTL: sessionTTL, bcryptCost: bcrypt.MinCost}
 }
 
 const userColumns = `id, username, display_name, password_hash, role, auth_provider,
@@ -53,9 +63,10 @@ func scanUser(row interface{ Scan(...any) error }) (*domain.User, error) {
 	return &u, nil
 }
 
-// Login은 자격 증명을 검증하고 새 세션을 만든다.
+// Login은 자격 증명을 검증하고 새 세션을 만든다. 세션 생성과 user.login 감사
+// 기록은 단일 트랜잭션이다 — 감사에 실패하면 세션도 남지 않는다.
 // 반환된 token은 클라이언트에만 전달한다. 실패 사유는 구분 없이 ErrInvalidCredentials.
-func (s *Service) Login(ctx context.Context, username, password string) (user *domain.User, token string, expiresAt time.Time, err error) {
+func (s *Service) Login(ctx context.Context, username, password string, meta AuditMeta) (user *domain.User, token string, expiresAt time.Time, err error) {
 	row := s.pool.QueryRowContext(ctx,
 		`SELECT `+userColumns+` FROM users WHERE username = $1`, username)
 	u, err := scanUser(row)
@@ -76,11 +87,31 @@ func (s *Service) Login(ctx context.Context, username, password string) (user *d
 		return nil, "", time.Time{}, err
 	}
 	expiresAt = time.Now().UTC().Add(s.sessionTTL)
-	_, err = s.pool.ExecContext(ctx,
+
+	tx, err := s.pool.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, "", time.Time{}, fmt.Errorf("auth: begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO sessions (user_id, token_hash, expires_at) VALUES ($1, $2, $3)`,
 		u.ID, tokenHash, expiresAt)
 	if err != nil {
 		return nil, "", time.Time{}, fmt.Errorf("auth: create session: %w", err)
+	}
+	if err := s.rec.RecordTx(ctx, tx, audit.Event{
+		Type:       "user.login",
+		ActorID:    &u.ID,
+		TargetType: "user",
+		TargetID:   &u.ID,
+		RequestID:  meta.RequestID,
+		Result:     domain.AuditSuccess,
+		SourceIP:   meta.SourceIP,
+	}); err != nil {
+		return nil, "", time.Time{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, "", time.Time{}, fmt.Errorf("auth: commit login: %w", err)
 	}
 	return u, token, expiresAt, nil
 }
@@ -109,19 +140,41 @@ func (s *Service) Authenticate(ctx context.Context, token string) (*domain.User,
 	return u, nil
 }
 
-// Logout은 토큰의 세션을 폐기한다. 이미 없거나 폐기된 세션이어도 에러가 아니다(멱등).
-func (s *Service) Logout(ctx context.Context, token string) error {
-	_, err := s.pool.ExecContext(ctx,
+// Logout은 토큰의 세션을 폐기하고 user.logout 감사 이벤트를 남긴다 — 단일 트랜잭션.
+// 이미 없거나 폐기된 세션이어도 에러가 아니다(멱등).
+func (s *Service) Logout(ctx context.Context, token, actorID string, meta AuditMeta) error {
+	tx, err := s.pool.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("auth: begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+	_, err = tx.ExecContext(ctx,
 		`UPDATE sessions SET revoked_at = now()
 		 WHERE token_hash = $1 AND revoked_at IS NULL`, HashToken(token))
 	if err != nil {
 		return fmt.Errorf("auth: logout: %w", err)
 	}
+	if err := s.rec.RecordTx(ctx, tx, audit.Event{
+		Type:       "user.logout",
+		ActorID:    &actorID,
+		TargetType: "user",
+		TargetID:   &actorID,
+		RequestID:  meta.RequestID,
+		Result:     domain.AuditSuccess,
+		SourceIP:   meta.SourceIP,
+	}); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("auth: commit logout: %w", err)
+	}
 	return nil
 }
 
-// CreateUser는 정책 검사·해시 후 사용자를 만든다. 평문 비밀번호는 저장·로그하지 않는다.
-func (s *Service) CreateUser(ctx context.Context, username, password string, displayName *string, role domain.Role) (*domain.User, error) {
+// CreateUser는 정책 검사·해시 후 사용자를 만들고 user.created 감사 이벤트를 남긴다 —
+// 단일 트랜잭션(감사 실패 시 사용자 생성도 롤백). 평문 비밀번호는 저장·로그하지 않는다.
+// actorID는 생성 주체(부트스트랩은 nil)다.
+func (s *Service) CreateUser(ctx context.Context, username, password string, displayName *string, role domain.Role, actorID *string, meta AuditMeta) (*domain.User, error) {
 	if err := ValidatePassword(password, username); err != nil {
 		return nil, err
 	}
@@ -132,7 +185,12 @@ func (s *Service) CreateUser(ctx context.Context, username, password string, dis
 	if err != nil {
 		return nil, fmt.Errorf("auth: hash password: %w", err)
 	}
-	row := s.pool.QueryRowContext(ctx,
+	tx, err := s.pool.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("auth: begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+	row := tx.QueryRowContext(ctx,
 		`INSERT INTO users (username, display_name, password_hash, role)
 		 VALUES ($1, $2, $3, $4)
 		 RETURNING `+userColumns, username, displayName, hash, role)
@@ -142,6 +200,22 @@ func (s *Service) CreateUser(ctx context.Context, username, password string, dis
 			return nil, ErrUsernameTaken
 		}
 		return nil, fmt.Errorf("auth: create user: %w", err)
+	}
+	// 비밀번호·해시는 감사 값에 넣지 않는다 (보안 하드 규칙 3·4).
+	if err := s.rec.RecordTx(ctx, tx, audit.Event{
+		Type:       "user.created",
+		ActorID:    actorID,
+		TargetType: "user",
+		TargetID:   &u.ID,
+		RequestID:  meta.RequestID,
+		After:      map[string]any{"username": u.Username, "role": u.Role, "is_active": u.IsActive},
+		Result:     domain.AuditSuccess,
+		SourceIP:   meta.SourceIP,
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("auth: commit create user: %w", err)
 	}
 	return u, nil
 }
@@ -180,7 +254,7 @@ func (s *Service) BootstrapAdmin(ctx context.Context, username, password string)
 		slog.Warn("no users exist and BOOTSTRAP_ADMIN_PASSWORD is not set; login is impossible until it is provided")
 		return nil
 	}
-	u, err := s.CreateUser(ctx, username, password, nil, domain.RoleSystemAdministrator)
+	u, err := s.CreateUser(ctx, username, password, nil, domain.RoleSystemAdministrator, nil, AuditMeta{})
 	if err != nil {
 		return fmt.Errorf("auth: bootstrap admin: %w", err)
 	}

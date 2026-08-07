@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/audit"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/auth"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/domain"
 )
@@ -20,6 +19,7 @@ type createUserRequest struct {
 
 // handleCreateUser는 POST /api/v1/users다 (System Administrator 전용 — 00-spec 7.11 사용자 관리).
 // 사용자 생성은 감사 대상이다 (00-spec 7.12: 사용자 및 권한 변경).
+// 생성+감사 기록은 서비스가 단일 트랜잭션으로 처리한다 — 감사 실패 시 생성도 롤백 (이슈 #7).
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	var req createUserRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
@@ -34,7 +34,9 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_role", "role must be one of the 6 defined roles")
 		return
 	}
-	created, err := s.auth.CreateUser(r.Context(), req.Username, req.Password, req.DisplayName, req.Role)
+	actor := userFrom(r.Context())
+	created, err := s.auth.CreateUser(r.Context(), req.Username, req.Password, req.DisplayName, req.Role,
+		&actor.ID, auth.AuditMeta{RequestID: requestIDFrom(r.Context()), SourceIP: clientIP(r)})
 	switch {
 	case errors.Is(err, auth.ErrPasswordTooShort),
 		errors.Is(err, auth.ErrPasswordTooLong),
@@ -47,22 +49,6 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	case err != nil:
 		slog.Error("create user failed", "error", err.Error())
-		writeError(w, r, http.StatusInternalServerError, "internal", "internal error")
-		return
-	}
-	actor := userFrom(r.Context())
-	if err := s.audit.Record(r.Context(), audit.Event{
-		Type:       "user.created",
-		ActorID:    &actor.ID,
-		TargetType: "user",
-		TargetID:   &created.ID,
-		RequestID:  requestIDFrom(r.Context()),
-		// 비밀번호·해시는 감사 값에 넣지 않는다 (보안 하드 규칙 3·4).
-		After:    map[string]any{"username": created.Username, "role": created.Role, "is_active": created.IsActive},
-		Result:   domain.AuditSuccess,
-		SourceIP: clientIP(r),
-	}); err != nil {
-		slog.Error("audit user.created event failed", "error", err.Error())
 		writeError(w, r, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}

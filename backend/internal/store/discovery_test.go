@@ -76,7 +76,7 @@ func TestRecordEndpointResultConcurrentSameIP(t *testing.T) {
 		_, _ = pool.Exec(`DELETE FROM certificates WHERE common_name LIKE 'scan-fixture-%.example.test'`)
 		_, _ = pool.Exec(`DELETE FROM targets WHERE ip_address = $1::inet AND target_type = 'network'`, ip)
 		_, _ = pool.Exec(`DELETE FROM scan_jobs WHERE targets = ARRAY[$1::text]`, ip)
-		_, _ = pool.Exec(`DELETE FROM audit_events WHERE request_id = $1`, reqID)
+		cleanupAuditByRequestID(pool, reqID)
 	})
 
 	jobID, err := st.CreateScanJob(ctx, ScanInput{

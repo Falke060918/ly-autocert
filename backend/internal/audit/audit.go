@@ -1,16 +1,19 @@
-// Package audit는 감사 이벤트(AuditEvent) 기록을 담당한다 (docs/00-spec.md 7.12장).
-// audit_events는 append-only다 — 이 패키지는 INSERT만 한다.
+// Package audit는 감사 이벤트(AuditEvent)의 기록·조회·무결성 검증을 담당한다
+// (docs/00-spec.md 7.12장, 이슈 #7).
+//
+// audit_events는 append-only다 — UPDATE/DELETE/TRUNCATE는 DB 트리거가 차단한다
+// (마이그레이션 0007). 무결성 검증값(prev_hash + integrity_hash SHA-256 해시 체인)은
+// BEFORE INSERT 트리거가 계산하므로 어떤 삽입 경로든 자동으로 체인에 연결된다.
+// 동시 삽입은 트리거의 pg_advisory_xact_lock으로 직렬화된다.
+//
 // before/after에 인증서 본문·개인키·비밀번호 등 민감값을 넣지 않는다 (보안 하드 규칙 3).
 package audit
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/domain"
 )
@@ -28,18 +31,16 @@ type Event struct {
 	SourceIP   *string
 }
 
-// Recorder는 audit_events 테이블에 이벤트를 기록한다.
-type Recorder struct {
-	pool *sql.DB
+// Execer는 *sql.DB와 *sql.Tx를 모두 받기 위한 최소 인터페이스다.
+type Execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
-func NewRecorder(pool *sql.DB) *Recorder {
-	return &Recorder{pool: pool}
-}
-
-// Record는 이벤트를 저장한다. 변경 API는 이 호출이 실패하면 요청 자체를 실패시킨다
-// (보안 하드 규칙 5 — 감사 없는 변경 금지).
-func (r *Recorder) Record(ctx context.Context, e Event) error {
+// Insert는 이벤트 1건을 저장한다. 호출자의 트랜잭션(tx)을 넘기면 본 변경과
+// 원자적으로 커밋된다 — 변경 API는 반드시 같은 트랜잭션으로 기록해 감사 실패 시
+// 변경도 롤백되게 한다 (보안 하드 규칙 5).
+// prev_hash·integrity_hash는 DB 트리거가 채우므로 여기서 넘기지 않는다.
+func Insert(ctx context.Context, ex Execer, e Event) error {
 	before, err := marshalValue(e.Before)
 	if err != nil {
 		return fmt.Errorf("audit: marshal before: %w", err)
@@ -48,19 +49,37 @@ func (r *Recorder) Record(ctx context.Context, e Event) error {
 	if err != nil {
 		return fmt.Errorf("audit: marshal after: %w", err)
 	}
-	createdAt := time.Now().UTC()
-	hash := integrityHash(e, before, after, createdAt)
-	_, err = r.pool.ExecContext(ctx,
+	_, err = ex.ExecContext(ctx,
 		`INSERT INTO audit_events
 		   (event_type, actor_id, target_type, target_id, request_id,
-		    before_value, after_value, result, source_ip, created_at, integrity_hash)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		    before_value, after_value, result, source_ip)
+		 VALUES ($1, $2::uuid, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9::inet)`,
 		e.Type, e.ActorID, e.TargetType, e.TargetID, e.RequestID,
-		before, after, e.Result, e.SourceIP, createdAt, hash)
+		before, after, string(e.Result), e.SourceIP)
 	if err != nil {
 		return fmt.Errorf("audit: insert event: %w", err)
 	}
 	return nil
+}
+
+// Recorder는 audit_events 테이블에 대한 기록·조회·검증 진입점이다.
+type Recorder struct {
+	pool *sql.DB
+}
+
+func NewRecorder(pool *sql.DB) *Recorder {
+	return &Recorder{pool: pool}
+}
+
+// Record는 트랜잭션 없이 이벤트를 저장한다. 상태 변경이 없는 이벤트
+// (로그인 실패, authz.denied 등)에만 쓴다. 변경을 동반하면 RecordTx를 쓴다.
+func (r *Recorder) Record(ctx context.Context, e Event) error {
+	return Insert(ctx, r.pool, e)
+}
+
+// RecordTx는 호출자의 트랜잭션 안에서 이벤트를 저장한다 — 변경+감사 원자성 보장.
+func (r *Recorder) RecordTx(ctx context.Context, tx *sql.Tx, e Event) error {
+	return Insert(ctx, tx, e)
 }
 
 func marshalValue(v any) (*string, error) {
@@ -73,29 +92,4 @@ func marshalValue(v any) (*string, error) {
 	}
 	s := string(b)
 	return &s, nil
-}
-
-// integrityHash는 이벤트 필드의 SHA-256 무결성 검증값이다.
-// 이슈 #7에서 이전 이벤트 해시와 연결(체인)해 변조 탐지를 완성한다.
-func integrityHash(e Event, before, after *string, createdAt time.Time) string {
-	h := sha256.New()
-	write := func(s *string) {
-		if s != nil {
-			h.Write([]byte(*s))
-		}
-		h.Write([]byte{0}) // 필드 경계
-	}
-	write(&e.Type)
-	write(e.ActorID)
-	write(&e.TargetType)
-	write(e.TargetID)
-	write(e.RequestID)
-	write(before)
-	write(after)
-	result := string(e.Result)
-	write(&result)
-	write(e.SourceIP)
-	ts := createdAt.Format(time.RFC3339Nano)
-	write(&ts)
-	return hex.EncodeToString(h.Sum(nil))
 }

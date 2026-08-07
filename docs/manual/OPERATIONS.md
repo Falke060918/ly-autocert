@@ -64,7 +64,25 @@ docker compose logs --since 1h backend   # 최근 1시간
 - 권한 거부 — 허용되지 않은 역할의 API 호출 (`authz.denied`, HTTP 403과 함께)
 - 인증서 업로드 — 성공은 물론 거부(개인키 포함·파싱 실패 등)도 사유 코드와 함께 기록
 
-웹 콘솔 감사 로그 화면과 무결성 검증은 **(예정)** 이다. 그 전까지는 DB에서 직접 조회한다 (읽기만 할 것 — `audit_events`는 추가 전용이며 수정·삭제는 감사 무결성 훼손이다):
+`audit_events`는 **추가 전용(append-only)** 이다. UPDATE/DELETE/TRUNCATE는 DB 트리거가 차단하며, 각 이벤트에는 직전 이벤트와 연결된 SHA-256 해시 체인 무결성 검증값(`prev_hash`/`integrity_hash`)이 기록된다.
+
+**조회 API** — 역할이 `security_administrator` 또는 `auditor`인 계정으로:
+
+```sh
+# 사용자·이벤트 유형·기간 필터 (RFC3339)
+curl -H "Authorization: Bearer <token>" \
+  "http://localhost:8080/api/v1/audit/events?event_type=user.login&from=2026-08-01T00:00:00Z"
+```
+
+**무결성 검증 API** — 체인 전체를 재계산해 변조 지점을 `id` 단위로 특정한다:
+
+```sh
+curl -H "Authorization: Bearer <token>" http://localhost:8080/api/v1/audit/verify
+# valid=false면 invalid[]의 hash_mismatch(행 내용 변조)·chain_broken(중간 삭제) 확인
+```
+
+- 응답의 `head_hash`(체인 꼬리 해시)는 **주기적으로 외부 매체에 기록**할 것을 권장한다. 가장 최근 이벤트들을 통째로 지우는 꼬리 삭제는 체인만으로는 탐지되지 않으며, 외부에 기록해 둔 head_hash와의 대조로만 발견된다.
+- 웹 콘솔 감사 로그 화면은 **(예정)** 이다. DB 직접 조회가 필요하면 읽기만 한다:
 
 ```sh
 docker compose exec db psql -U autocert -d autocert -c \

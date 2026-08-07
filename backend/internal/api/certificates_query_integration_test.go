@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/auth"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/domain"
 )
 
@@ -31,7 +32,7 @@ func TestCertificatesReadAPI(t *testing.T) {
 
 	// 최소 권한 역할(viewer)로 조회 가능해야 한다 (00-spec 7.11).
 	viewerPW := randomPassword(t)
-	if _, err := env.svc.CreateUser(ctx, "inv-viewer", viewerPW, nil, domain.RoleViewer); err != nil {
+	if _, err := env.svc.CreateUser(ctx, "inv-viewer", viewerPW, nil, domain.RoleViewer, nil, auth.AuditMeta{}); err != nil {
 		t.Fatalf("create viewer: %v", err)
 	}
 	viewerToken, status := env.login(t, "inv-viewer", viewerPW)

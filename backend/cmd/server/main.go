@@ -50,7 +50,8 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("migrations applied")
 
-	authSvc := auth.NewService(pool, cfg.SessionTTL)
+	rec := audit.NewRecorder(pool)
+	authSvc := auth.NewService(pool, cfg.SessionTTL, rec)
 	// users가 비어 있으면 초기 관리자를 만든다 (BOOTSTRAP_ADMIN_PASSWORD 필요).
 	if err := authSvc.BootstrapAdmin(ctx, cfg.BootstrapAdminUsername, cfg.BootstrapAdminPassword); err != nil {
 		return err
@@ -58,7 +59,7 @@ func run(logger *slog.Logger) error {
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewServer(pool, authSvc, audit.NewRecorder(pool)),
+		Handler:           api.NewServer(pool, authSvc, rec),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

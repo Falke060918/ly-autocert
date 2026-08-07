@@ -9,14 +9,12 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/audit"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/domain"
 )
 
@@ -152,8 +150,8 @@ func (s *Store) ImportCertificates(ctx context.Context, in ImportInput) (*Import
 			after.DuplicateCount++
 		}
 	}
-	if err := insertAuditEvent(ctx, tx, auditEvent{
-		EventType:  EventCertificateImport,
+	if err := audit.Insert(ctx, tx, audit.Event{
+		Type:       EventCertificateImport,
 		ActorID:    in.ActorID,
 		TargetType: "certificate",
 		TargetID:   &leaf.ID,
@@ -174,8 +172,8 @@ func (s *Store) ImportCertificates(ctx context.Context, in ImportInput) (*Import
 // RecordImportFailure는 거부된 업로드(개인키 포함·파싱 불가)의 감사 이벤트를 남긴다.
 // reason에는 사유 코드만 담는다 — 업로드 내용은 절대 담지 않는다 (보안 하드 규칙 3·5).
 func (s *Store) RecordImportFailure(ctx context.Context, reason string, requestID, sourceIP *string) error {
-	return insertAuditEvent(ctx, s.db, auditEvent{
-		EventType:  EventCertificateImport,
+	return audit.Insert(ctx, s.db, audit.Event{
+		Type:       EventCertificateImport,
 		TargetType: "certificate",
 		RequestID:  requestID,
 		After:      map[string]string{"reason": reason},
@@ -200,60 +198,5 @@ func ensureManualTarget(ctx context.Context, tx *sql.Tx) (string, error) {
 	return id, nil
 }
 
-// auditEvent는 감사 이벤트 삽입 입력이다. After는 JSON 직렬화 가능해야 하며
-// 민감값(인증서 본문·개인키)을 담지 않는다.
-type auditEvent struct {
-	EventType  string
-	ActorID    *string
-	TargetType string
-	TargetID   *string
-	RequestID  *string
-	After      any // nil이면 NULL
-	Result     domain.AuditResult
-	SourceIP   *string
-}
-
-// execer는 *sql.Tx와 *sql.DB를 모두 받기 위한 최소 인터페이스다.
-type execer interface {
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-}
-
-func insertAuditEvent(ctx context.Context, ex execer, ev auditEvent) error {
-	var after []byte
-	if ev.After != nil {
-		b, err := json.Marshal(ev.After)
-		if err != nil {
-			return fmt.Errorf("store: marshal audit after_value: %w", err)
-		}
-		after = b
-	}
-	_, err := ex.ExecContext(ctx, `
-		INSERT INTO audit_events (
-			event_type, actor_id, target_type, target_id, request_id,
-			before_value, after_value, result, source_ip, integrity_hash
-		) VALUES ($1, $2::uuid, $3, $4, $5, NULL, $6::jsonb, $7, $8::inet, $9)`,
-		ev.EventType, ev.ActorID, ev.TargetType, ev.TargetID, ev.RequestID,
-		after, string(ev.Result), ev.SourceIP, integrityHash(ev, after),
-	)
-	if err != nil {
-		return fmt.Errorf("store: insert audit event: %w", err)
-	}
-	return nil
-}
-
-// integrityHash는 이벤트 필드의 SHA-256 단독 해시다(표준 라이브러리 사용).
-// 해시 체인 연결·검증 API는 이슈 #7(감사 로그)에서 구현한다 — 임시 자리값.
-func integrityHash(ev auditEvent, after []byte) string {
-	deref := func(p *string) string {
-		if p == nil {
-			return ""
-		}
-		return *p
-	}
-	canonical := strings.Join([]string{
-		ev.EventType, deref(ev.ActorID), ev.TargetType, deref(ev.TargetID),
-		deref(ev.RequestID), string(after), string(ev.Result), deref(ev.SourceIP),
-	}, "\x00")
-	sum := sha256.Sum256([]byte(canonical))
-	return hex.EncodeToString(sum[:])
-}
+// 감사 이벤트 삽입은 internal/audit.Insert로 일원화됐다 (이슈 #7).
+// 무결성 해시 체인은 DB 트리거(마이그레이션 0007)가 계산한다.
