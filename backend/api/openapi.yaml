@@ -34,8 +34,115 @@ paths:
               example:
                 status: unavailable
                 database: down
+  /api/v1/certificates/import:
+    post:
+      operationId: importCertificates
+      summary: 인증서 파일 업로드 (수동 등록)
+      description: >
+        PEM(체인 포함) 또는 DER 인증서를 업로드한다. SHA-256 fingerprint 기준으로
+        중복을 판정해, 중복이면 새 Certificate를 만들지 않고 설치 위치만 추가한다.
+        개인키가 포함된 업로드는 저장 없이 거부한다. 모든 요청은 감사 이벤트를 남긴다.
+      tags: [certificates]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "201":
+          description: 새 인증서가 1개 이상 등록됨
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportResult"
+        "200":
+          description: 전부 중복 — Certificate는 그대로, 설치 위치만 추가됨
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportResult"
+        "400":
+          description: >
+            잘못된 업로드. code는 invalid_upload / empty_upload /
+            private_key_rejected / invalid_certificate 중 하나.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: 저장 실패
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
   schemas:
+    ImportResult:
+      type: object
+      required: [request_id, imported, location_id]
+      properties:
+        request_id:
+          type: string
+        imported:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImportedCertificate"
+        location_id:
+          type: string
+          format: uuid
+    ImportedCertificate:
+      type: object
+      required:
+        [id, fingerprint_sha256, common_name, not_before, not_after,
+         certificate_type, status, duplicate]
+      properties:
+        id:
+          type: string
+          format: uuid
+        fingerprint_sha256:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        common_name:
+          type: string
+        not_before:
+          type: string
+          format: date-time
+        not_after:
+          type: string
+          format: date-time
+        certificate_type:
+          type: string
+          enum: [server, client, ca, code_signing, email, other]
+        status:
+          type: string
+          enum: [active, expired, revoked, replaced, unknown]
+        duplicate:
+          type: boolean
+          description: true면 fingerprint 중복 — 기존 레코드 재사용
+    Error:
+      type: object
+      required: [error, request_id]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+        request_id:
+          type: string
     Healthz:
       type: object
       required: [status, database]
