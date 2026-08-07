@@ -64,7 +64,7 @@ func NewServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder) http.Ha
 	s.protected("GET /api/v1/audit/verify", s.handleVerifyAuditChain,
 		domain.RoleSecurityAdministrator, domain.RoleAuditor)
 
-	return withRequestID(s.mux)
+	return withSecurityHeaders(withRequestID(s.mux))
 }
 
 // public은 인증 없이 접근 가능한 라우트를 등록한다. 추가는 신중히.

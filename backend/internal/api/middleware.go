@@ -43,6 +43,25 @@ func withRequestID(next http.Handler) http.Handler {
 	})
 }
 
+// withSecurityHeaders는 모든 응답에 API 서버용 보안 헤더를 부여한다.
+// 이 서버는 JSON API 전용이라 브라우저 렌더링 대상이 아니다 — sniffing·프레이밍·
+// 리퍼러 유출을 전부 차단하고, CSP는 응답이 문서로 해석되는 사고에 대비한 방어선이다
+// (페이지용 CSP는 frontend/next.config.ts가 별도로 건다).
+// /api/* 응답은 인증서 메타데이터·세션 등 민감 정보이므로 no-store로 캐시를 금지한다.
+func withSecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			h.Set("Cache-Control", "no-store")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // requestIDFrom은 컨텍스트의 Request ID를 반환한다. 없으면 nil.
 func requestIDFrom(ctx context.Context) *string {
 	if id, ok := ctx.Value(ctxKeyRequestID).(string); ok && id != "" {

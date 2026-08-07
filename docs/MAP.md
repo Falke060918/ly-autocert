@@ -12,7 +12,7 @@
   - `internal/discovery/` — 에이전트리스 네트워크 TLS 스캔. `scanner.go`(crypto/tls 핸드셰이크로 서버 인증서 체인 수집, IP/CIDR·포트 Expand, InsecureSkipVerify는 **수집 전용**, 호스트명은 역방향 DNS 1s → 리프 CN 폴백) + `manager.go`(비동기 Job: 워커풀·상태 머신, 백그라운드는 `context.Background()`). 도달불가·핸드셰이크 실패는 조용히 실패 기록 후 계속
   - `internal/auth/` — 비밀번호 해시(bcrypt cost 12)·정책(12자↑)·세션 토큰(DB엔 SHA-256 해시만)·로그인/사용자 서비스. 초기 관리자는 users 비어 있을 때 `BOOTSTRAP_ADMIN_PASSWORD`로 1회 생성
   - `internal/audit/` — AuditEvent 기록(`Insert`는 pool/tx 겸용)·조회(`List`)·무결성 검증(`Verify`). 변경+감사는 단일 트랜잭션(감사 실패 시 변경도 롤백 — auth 서비스·store 모두). 해시 체인(prev_hash+SHA-256)은 DB BEFORE INSERT 트리거가 계산 — 검증도 같은 SQL 함수(audit_event_hash)로 재계산해 표현 불일치 오탐 없음. 꼬리 삭제는 체인만으로 탐지 불가 → verify 응답 head_hash 외부 기록으로 보완
-  - `internal/api/` — 라우팅·핸들러·미들웨어. 라우트 등록은 `public()`/`protected(roles...)` 둘뿐 — 보호 라우트는 역할 명시 강제(빈 역할은 panic). 모든 응답에 X-Request-ID
+  - `internal/api/` — 라우팅·핸들러·미들웨어. 라우트 등록은 `public()`/`protected(roles...)` 둘뿐 — 보호 라우트는 역할 명시 강제(빈 역할은 panic). 모든 응답에 X-Request-ID + 보안 헤더(nosniff·X-Frame-Options DENY·no-referrer·CSP default-src 'none', `/api/*`는 Cache-Control no-store — `withSecurityHeaders`)
     - 라우트: `/healthz`·`POST /api/v1/auth/login`(public) / logout·me(전 역할) / `GET|POST /api/v1/users`(system_administrator만) / `POST /api/v1/certificates/import`·`POST /api/v1/discovery/scans`(system_administrator·pki_administrator·operator) / `GET /api/v1/certificates`·`GET /api/v1/certificates/summary`·`GET /api/v1/certificates/{id}`·`GET /api/v1/discovery/scans/{id}`(전 역할, 읽기 전용 — 감사 이벤트 없음. summary는 리터럴 세그먼트라 {id}보다 우선 매칭) / `GET /api/v1/audit/events`·`GET /api/v1/audit/verify`(security_administrator·auditor만 — 7.11)
     - `discovery.go` — 스캔 생성(202 즉시 반환)·상태 조회 핸들러. UUID 경로값은 `isUUID`로 검증(잘못된 값은 404, DB `::uuid` 캐스트 500 방지)
   - `migrations/` — SQL 마이그레이션. `go:embed`로 바이너리에 포함되어 **서버 기동 시 자동 적용**
@@ -24,7 +24,7 @@
 - `frontend/` — Next.js (App Router) + TypeScript. 전 화면 클라이언트 fetch (이슈 #8·#9 구현)
   - `app/(app)/` — 인증 셸(사이드바+탑바+AuthProvider): `/`(대시보드 — KPI 8종·만료 구간·임박 표), `/certificates`(목록 — URL 쿼리 구동 검색·필터·정렬·페이지네이션 + 업로드 패널), `/certificates/[id]`(상세 — 위치·tls_version), `/discovery`(스캔 폼 + 2s 폴링. Job 목록 API가 없어 localStorage로 이 브라우저 Job만 추적)
   - `app/login/` — 로그인 (셸 밖). `proxy.ts` — autocert_session 쿠키 없으면 /login 리다이렉트(1차 관문, 실검증은 /auth/me 401)
-  - API 경로: 브라우저는 같은 출처 `/api/*`만 호출 → next.config.ts rewrites가 백엔드로 중계(쿠키 CORS 불요). 프록시 대상은 build-arg `BACKEND_INTERNAL_URL`(compose는 http://backend:8080)로 빌드 시 고정
+  - API 경로: 브라우저는 같은 출처 `/api/*`만 호출 → next.config.ts rewrites가 백엔드로 중계(쿠키 CORS 불요). 프록시 대상은 build-arg `BACKEND_INTERNAL_URL`(compose는 http://backend:8080)로 빌드 시 고정. headers()가 전 페이지에 CSP('self' 기반, script/style만 'unsafe-inline' — Next 인라인 요구, dev만 'unsafe-eval')·nosniff·DENY·no-referrer 부착. HSTS는 HTTP 배포라 주석 처리(HTTPS 전환 시 활성화)
   - `components/ui/` — shadcn/ui (badge/button/card/input/separator/table/label/textarea/select/progress/skeleton/alert)
   - `components/` — app-sidebar, app-topbar(사용자·로그아웃), cert-badges(파생 상태 뱃지·D-day)
   - `lib/` — api.ts(타입+엔드포인트 함수+ApiError), auth.tsx(useAuth·역할 게이트 — 업로드·스캔은 3역할), format.ts
