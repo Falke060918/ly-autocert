@@ -1,5 +1,5 @@
 # MAP — 코드베이스 구조·명령 캐시
-확인일: 2026-08-07
+확인일: 2026-08-08
 
 ## 저장소 구조
 - `backend/` — Go 백엔드
@@ -32,7 +32,8 @@
 - `docker-compose.yml` / `.env.example` — 루트. backend + postgres + frontend
 - `mockup/index.html` — 승인된 4화면 정적 목업 (제품 코드 아님)
 - `docs/` — 00-spec(명세) / 01-plan(기획) / 02-goals(목표) / STATE / GOTCHAS
-  - `docs/manual/` — 고객용 매뉴얼 (INSTALL/OPERATIONS, 미구현 기능은 "(예정)" 표기 — 이슈 완료 시마다 갱신)
+  - 00-spec 15장=Phase 1~5 로드맵, 16장=MVP 제외 목록, 02-goals=성공 기준 7개+M1~M3(Phase 판정 시 대조 출처)
+  - `docs/manual/` — 고객용 매뉴얼 (INSTALL/OPERATIONS — #8·#9 UI 기준 운영 절차 + 지원 사양(3장: 형식·스캔 범위·프록시 구조) 반영. 미구현 기능은 "(예정)" 표기 — 이슈 완료 시마다 갱신)
 
 ## 포트
 - backend: 8080 / PostgreSQL: 5432 / frontend: 3000
