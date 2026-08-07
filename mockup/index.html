@@ -1,0 +1,1482 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<!-- Pretendard (Hangul, variable + dynamic subset) -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@latest/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
+<!-- Geist / Geist Mono (Latin, numerals, code) -->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&display=swap" />
+<meta name="viewport" content="width=1440" />
+<title>INHERIT AutoCert — 인증서 라이프사이클 관리</title>
+<style>
+:root{
+  --font-sans: Geist, Pretendard, sans-serif;
+  --font-mono: "Geist Mono", D2Coding, monospace;
+
+  --bg:#0d1014;
+  --panel:#14181e;
+  --panel-2:#1a1f27;
+  --panel-3:#20262f;
+  --line:#242b35;
+  --line-2:#2e3742;
+  --text:#e6eaf0;
+  --text-2:#a5b0bf;
+  --text-3:#6f7b8c;
+  --accent:#4f8ff0;
+  --accent-dim:#1c2f4d;
+
+  --ok:#3fb950;      --ok-bg:#122a17;   --ok-line:#1f4a29;
+  --warn:#d99427;    --warn-bg:#2e2210; --warn-line:#5a4318;
+  --danger:#f0524d;  --danger-bg:#2e1414;--danger-line:#5c2321;
+  --violet:#a371f7;  --violet-bg:#241a38;--violet-line:#42317a;
+  --neutral-bg:#20262f; --neutral-line:#2e3742;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  font-family:var(--font-sans);
+  background:var(--bg);
+  color:var(--text);
+  font-size:13px;
+  line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+code,pre,kbd,samp,.mono{font-family:var(--font-mono)}
+a{color:inherit;text-decoration:none}
+table{border-collapse:collapse;width:100%}
+
+/* ── view switching (pure CSS radio + :has) ───────────────── */
+.switch{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.view{display:none}
+body:has(#v-dash:checked)   #view-dash,
+body:has(#v-list:checked)   #view-list,
+body:has(#v-detail:checked) #view-detail,
+body:has(#v-disc:checked)   #view-disc{display:block}
+
+/* ── shell ────────────────────────────────────────────────── */
+.app{display:grid;grid-template-columns:236px 1fr;min-height:100vh}
+.side{
+  background:var(--panel);border-right:1px solid var(--line);
+  display:flex;flex-direction:column;position:sticky;top:0;height:100vh;
+}
+.brand{
+  display:flex;align-items:center;gap:10px;
+  padding:16px 18px;border-bottom:1px solid var(--line);
+}
+.brand .mark{
+  width:26px;height:26px;border-radius:7px;flex:0 0 auto;
+  background:linear-gradient(140deg,#4f8ff0,#7a5cf0);
+  display:grid;place-items:center;font-size:13px;font-weight:700;color:#fff;
+}
+.brand .nm{font-size:13.5px;font-weight:650;letter-spacing:-.2px}
+.brand .sub{font-size:10.5px;color:var(--text-3);letter-spacing:.3px}
+.navgrp{padding:14px 10px 6px}
+.navgrp .cap{
+  font-size:10px;letter-spacing:.9px;color:var(--text-3);
+  text-transform:uppercase;padding:0 8px 7px;font-weight:600;
+}
+.nav{display:flex;align-items:center;gap:9px;
+  padding:7px 9px;border-radius:7px;color:var(--text-2);
+  font-size:12.5px;cursor:pointer;user-select:none;margin-bottom:1px;
+}
+.nav:hover{background:var(--panel-2);color:var(--text)}
+.nav .ico{width:15px;text-align:center;font-size:12px;opacity:.85}
+.nav .cnt{margin-left:auto;font-size:10.5px;color:var(--text-3);
+  background:var(--panel-3);border-radius:20px;padding:1px 7px}
+.nav.off{color:var(--text-3);cursor:default;opacity:.55}
+.nav.off:hover{background:transparent;color:var(--text-3)}
+.nav.off .lock{margin-left:auto;font-size:9.5px;color:var(--text-3)}
+body:has(#v-dash:checked) label[for="v-dash"],
+body:has(#v-list:checked) label[for="v-list"],
+body:has(#v-detail:checked) label[for="v-list"],
+body:has(#v-disc:checked) label[for="v-disc"]{
+  background:var(--accent-dim);color:#cfe0ff;font-weight:600;
+  box-shadow:inset 2px 0 0 var(--accent);
+}
+.side-foot{margin-top:auto;padding:12px 16px;border-top:1px solid var(--line);
+  font-size:10.5px;color:var(--text-3);line-height:1.7}
+.side-foot .dot{color:var(--ok)}
+
+.main{display:flex;flex-direction:column;min-width:0}
+.top{
+  height:52px;flex:0 0 auto;display:flex;align-items:center;gap:14px;
+  padding:0 22px;border-bottom:1px solid var(--line);
+  background:var(--panel);position:sticky;top:0;z-index:5;
+}
+.top .ttl{font-size:13px;font-weight:600;letter-spacing:-.1px}
+.top .env{font-size:10.5px;color:var(--text-3);border:1px solid var(--line-2);
+  border-radius:4px;padding:1px 6px}
+.search{
+  margin-left:12px;flex:1;max-width:420px;position:relative;
+}
+.search input{
+  width:100%;background:var(--bg);border:1px solid var(--line-2);
+  border-radius:7px;color:var(--text);font-family:var(--font-sans);
+  font-size:12px;padding:6px 10px 6px 30px;outline:none;
+}
+.search input::placeholder{color:var(--text-3)}
+.search .mg{position:absolute;left:10px;top:5px;color:var(--text-3);font-size:12px}
+.search .kbd{position:absolute;right:8px;top:5px;color:var(--text-3);
+  font-family:var(--font-mono);font-size:10px;border:1px solid var(--line-2);
+  border-radius:4px;padding:0 5px}
+.top-right{margin-left:auto;display:flex;align-items:center;gap:14px}
+.bell{position:relative;font-size:15px;color:var(--text-2);cursor:pointer}
+.bell .badge{
+  position:absolute;top:-4px;right:-7px;background:var(--danger);color:#fff;
+  font-size:9.5px;font-weight:700;border-radius:20px;padding:0 4.5px;
+  line-height:14px;min-width:15px;text-align:center;
+  font-family:var(--font-mono);border:2px solid var(--panel);
+}
+.user{display:flex;align-items:center;gap:9px;cursor:pointer;
+  padding-left:14px;border-left:1px solid var(--line)}
+.user .av{width:26px;height:26px;border-radius:50%;background:var(--panel-3);
+  border:1px solid var(--line-2);display:grid;place-items:center;
+  font-size:11px;font-weight:600;color:var(--text-2)}
+.user .nm{font-size:12px;font-weight:550;line-height:1.25}
+.user .rl{font-size:10px;color:var(--text-3);line-height:1.25}
+.user .car{color:var(--text-3);font-size:9px}
+
+.page{padding:22px 26px 44px;max-width:1400px}
+.phead{display:flex;align-items:flex-end;gap:14px;margin-bottom:18px}
+.phead h1{font-size:19px;font-weight:650;letter-spacing:-.4px}
+.phead .desc{font-size:12px;color:var(--text-3);padding-bottom:2px}
+.phead .right{margin-left:auto;display:flex;gap:8px;align-items:center}
+
+/* ── primitives ───────────────────────────────────────────── */
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px}
+.card-h{display:flex;align-items:center;gap:10px;padding:12px 16px;
+  border-bottom:1px solid var(--line)}
+.card-h h2{font-size:13px;font-weight:600;letter-spacing:-.1px}
+.card-h .sub{font-size:11px;color:var(--text-3)}
+.card-h .right{margin-left:auto;display:flex;gap:8px;align-items:center}
+.btn{
+  font-family:var(--font-sans);font-size:11.5px;color:var(--text-2);
+  background:var(--panel-2);border:1px solid var(--line-2);
+  border-radius:6px;padding:5px 11px;cursor:pointer;white-space:nowrap;
+}
+.btn:hover{background:var(--panel-3);color:var(--text)}
+.btn.pri{background:var(--accent);border-color:#3f7ada;color:#fff;font-weight:600}
+.btn.pri:hover{background:#5f9bf5}
+.btn.dgr{color:#f0a5a2;border-color:var(--danger-line)}
+.btn.sm{padding:3px 8px;font-size:11px}
+.link{color:var(--accent);cursor:pointer}
+.link:hover{text-decoration:underline}
+.muted{color:var(--text-3)}
+.mono-s{font-family:var(--font-mono);font-size:11.5px}
+
+.tag{display:inline-block;font-size:10.5px;color:var(--text-2);
+  background:var(--panel-2);border:1px solid var(--line-2);
+  border-radius:4px;padding:0 6px;line-height:17px;margin-right:4px}
+.badge{display:inline-block;font-size:10.5px;font-weight:600;border-radius:4px;
+  padding:0 7px;line-height:18px;border:1px solid transparent;white-space:nowrap}
+.b-ok{color:var(--ok);background:var(--ok-bg);border-color:var(--ok-line)}
+.b-warn{color:var(--warn);background:var(--warn-bg);border-color:var(--warn-line)}
+.b-danger{color:var(--danger);background:var(--danger-bg);border-color:var(--danger-line)}
+.b-violet{color:var(--violet);background:var(--violet-bg);border-color:var(--violet-line)}
+.b-neutral{color:var(--text-2);background:var(--neutral-bg);border-color:var(--neutral-line)}
+.b-accent{color:#9dc2ff;background:var(--accent-dim);border-color:#2c4a78}
+.dday{font-family:var(--font-mono);font-size:10.5px;font-weight:600;
+  border-radius:4px;padding:0 6px;line-height:18px;display:inline-block;
+  border:1px solid transparent}
+
+/* tables */
+.tbl{font-size:12px}
+.tbl th{
+  text-align:left;font-size:10.5px;font-weight:600;color:var(--text-3);
+  letter-spacing:.3px;padding:8px 10px;border-bottom:1px solid var(--line);
+  white-space:nowrap;background:var(--panel-2);
+}
+.tbl td{padding:9px 10px;border-bottom:1px solid var(--line);
+  color:var(--text-2);vertical-align:middle;white-space:nowrap}
+.tbl tr:last-child td{border-bottom:none}
+.tbl tbody tr:hover td{background:var(--panel-2)}
+.tbl td.st{color:var(--text);font-weight:550}
+.tbl .num{text-align:right;font-family:var(--font-mono);font-size:11.5px}
+.tbl .c{text-align:center}
+input[type=checkbox]{accent-color:var(--accent);width:13px;height:13px;
+  vertical-align:-2px;cursor:pointer}
+
+.grid{display:grid;gap:14px}
+.sec{margin-bottom:16px}
+
+/* ── dashboard ────────────────────────────────────────────── */
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:13px 15px;position:relative;overflow:hidden}
+.kpi::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;
+  background:var(--line-2)}
+.kpi.k-ok::before{background:var(--ok)}
+.kpi.k-warn::before{background:var(--warn)}
+.kpi.k-danger::before{background:var(--danger)}
+.kpi.k-violet::before{background:var(--violet)}
+.kpi .lab{font-size:11px;color:var(--text-3);margin-bottom:7px;
+  display:flex;align-items:center;gap:6px}
+.kpi .val{font-family:var(--font-mono);font-size:25px;font-weight:600;
+  letter-spacing:-.8px;line-height:1.05;color:var(--text)}
+.kpi .val.ok{color:var(--ok)} .kpi .val.warn{color:var(--warn)}
+.kpi .val.danger{color:var(--danger)} .kpi .val.violet{color:var(--violet)}
+.kpi .delta{font-size:10.5px;color:var(--text-3);margin-top:6px;
+  font-family:var(--font-mono)}
+.kpi .delta .up{color:var(--danger)} .kpi .delta .down{color:var(--ok)}
+
+.dash-2{display:grid;grid-template-columns:minmax(0,1fr) 356px;gap:14px;align-items:start}
+.feed{padding:4px 0}
+.feed li{list-style:none;display:flex;gap:11px;padding:10px 16px;
+  border-bottom:1px solid var(--line)}
+.feed li:last-child{border-bottom:none}
+.feed .dot{width:6px;height:6px;border-radius:50%;background:var(--accent);
+  margin-top:6px;flex:0 0 auto;box-shadow:0 0 0 3px var(--accent-dim)}
+.feed .cn{font-size:12px;color:var(--text);font-weight:550}
+.feed .meta{font-size:11px;color:var(--text-3);font-family:var(--font-mono);
+  margin-top:2px}
+.feed .tm{margin-left:auto;font-size:10.5px;color:var(--text-3);
+  font-family:var(--font-mono);white-space:nowrap;padding-top:1px}
+
+.chart{padding:16px}
+.bar-row{display:grid;grid-template-columns:70px 1fr 46px;align-items:center;
+  gap:12px;margin-bottom:11px}
+.bar-row:last-child{margin-bottom:0}
+.bar-row .lb{font-size:11.5px;color:var(--text-2)}
+.bar-track{height:9px;background:var(--panel-3);border-radius:5px;overflow:hidden}
+.bar-fill{height:100%;border-radius:5px}
+.bar-row .vl{font-family:var(--font-mono);font-size:12px;text-align:right;
+  color:var(--text);font-weight:600}
+.chart-foot{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);
+  font-size:10.5px;color:var(--text-3);display:flex;justify-content:space-between}
+
+/* ── filter bar / list ────────────────────────────────────── */
+.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center;
+  padding:11px 14px;background:var(--panel);border:1px solid var(--line);
+  border-radius:10px;margin-bottom:12px}
+.fsearch{position:relative;flex:0 0 268px}
+.fsearch input{width:100%;background:var(--bg);border:1px solid var(--line-2);
+  border-radius:6px;color:var(--text);font-family:var(--font-sans);
+  font-size:12px;padding:6px 10px 6px 28px;outline:none}
+.fsearch input::placeholder{color:var(--text-3)}
+.fsearch .mg{position:absolute;left:9px;top:5px;color:var(--text-3);font-size:12px}
+select{
+  background:var(--bg);border:1px solid var(--line-2);border-radius:6px;
+  color:var(--text-2);font-family:var(--font-sans);font-size:11.5px;
+  padding:6px 8px;outline:none;cursor:pointer;min-width:112px;
+}
+.filters .sep{width:1px;height:22px;background:var(--line);margin:0 2px}
+.filters .rst{margin-left:auto;display:flex;gap:8px;align-items:center}
+.chip-f{font-size:10.5px;color:#9dc2ff;background:var(--accent-dim);
+  border:1px solid #2c4a78;border-radius:20px;padding:2px 8px}
+.chip-f b{font-weight:600}
+.chip-f .x{color:#6f93c8;margin-left:4px;cursor:pointer}
+
+.bulk{display:flex;align-items:center;gap:8px;padding:9px 14px;
+  border-bottom:1px solid var(--line);background:var(--panel-2);font-size:11.5px}
+.bulk .cnt{color:var(--text-2)}
+.bulk .cnt b{color:var(--accent);font-family:var(--font-mono)}
+.bulk .right{margin-left:auto;display:flex;gap:7px}
+.pager{display:flex;align-items:center;gap:6px;padding:11px 14px;
+  border-top:1px solid var(--line);font-size:11.5px;color:var(--text-3)}
+.pager .pg{margin-left:auto;display:flex;gap:4px;align-items:center}
+.pg .p{min-width:26px;height:26px;display:grid;place-items:center;
+  border:1px solid var(--line-2);border-radius:6px;background:var(--panel-2);
+  font-family:var(--font-mono);font-size:11.5px;color:var(--text-2);cursor:pointer}
+.pg .p:hover{background:var(--panel-3);color:var(--text)}
+.pg .p.on{background:var(--accent-dim);border-color:#2c4a78;color:#cfe0ff;font-weight:600}
+.pg .p.dis{opacity:.4;cursor:default}
+.cn-cell{color:var(--text);font-weight:550}
+.owner-2{font-size:10.5px;color:var(--text-3)}
+/* 1440px 기준 열 폭 보정 */
+#view-list .tbl td:nth-child(11){white-space:normal;min-width:98px;line-height:2}
+#view-list .tbl td:nth-child(10){white-space:normal;min-width:88px}
+
+/* ── detail ───────────────────────────────────────────────── */
+.crumb{font-size:11.5px;color:var(--text-3);margin-bottom:9px}
+.crumb .link{color:var(--text-3)}
+.crumb .link:hover{color:var(--accent)}
+.dhead{display:flex;align-items:center;gap:11px;margin-bottom:6px}
+.dhead h1{font-size:20px;font-weight:650;letter-spacing:-.4px;
+  font-family:var(--font-mono)}
+.dhead .right{margin-left:auto;display:flex;gap:8px}
+.dsub{font-size:11.5px;color:var(--text-3);margin-bottom:18px;
+  display:flex;gap:16px;flex-wrap:wrap}
+.dsub b{color:var(--text-2);font-weight:550}
+.d-2{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:14px;align-items:start}
+
+.kv{padding:4px 0}
+.kv .row{display:grid;grid-template-columns:150px 1fr;gap:14px;
+  padding:8px 16px;border-bottom:1px solid var(--line);align-items:baseline}
+.kv .row:last-child{border-bottom:none}
+.kv .k{font-size:11.5px;color:var(--text-3)}
+.kv .v{font-size:12px;color:var(--text);word-break:break-all}
+.kv .v.mono{font-family:var(--font-mono);font-size:11.5px;letter-spacing:-.1px;
+  color:var(--text-2)}
+.kv .v .hint{color:var(--text-3);font-size:11px;margin-left:6px}
+
+.chips{padding:13px 16px;display:flex;flex-wrap:wrap;gap:6px}
+.chip{font-family:var(--font-mono);font-size:11px;color:var(--text-2);
+  background:var(--panel-2);border:1px solid var(--line-2);
+  border-radius:20px;padding:3px 10px}
+.chip.ip{color:#9dc2ff;background:var(--accent-dim);border-color:#2c4a78}
+
+.chain{padding:16px}
+.cnode{display:flex;gap:10px;align-items:flex-start;position:relative}
+.cnode .box{flex:1;background:var(--panel-2);border:1px solid var(--line-2);
+  border-radius:8px;padding:9px 12px}
+.cnode .box .t{font-size:11.5px;color:var(--text);font-weight:550;
+  font-family:var(--font-mono)}
+.cnode .box .m{font-size:10.5px;color:var(--text-3);margin-top:2px}
+.cnode.leaf .box{border-color:#2c4a78;background:var(--accent-dim)}
+.cnode.leaf .box .t{color:#cfe0ff}
+.cnode .rail{width:16px;flex:0 0 16px;color:var(--text-3);font-size:11px;
+  padding-top:9px;text-align:center;font-family:var(--font-mono)}
+.chain .lvl1{margin-left:0}
+.chain .lvl2{margin-left:22px;margin-top:8px}
+.chain .lvl3{margin-left:44px;margin-top:8px}
+
+.pol{padding:6px 0}
+.pol .p{display:flex;gap:9px;padding:8px 16px;border-bottom:1px solid var(--line);
+  align-items:flex-start}
+.pol .p:last-child{border-bottom:none}
+.pol .ic{width:15px;flex:0 0 15px;text-align:center;font-size:11px;padding-top:1px}
+.pol .ic.ok{color:var(--ok)} .pol .ic.bad{color:var(--violet)}
+.pol .nm{font-size:11.5px;color:var(--text-2)}
+.pol .rs{font-size:10.5px;margin-top:2px;font-family:var(--font-mono)}
+.pol .rs.ok{color:var(--text-3)} .pol .rs.bad{color:var(--violet)}
+.pol-sum{display:flex;gap:8px;align-items:center;padding:11px 16px;
+  border-top:1px solid var(--line);font-size:11px;color:var(--text-3)}
+
+/* nested tabs */
+.tabbar{display:flex;gap:2px;padding:0 10px;border-bottom:1px solid var(--line);
+  background:var(--panel-2);border-radius:10px 10px 0 0}
+.tab{font-size:11.5px;color:var(--text-3);padding:10px 14px;cursor:pointer;
+  border-bottom:2px solid transparent;user-select:none}
+.tab:hover{color:var(--text-2)}
+.tpane{display:none}
+body:has(#t-renew:checked)  #pane-renew,
+body:has(#t-deploy:checked) #pane-deploy,
+body:has(#t-audit:checked)  #pane-audit{display:block}
+body:has(#t-renew:checked)  label[for="t-renew"],
+body:has(#t-deploy:checked) label[for="t-deploy"],
+body:has(#t-audit:checked)  label[for="t-audit"]{
+  color:var(--text);font-weight:600;border-bottom-color:var(--accent)}
+
+/* ── discovery ────────────────────────────────────────────── */
+.disc-2{display:grid;grid-template-columns:302px minmax(0,1fr);gap:14px;align-items:start;
+  margin-bottom:14px}
+.form{padding:14px 16px}
+.fld{margin-bottom:13px}
+.fld:last-child{margin-bottom:0}
+.fld label{display:block;font-size:11px;color:var(--text-2);margin-bottom:5px}
+.fld label .req{color:var(--danger);margin-left:3px}
+.fld input[type=text],.fld textarea,.fld select{
+  width:100%;background:var(--bg);border:1px solid var(--line-2);
+  border-radius:6px;color:var(--text);font-size:12px;padding:7px 9px;outline:none;
+}
+.fld input[type=text],.fld textarea{font-family:var(--font-mono);font-size:11.5px}
+.fld textarea{resize:vertical;min-height:78px;line-height:1.65}
+.fld input::placeholder,.fld textarea::placeholder{color:var(--text-3)}
+.fld .hint{font-size:10.5px;color:var(--text-3);margin-top:4px}
+.fld-2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.form-foot{display:flex;gap:8px;padding:13px 16px;border-top:1px solid var(--line);
+  align-items:center}
+.form-foot .btn.pri{flex:1}
+
+.prog{display:flex;align-items:center;gap:7px;min-width:112px}
+.prog .track{flex:1;height:5px;background:var(--panel-3);border-radius:5px;
+  overflow:hidden}
+.prog .fill{height:100%;background:var(--accent);border-radius:5px}
+.prog .pc{font-family:var(--font-mono);font-size:10.5px;color:var(--text-2)}
+.pulse{display:inline-block;width:6px;height:6px;border-radius:50%;
+  background:var(--accent);box-shadow:0 0 0 3px var(--accent-dim);
+  vertical-align:1px;margin-right:5px}
+</style>
+</head>
+<body>
+
+<!-- view state -->
+<input class="switch" type="radio" name="view" id="v-dash" checked />
+<input class="switch" type="radio" name="view" id="v-list" />
+<input class="switch" type="radio" name="view" id="v-detail" />
+<input class="switch" type="radio" name="view" id="v-disc" />
+
+<div class="app">
+
+  <!-- ── sidebar ───────────────────────────────────────────── -->
+  <aside class="side">
+    <div class="brand">
+      <div class="mark">A</div>
+      <div>
+        <div class="nm">INHERIT AutoCert</div>
+        <div class="sub">Certificate Lifecycle Mgmt</div>
+      </div>
+    </div>
+
+    <div class="navgrp">
+      <div class="cap">운영</div>
+      <label class="nav" for="v-dash"><span class="ico">◈</span>대시보드</label>
+      <label class="nav" for="v-list"><span class="ico">▤</span>인증서<span class="cnt">1,284</span></label>
+      <label class="nav" for="v-disc"><span class="ico">◎</span>Discovery<span class="cnt">3</span></label>
+    </div>
+
+    <div class="navgrp">
+      <div class="cap">관리</div>
+      <div class="nav off"><span class="ico">⛨</span>CA 관리<span class="lock">준비 중</span></div>
+      <div class="nav off"><span class="ico">§</span>정책<span class="lock">준비 중</span></div>
+      <div class="nav off"><span class="ico">⚙</span>작업<span class="lock">준비 중</span></div>
+      <div class="nav off"><span class="ico">✓</span>승인함<span class="lock">준비 중</span></div>
+      <div class="nav off"><span class="ico">≡</span>감사 로그<span class="lock">준비 중</span></div>
+    </div>
+
+    <div class="side-foot">
+      <div><span class="dot">●</span> 수집 에이전트 12/12 정상</div>
+      <div>v2.4.1 · 온프레미스 · 폐쇄망</div>
+    </div>
+  </aside>
+
+  <!-- ── main ──────────────────────────────────────────────── -->
+  <div class="main">
+    <header class="top">
+      <div class="ttl">INHERIT AutoCert</div>
+      <div class="env">PROD</div>
+      <div class="search">
+        <span class="mg">⌕</span>
+        <input type="text" placeholder="CN, SAN, Serial, Fingerprint, 서버명으로 검색" />
+        <span class="kbd">Ctrl K</span>
+      </div>
+      <div class="top-right">
+        <div class="bell">🔔<span class="badge">7</span></div>
+        <div class="user">
+          <div class="av">김</div>
+          <div>
+            <div class="nm">김운영</div>
+            <div class="rl">System Administrator</div>
+          </div>
+          <span class="car">▾</span>
+        </div>
+      </div>
+    </header>
+
+<!-- ══ 화면 1 — 대시보드 ═══════════════════════════════════ -->
+<section class="view" id="view-dash">
+  <div class="page">
+    <div class="phead">
+      <h1>대시보드</h1>
+      <div class="desc">전사 인증서 현황 · 마지막 동기화 2026-08-07 09:45</div>
+      <div class="right">
+        <button class="btn">기간: 최근 90일 ▾</button>
+        <button class="btn">보고서 내보내기</button>
+        <button class="btn pri">지금 동기화</button>
+      </div>
+    </div>
+
+    <div class="kpis">
+      <div class="kpi">
+        <div class="lab">전체 인증서</div>
+        <div class="val">1,284</div>
+        <div class="delta"><span class="up">+37</span> 지난 30일</div>
+      </div>
+      <div class="kpi k-danger">
+        <div class="lab">7일 이내 만료</div>
+        <div class="val danger">6</div>
+        <div class="delta">즉시 조치 필요</div>
+      </div>
+      <div class="kpi k-warn">
+        <div class="lab">30일 이내 만료</div>
+        <div class="val warn">41</div>
+        <div class="delta">갱신 요청 12건 진행 중</div>
+      </div>
+      <div class="kpi k-warn">
+        <div class="lab">90일 이내 만료</div>
+        <div class="val">137</div>
+        <div class="delta">전체의 10.7%</div>
+      </div>
+      <div class="kpi k-danger">
+        <div class="lab">이미 만료</div>
+        <div class="val danger">9</div>
+        <div class="delta">최장 경과 D+250</div>
+      </div>
+      <div class="kpi k-violet">
+        <div class="lab">정책 위반</div>
+        <div class="val violet">23</div>
+        <div class="delta">키 길이 4 · 알고리즘 7 · 유효기간 12</div>
+      </div>
+      <div class="kpi k-warn">
+        <div class="lab">자체 서명</div>
+        <div class="val warn">58</div>
+        <div class="delta">내부 CA 이관 대상</div>
+      </div>
+      <div class="kpi">
+        <div class="lab">소유자 미지정</div>
+        <div class="val">112</div>
+        <div class="delta">담당자 지정 필요</div>
+      </div>
+    </div>
+
+    <div class="dash-2 sec">
+      <div class="card">
+        <div class="card-h">
+          <h2>만료 임박 인증서</h2>
+          <span class="sub">30일 이내 · 상위 8건</span>
+          <div class="right">
+            <label class="btn sm" for="v-list">전체 41건 보기</label>
+            <button class="btn sm pri">일괄 갱신 요청</button>
+          </div>
+        </div>
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>Common Name</th><th>만료일</th><th>남은 일수</th>
+              <th>발급 CA</th><th class="num">설치 위치</th><th>소유 부서</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="st"><label class="link" for="v-detail">payment-api.corp.example.com</label></td>
+              <td class="mono-s">2026-08-10</td>
+              <td><span class="dday b-danger">D-3</span></td>
+              <td>INHERIT Issuing CA G2</td><td class="num">4</td><td>결제서비스팀</td>
+              <td><button class="btn sm">갱신</button></td>
+            </tr>
+            <tr>
+              <td class="st"><label class="link" for="v-detail">sso.corp.example.com</label></td>
+              <td class="mono-s">2026-08-11</td>
+              <td><span class="dday b-danger">D-4</span></td>
+              <td>DigiCert TLS RSA CA G1</td><td class="num">2</td><td>인증플랫폼팀</td>
+              <td><button class="btn sm">갱신</button></td>
+            </tr>
+            <tr>
+              <td class="st"><label class="link" for="v-detail">legacy-iis.corp.local</label></td>
+              <td class="mono-s">2026-08-12</td>
+              <td><span class="dday b-danger">D-5</span></td>
+              <td>자체 서명</td><td class="num">1</td><td class="muted">미지정</td>
+              <td><button class="btn sm">갱신</button></td>
+            </tr>
+            <tr>
+              <td class="st"><label class="link" for="v-detail">vpn-gw.corp.example.com</label></td>
+              <td class="mono-s">2026-08-13</td>
+              <td><span class="dday b-danger">D-6</span></td>
+              <td>INHERIT Issuing CA G2</td><td class="num">2</td><td>네트워크운영팀</td>
+              <td><button class="btn sm">갱신</button></td>
+            </tr>
+            <tr>
+              <td class="st"><label class="link" for="v-detail">mail.corp.example.com</label></td>
+              <td class="mono-s">2026-08-14</td>
+              <td><span class="dday b-danger">D-7</span></td>
+              <td>Sectigo RSA DV CA</td><td class="num">3</td><td>협업인프라팀</td>
+              <td><button class="btn sm">갱신</button></td>
+            </tr>
+            <tr>
+              <td class="st"><label class="link" for="v-detail">k8s-ingress.prod.internal</label></td>
+              <td class="mono-s">2026-08-18</td>
+              <td><span class="dday b-warn">D-11</span></td>
+              <td>INHERIT Internal CA G1</td><td class="num">9</td><td>컨테이너플랫폼팀</td>
+              <td><button class="btn sm">갱신</button></td>
+            </tr>
+            <tr>
+              <td class="st"><label class="link" for="v-detail">erp-was.corp.local</label></td>
+              <td class="mono-s">2026-08-21</td>
+              <td><span class="dday b-warn">D-14</span></td>
+              <td>INHERIT Issuing CA G2</td><td class="num">3</td><td>ERP운영팀</td>
+              <td><button class="btn sm">갱신</button></td>
+            </tr>
+            <tr>
+              <td class="st"><label class="link" for="v-detail">monitoring.corp.example.com</label></td>
+              <td class="mono-s">2026-08-25</td>
+              <td><span class="dday b-warn">D-18</span></td>
+              <td>Let's Encrypt R11</td><td class="num">2</td><td>인프라모니터링팀</td>
+              <td><button class="btn sm">갱신</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="grid" style="gap:14px">
+        <div class="card">
+          <div class="card-h"><h2>만료 분포</h2><span class="sub">구간별 누적</span></div>
+          <div class="chart">
+            <div class="bar-row">
+              <div class="lb">7일 이내</div>
+              <div class="bar-track"><div class="bar-fill" style="width:4.4%;background:var(--danger)"></div></div>
+              <div class="vl">6</div>
+            </div>
+            <div class="bar-row">
+              <div class="lb">30일 이내</div>
+              <div class="bar-track"><div class="bar-fill" style="width:29.9%;background:var(--warn)"></div></div>
+              <div class="vl">41</div>
+            </div>
+            <div class="bar-row">
+              <div class="lb">60일 이내</div>
+              <div class="bar-track"><div class="bar-fill" style="width:65%;background:#b8862a"></div></div>
+              <div class="vl">89</div>
+            </div>
+            <div class="bar-row">
+              <div class="lb">90일 이내</div>
+              <div class="bar-track"><div class="bar-fill" style="width:100%;background:var(--accent)"></div></div>
+              <div class="vl">137</div>
+            </div>
+            <div class="chart-foot">
+              <span>이미 만료 9건은 구간에서 제외</span>
+              <span>기준 2026-08-07</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-h">
+            <h2>최근 발견된 인증서</h2>
+            <div class="right"><label class="btn sm" for="v-disc">Discovery</label></div>
+          </div>
+          <ul class="feed">
+            <li>
+              <span class="dot"></span>
+              <div>
+                <div class="cn">kibana.dev.internal</div>
+                <div class="meta">10.20.31.44:5601</div>
+              </div>
+              <div class="tm">09:41</div>
+            </li>
+            <li>
+              <span class="dot"></span>
+              <div>
+                <div class="cn">jenkins.build.internal</div>
+                <div class="meta">10.20.12.8:8443</div>
+              </div>
+              <div class="tm">09:38</div>
+            </li>
+            <li>
+              <span class="dot"></span>
+              <div>
+                <div class="cn">*.stg.corp.example.com</div>
+                <div class="meta">10.30.4.19:443</div>
+              </div>
+              <div class="tm">09:22</div>
+            </li>
+            <li>
+              <span class="dot"></span>
+              <div>
+                <div class="cn">nas-admin.corp.local</div>
+                <div class="meta">10.20.55.7:9443</div>
+              </div>
+              <div class="tm">어제 23:15</div>
+            </li>
+            <li>
+              <span class="dot"></span>
+              <div>
+                <div class="cn">old-proxy.corp.local</div>
+                <div class="meta">10.20.9.201:443</div>
+              </div>
+              <div class="tm">어제 22:58</div>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ 화면 2 — 인증서 목록 ═══════════════════════════════ -->
+<section class="view" id="view-list">
+  <div class="page">
+    <div class="phead">
+      <h1>인증서</h1>
+      <div class="desc">전체 1,284건 · 필터 적용 결과 15건</div>
+      <div class="right">
+        <button class="btn">저장된 뷰: 만료 임박 ▾</button>
+        <button class="btn">열 설정</button>
+        <button class="btn pri">인증서 등록</button>
+      </div>
+    </div>
+
+    <div class="filters">
+      <div class="fsearch">
+        <span class="mg">⌕</span>
+        <input type="text" placeholder="CN / SAN / Serial 검색" value="corp" />
+      </div>
+      <select><option>상태: 전체</option><option>정상</option><option>만료 임박</option><option>만료</option><option>정책 위반</option><option>소유자 미지정</option></select>
+      <select><option>CA: 전체</option><option>INHERIT Issuing CA G2</option><option>INHERIT Internal CA G1</option><option>DigiCert TLS RSA CA G1</option><option>Sectigo RSA DV CA</option><option>Let's Encrypt R11</option><option>자체 서명</option></select>
+      <select><option>환경: 전체</option><option>운영</option><option>스테이징</option><option>개발</option></select>
+      <select><option>소유 부서: 전체</option><option>인프라운영팀</option><option>결제서비스팀</option><option>인증플랫폼팀</option><option>컨테이너플랫폼팀</option><option>미지정</option></select>
+      <select><option>태그: 전체</option><option>운영</option><option>와일드카드</option><option>레거시</option><option>PCI-DSS</option><option>자체서명</option></select>
+      <div class="rst">
+        <span class="chip-f">환경 <b>운영</b><span class="x">✕</span></span>
+        <span class="chip-f">만료 <b>90일 이내</b><span class="x">✕</span></span>
+        <button class="btn sm">초기화</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="bulk">
+        <input type="checkbox" checked />
+        <span class="cnt"><b>3</b>건 선택됨</span>
+        <div class="right">
+          <button class="btn sm">소유자 지정</button>
+          <button class="btn sm">태그 추가</button>
+          <button class="btn sm">갱신 요청</button>
+          <button class="btn sm">CSV 내보내기</button>
+          <button class="btn sm dgr">폐기 요청</button>
+        </div>
+      </div>
+
+      <table class="tbl">
+        <thead>
+          <tr>
+            <th style="width:32px"><input type="checkbox" /></th>
+            <th>Common Name</th>
+            <th class="num">SAN</th>
+            <th>상태</th>
+            <th>만료일</th>
+            <th>키</th>
+            <th>서명 알고리즘</th>
+            <th>발급 CA</th>
+            <th class="num">설치</th>
+            <th>소유자</th>
+            <th>태그</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><input type="checkbox" /></td>
+            <td class="cn-cell"><label class="link" for="v-detail">*.corp.example.com</label></td>
+            <td class="num">3</td>
+            <td><span class="badge b-ok">정상</span></td>
+            <td class="mono-s">2026-03-14 <span class="dday b-neutral">D-219</span></td>
+            <td class="mono-s">RSA 2048</td>
+            <td class="mono-s">SHA256-RSA</td>
+            <td>INHERIT Issuing CA G2</td>
+            <td class="num">18</td>
+            <td>인프라운영팀<div class="owner-2">박정우</div></td>
+            <td><span class="tag">와일드카드</span><span class="tag">운영</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" checked /></td>
+            <td class="cn-cell"><label class="link" for="v-detail">payment-api.corp.example.com</label></td>
+            <td class="num">4</td>
+            <td><span class="badge b-warn">만료 임박</span></td>
+            <td class="mono-s">2026-08-10 <span class="dday b-danger">D-3</span></td>
+            <td class="mono-s">ECDSA P-256</td>
+            <td class="mono-s">SHA256-ECDSA</td>
+            <td>INHERIT Issuing CA G2</td>
+            <td class="num">4</td>
+            <td>결제서비스팀<div class="owner-2">이수현</div></td>
+            <td><span class="tag">PCI-DSS</span><span class="tag">운영</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" /></td>
+            <td class="cn-cell"><label class="link" for="v-detail">api-gw.corp.example.com</label></td>
+            <td class="num">7</td>
+            <td><span class="badge b-ok">정상</span></td>
+            <td class="mono-s">2026-12-02 <span class="dday b-neutral">D-117</span></td>
+            <td class="mono-s">RSA 2048</td>
+            <td class="mono-s">SHA256-RSA</td>
+            <td>DigiCert TLS RSA CA G1</td>
+            <td class="num">6</td>
+            <td>API플랫폼팀<div class="owner-2">최민석</div></td>
+            <td><span class="tag">운영</span><span class="tag">외부공개</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" checked /></td>
+            <td class="cn-cell"><label class="link" for="v-detail">sso.corp.example.com</label></td>
+            <td class="num">2</td>
+            <td><span class="badge b-warn">만료 임박</span></td>
+            <td class="mono-s">2026-08-11 <span class="dday b-danger">D-4</span></td>
+            <td class="mono-s">RSA 4096</td>
+            <td class="mono-s">SHA256-RSA</td>
+            <td>DigiCert TLS RSA CA G1</td>
+            <td class="num">2</td>
+            <td>인증플랫폼팀<div class="owner-2">한지훈</div></td>
+            <td><span class="tag">SSO</span><span class="tag">운영</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" checked /></td>
+            <td class="cn-cell"><label class="link" for="v-detail">mail.corp.example.com</label></td>
+            <td class="num">5</td>
+            <td><span class="badge b-warn">만료 임박</span></td>
+            <td class="mono-s">2026-08-14 <span class="dday b-danger">D-7</span></td>
+            <td class="mono-s">RSA 2048</td>
+            <td class="mono-s">SHA256-RSA</td>
+            <td>Sectigo RSA DV CA</td>
+            <td class="num">3</td>
+            <td>협업인프라팀<div class="owner-2">윤서영</div></td>
+            <td><span class="tag">메일</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" /></td>
+            <td class="cn-cell"><label class="link" for="v-detail">k8s-ingress.prod.internal</label></td>
+            <td class="num">12</td>
+            <td><span class="badge b-violet">정책 위반</span></td>
+            <td class="mono-s">2026-08-18 <span class="dday b-warn">D-11</span></td>
+            <td class="mono-s">RSA 2048</td>
+            <td class="mono-s">SHA256-RSA</td>
+            <td>INHERIT Internal CA G1</td>
+            <td class="num">9</td>
+            <td>컨테이너플랫폼팀<div class="owner-2">정태현</div></td>
+            <td><span class="tag">K8s</span><span class="tag">운영</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" /></td>
+            <td class="cn-cell"><label class="link" for="v-detail">legacy-iis.corp.local</label></td>
+            <td class="num">1</td>
+            <td><span class="badge b-danger">만료</span></td>
+            <td class="mono-s">2026-07-29 <span class="dday b-danger">D+9</span></td>
+            <td class="mono-s">RSA 1024</td>
+            <td class="mono-s" style="color:var(--violet)">SHA1-RSA</td>
+            <td>자체 서명</td>
+            <td class="num">1</td>
+            <td class="muted">미지정</td>
+            <td><span class="tag">레거시</span><span class="tag">IIS</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" /></td>
+            <td class="cn-cell"><label class="link" for="v-detail">jenkins.build.internal</label></td>
+            <td class="num">2</td>
+            <td><span class="badge b-violet">정책 위반</span></td>
+            <td class="mono-s">2027-01-08 <span class="dday b-neutral">D-154</span></td>
+            <td class="mono-s">RSA 2048</td>
+            <td class="mono-s" style="color:var(--violet)">SHA1-RSA</td>
+            <td>INHERIT Internal CA G1</td>
+            <td class="num">1</td>
+            <td>개발지원팀<div class="owner-2">김도윤</div></td>
+            <td><span class="tag">CI</span><span class="tag">개발</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" /></td>
+            <td class="cn-cell"><label class="link" for="v-detail">vpn-gw.corp.example.com</label></td>
+            <td class="num">3</td>
+            <td><span class="badge b-warn">만료 임박</span></td>
+            <td class="mono-s">2026-08-13 <span class="dday b-danger">D-6</span></td>
+            <td class="mono-s">ECDSA P-384</td>
+            <td class="mono-s">SHA384-ECDSA</td>
+            <td>INHERIT Issuing CA G2</td>
+            <td class="num">2</td>
+            <td>네트워크운영팀<div class="owner-2">오세진</div></td>
+            <td><span class="tag">VPN</span><span class="tag">운영</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" /></td>
+            <td class="cn-cell"><label class="link" for="v-detail">nas-admin.corp.local</label></td>
+            <td class="num">1</td>
+            <td><span class="badge b-violet">정책 위반</span></td>
+            <td class="mono-s">2029-06-30 <span class="dday b-neutral">D-1058</span></td>
+            <td class="mono-s">RSA 2048</td>
+            <td class="mono-s">SHA256-RSA</td>
+            <td>자체 서명</td>
+            <td class="num">1</td>
+            <td class="muted">미지정</td>
+            <td><span class="tag">자체서명</span><span class="tag">스토리지</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" /></td>
+            <td class="cn-cell"><label class="link" for="v-detail">grafana.stg.internal</label></td>
+            <td class="num">2</td>
+            <td><span class="badge b-ok">정상</span></td>
+            <td class="mono-s">2026-11-19 <span class="dday b-neutral">D-104</span></td>
+            <td class="mono-s">ECDSA P-256</td>
+            <td class="mono-s">SHA256-ECDSA</td>
+            <td>INHERIT Internal CA G1</td>
+            <td class="num">2</td>
+            <td>인프라모니터링팀<div class="owner-2">서지안</div></td>
+            <td><span class="tag">스테이징</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" /></td>
+            <td class="cn-cell"><label class="link" for="v-detail">erp-was.corp.local</label></td>
+            <td class="num">4</td>
+            <td><span class="badge b-warn">만료 임박</span></td>
+            <td class="mono-s">2026-08-21 <span class="dday b-warn">D-14</span></td>
+            <td class="mono-s">RSA 2048</td>
+            <td class="mono-s">SHA256-RSA</td>
+            <td>INHERIT Issuing CA G2</td>
+            <td class="num">3</td>
+            <td>ERP운영팀<div class="owner-2">남기훈</div></td>
+            <td><span class="tag">ERP</span><span class="tag">운영</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" /></td>
+            <td class="cn-cell"><label class="link" for="v-detail">*.stg.corp.example.com</label></td>
+            <td class="num">3</td>
+            <td><span class="badge b-neutral">소유자 미지정</span></td>
+            <td class="mono-s">2027-02-05 <span class="dday b-neutral">D-182</span></td>
+            <td class="mono-s">RSA 2048</td>
+            <td class="mono-s">SHA256-RSA</td>
+            <td>INHERIT Issuing CA G2</td>
+            <td class="num">5</td>
+            <td class="muted">미지정</td>
+            <td><span class="tag">와일드카드</span><span class="tag">스테이징</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" /></td>
+            <td class="cn-cell"><label class="link" for="v-detail">old-proxy.corp.local</label></td>
+            <td class="num">1</td>
+            <td><span class="badge b-danger">만료</span></td>
+            <td class="mono-s">2025-11-30 <span class="dday b-danger">D+250</span></td>
+            <td class="mono-s">RSA 1024</td>
+            <td class="mono-s" style="color:var(--violet)">MD5-RSA</td>
+            <td>자체 서명</td>
+            <td class="num">1</td>
+            <td class="muted">미지정</td>
+            <td><span class="tag">레거시</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" /></td>
+            <td class="cn-cell"><label class="link" for="v-detail">monitoring.corp.example.com</label></td>
+            <td class="num">2</td>
+            <td><span class="badge b-warn">만료 임박</span></td>
+            <td class="mono-s">2026-08-25 <span class="dday b-warn">D-18</span></td>
+            <td class="mono-s">ECDSA P-256</td>
+            <td class="mono-s">SHA256-ECDSA</td>
+            <td>Let's Encrypt R11</td>
+            <td class="num">2</td>
+            <td>인프라모니터링팀<div class="owner-2">서지안</div></td>
+            <td><span class="tag">운영</span></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="pager">
+        <span>1,284건 중 1–15 표시</span>
+        <select style="min-width:88px;margin-left:10px"><option>15줄</option><option>50줄</option><option>100줄</option></select>
+        <div class="pg">
+          <span class="p dis">‹</span>
+          <span class="p on">1</span><span class="p">2</span><span class="p">3</span>
+          <span class="p">4</span><span class="p">5</span>
+          <span class="muted" style="padding:0 4px">…</span>
+          <span class="p">86</span>
+          <span class="p">›</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ 화면 3 — 인증서 상세 ═══════════════════════════════ -->
+<section class="view" id="view-detail">
+  <div class="page">
+    <div class="crumb">
+      <label class="link" for="v-list">인증서</label> ›
+      <span>운영</span> ›
+      <span style="color:var(--text-2)">k8s-ingress.prod.internal</span>
+    </div>
+
+    <div class="dhead">
+      <h1>k8s-ingress.prod.internal</h1>
+      <span class="badge b-violet">정책 위반</span>
+      <span class="badge b-warn">만료 임박</span>
+      <span class="dday b-warn">D-11</span>
+      <div class="right">
+        <button class="btn pri">갱신 요청</button>
+        <button class="btn">소유자 지정</button>
+        <button class="btn">배포 재실행</button>
+        <button class="btn dgr">폐기 요청</button>
+      </div>
+    </div>
+    <div class="dsub">
+      <span>인증서 ID <b class="mono-s">CERT-000481</b></span>
+      <span>최근 검증 <b>2026-08-07 06:05</b></span>
+      <span>설치 위치 <b>9</b>곳</span>
+      <span>자동 갱신 <b style="color:var(--warn)">사용 안 함</b></span>
+    </div>
+
+    <div class="d-2">
+      <!-- left column -->
+      <div class="grid" style="gap:14px">
+        <div class="card">
+          <div class="card-h">
+            <h2>기본 정보</h2>
+            <div class="right">
+              <button class="btn sm">PEM 다운로드</button>
+              <button class="btn sm">체인 포함 내보내기</button>
+            </div>
+          </div>
+          <div class="kv">
+            <div class="row"><div class="k">Subject DN</div>
+              <div class="v mono">CN=k8s-ingress.prod.internal, OU=Container Platform, O=INHERIT Corp., L=Seoul, C=KR</div></div>
+            <div class="row"><div class="k">Issuer DN</div>
+              <div class="v mono">CN=INHERIT Internal CA G1, OU=PKI Operations, O=INHERIT Corp., C=KR</div></div>
+            <div class="row"><div class="k">Serial Number</div>
+              <div class="v mono">3A:7F:1C:0B:94:E2:55:D8:61:04:AF:33:9C:7E:12:60</div></div>
+            <div class="row"><div class="k">SHA-256 Fingerprint</div>
+              <div class="v mono">9F:2B:74:AC:0E:31:D5:68:BA:47:19:C3:F0:8D:5E:22:6A:B1:34:97:DE:05:8C:71:23:F4:6B:90:AD:1E:52:C8</div></div>
+            <div class="row"><div class="k">유효기간</div>
+              <div class="v mono">2025-07-17 09:12:03 UTC ~ 2026-08-18 09:12:03 UTC
+                <span class="hint">총 397일</span></div></div>
+            <div class="row"><div class="k">공개키</div>
+              <div class="v mono">RSA 2048 bit <span class="hint">exponent 65537</span></div></div>
+            <div class="row"><div class="k">서명 알고리즘</div>
+              <div class="v mono">SHA256-RSA</div></div>
+            <div class="row"><div class="k">인증서 유형</div>
+              <div class="v">서버 인증서 <span class="hint">TLS Web Server Authentication</span></div></div>
+            <div class="row"><div class="k">환경</div>
+              <div class="v">운영 <span class="badge b-neutral" style="margin-left:4px">PROD</span></div></div>
+            <div class="row"><div class="k">소유 부서 · 담당자</div>
+              <div class="v">컨테이너플랫폼팀 · 정태현 <span class="hint">taehyun.jung@corp.example.com</span></div></div>
+            <div class="row"><div class="k">자동 갱신</div>
+              <div class="v"><span class="badge b-warn">사용 안 함</span>
+                <span class="hint">정책상 필수 — 설정 필요</span></div></div>
+            <div class="row"><div class="k">태그</div>
+              <div class="v"><span class="tag">K8s</span><span class="tag">운영</span><span class="tag">내부CA</span></div></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-h">
+            <h2>SAN (Subject Alternative Name)</h2>
+            <span class="sub">12개 중 8개 표시</span>
+            <div class="right"><button class="btn sm">전체 보기</button></div>
+          </div>
+          <div class="chips">
+            <span class="chip">k8s-ingress.prod.internal</span>
+            <span class="chip">*.apps.prod.internal</span>
+            <span class="chip">argocd.prod.internal</span>
+            <span class="chip">harbor.prod.internal</span>
+            <span class="chip">grafana.prod.internal</span>
+            <span class="chip">prometheus.prod.internal</span>
+            <span class="chip ip">10.30.11.20</span>
+            <span class="chip ip">10.30.11.21</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-h">
+            <h2>설치 위치</h2>
+            <span class="sub">9곳 · 재배포 필요 1 · 실패 1</span>
+            <div class="right">
+              <button class="btn sm">위치 추가</button>
+              <button class="btn sm pri">전체 재배포</button>
+            </div>
+          </div>
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>대상 서버</th><th>유형</th><th>경로 / 저장소</th>
+                <th>서비스</th><th class="num">포트</th><th>최근 검증</th><th>배포 상태</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="st">k8s-prod-ing-01</td><td><span class="tag">K8s Secret</span></td>
+                <td class="mono-s">prod/ingress-tls</td><td class="mono-s">ingress-nginx</td>
+                <td class="num">443</td><td class="mono-s">08-07 06:00</td>
+                <td><span class="badge b-ok">배포 완료</span></td>
+              </tr>
+              <tr>
+                <td class="st">k8s-prod-ing-02</td><td><span class="tag">K8s Secret</span></td>
+                <td class="mono-s">prod/ingress-tls</td><td class="mono-s">ingress-nginx</td>
+                <td class="num">443</td><td class="mono-s">08-07 06:00</td>
+                <td><span class="badge b-ok">배포 완료</span></td>
+              </tr>
+              <tr>
+                <td class="st">lb-edge-01</td><td><span class="tag">Nginx</span></td>
+                <td class="mono-s">/etc/nginx/ssl/k8s-ingress.pem</td><td class="mono-s">nginx</td>
+                <td class="num">443</td><td class="mono-s">08-07 06:02</td>
+                <td><span class="badge b-ok">배포 완료</span></td>
+              </tr>
+              <tr>
+                <td class="st">lb-edge-02</td><td><span class="tag">Nginx</span></td>
+                <td class="mono-s">/etc/nginx/ssl/k8s-ingress.pem</td><td class="mono-s">nginx</td>
+                <td class="num">443</td><td class="mono-s">08-05 06:02</td>
+                <td><span class="badge b-warn">재배포 필요</span></td>
+              </tr>
+              <tr>
+                <td class="st">argocd-gw-01</td><td><span class="tag">Java KeyStore</span></td>
+                <td class="mono-s">/opt/argocd/conf/keystore.jks</td><td class="mono-s">argocd-server</td>
+                <td class="num">8443</td><td class="mono-s">08-07 06:05</td>
+                <td><span class="badge b-ok">배포 완료</span></td>
+              </tr>
+              <tr>
+                <td class="st">harbor-reg-01</td><td><span class="tag">Nginx</span></td>
+                <td class="mono-s">/etc/harbor/ssl/server.crt</td><td class="mono-s">harbor-proxy</td>
+                <td class="num">443</td><td class="mono-s">08-07 06:05</td>
+                <td><span class="badge b-ok">배포 완료</span></td>
+              </tr>
+              <tr>
+                <td class="st">mon-gw-01</td><td><span class="tag">Java KeyStore</span></td>
+                <td class="mono-s">/opt/grafana/conf/grafana.jks</td><td class="mono-s">grafana</td>
+                <td class="num">3000</td><td class="mono-s">08-07 06:06</td>
+                <td><span class="badge b-ok">배포 완료</span></td>
+              </tr>
+              <tr>
+                <td class="st">win-mgmt-01</td><td><span class="tag">IIS</span></td>
+                <td class="mono-s">로컬 컴퓨터\개인</td><td class="mono-s">mgmt-portal</td>
+                <td class="num">443</td><td class="mono-s">08-04 21:30</td>
+                <td><span class="badge b-danger">실패</span></td>
+              </tr>
+              <tr>
+                <td class="st">win-mgmt-02</td><td><span class="tag">IIS</span></td>
+                <td class="mono-s">로컬 컴퓨터\개인</td><td class="mono-s">mgmt-portal</td>
+                <td class="num">443</td><td class="mono-s">08-07 06:08</td>
+                <td><span class="badge b-ok">배포 완료</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- right column -->
+      <div class="grid" style="gap:14px">
+        <div class="card">
+          <div class="card-h"><h2>인증서 체인</h2><span class="sub">3단계 · 검증 통과</span></div>
+          <div class="chain">
+            <div class="cnode lvl1">
+              <div class="box">
+                <div class="t">INHERIT Root CA G1</div>
+                <div class="m">Root CA · RSA 4096 · 만료 2035-01-01</div>
+              </div>
+            </div>
+            <div class="cnode lvl2">
+              <div class="rail">└─</div>
+              <div class="box">
+                <div class="t">INHERIT Internal CA G1</div>
+                <div class="m">Intermediate CA · RSA 4096 · 만료 2030-06-18</div>
+              </div>
+            </div>
+            <div class="cnode lvl3 leaf">
+              <div class="rail">└─</div>
+              <div class="box">
+                <div class="t">k8s-ingress.prod.internal</div>
+                <div class="m">End-entity · RSA 2048 · 만료 2026-08-18 (D-11)</div>
+              </div>
+            </div>
+            <div class="chart-foot">
+              <span>체인 무결성 검증 통과</span>
+              <span>OCSP: good · 2026-08-07 06:05</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-h">
+            <h2>정책 평가</h2>
+            <span class="sub">기준: 사내 PKI 표준 v3</span>
+            <div class="right"><span class="badge b-violet">위반 2</span></div>
+          </div>
+          <div class="pol">
+            <div class="p"><div class="ic ok">✓</div><div>
+              <div class="nm">최소 키 길이 2048 이상</div>
+              <div class="rs ok">RSA 2048 — 통과</div></div></div>
+            <div class="p"><div class="ic ok">✓</div><div>
+              <div class="nm">서명 알고리즘 SHA-256 이상</div>
+              <div class="rs ok">SHA256-RSA — 통과</div></div></div>
+            <div class="p"><div class="ic ok">✓</div><div>
+              <div class="nm">승인된 CA에서 발급</div>
+              <div class="rs ok">INHERIT Internal CA G1 — 통과</div></div></div>
+            <div class="p"><div class="ic ok">✓</div><div>
+              <div class="nm">SAN 필수 등록</div>
+              <div class="rs ok">12개 등록 — 통과</div></div></div>
+            <div class="p"><div class="ic ok">✓</div><div>
+              <div class="nm">소유 부서·담당자 지정</div>
+              <div class="rs ok">컨테이너플랫폼팀 · 정태현 — 통과</div></div></div>
+            <div class="p"><div class="ic bad">▲</div><div>
+              <div class="nm">최대 유효기간 200일</div>
+              <div class="rs bad">위반: 397일 (기준 초과 197일)</div></div></div>
+            <div class="p"><div class="ic bad">▲</div><div>
+              <div class="nm">자동 갱신 필수 설정</div>
+              <div class="rs bad">위반: 자동 갱신 사용 안 함</div></div></div>
+          </div>
+          <div class="pol-sum">
+            <span>통과 5 · 위반 2</span>
+            <button class="btn sm" style="margin-left:auto">예외 신청</button>
+            <button class="btn sm">정책 보기</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <input class="switch" type="radio" name="dtab" id="t-renew" checked />
+    <input class="switch" type="radio" name="dtab" id="t-deploy" />
+    <input class="switch" type="radio" name="dtab" id="t-audit" />
+
+    <div class="card" style="margin-top:14px">
+      <div class="tabbar">
+        <label class="tab" for="t-renew">갱신 이력</label>
+        <label class="tab" for="t-deploy">배포 이력</label>
+        <label class="tab" for="t-audit">감사 이력</label>
+      </div>
+
+      <div class="tpane" id="pane-renew">
+        <table class="tbl">
+          <thead><tr><th>요청 일시</th><th>유형</th><th>요청자</th><th>승인자</th><th>발급 CA</th><th>결과</th><th>비고</th></tr></thead>
+          <tbody>
+            <tr><td class="mono-s">2025-07-17 09:10</td><td>정기 갱신</td><td>정태현</td><td>김운영</td><td>INHERIT Internal CA G1</td><td><span class="badge b-ok">성공</span></td><td class="muted">유효기간 397일로 발급</td></tr>
+            <tr><td class="mono-s">2024-06-14 11:02</td><td>정기 갱신</td><td>정태현</td><td>김운영</td><td>INHERIT Internal CA G1</td><td><span class="badge b-ok">성공</span></td><td class="muted">SAN 2개 추가</td></tr>
+            <tr><td class="mono-s">2024-06-13 17:44</td><td>정기 갱신</td><td>정태현</td><td class="muted">—</td><td>INHERIT Internal CA G1</td><td><span class="badge b-danger">실패</span></td><td class="muted">CSR SAN 형식 오류</td></tr>
+            <tr><td class="mono-s">2023-05-30 10:21</td><td>최초 발급</td><td>정태현</td><td>김운영</td><td>INHERIT Internal CA G1</td><td><span class="badge b-ok">성공</span></td><td class="muted">신규 등록</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="tpane" id="pane-deploy">
+        <table class="tbl">
+          <thead><tr><th>실행 일시</th><th>대상</th><th>유형</th><th>실행자</th><th>소요</th><th>결과</th><th>메시지</th></tr></thead>
+          <tbody>
+            <tr><td class="mono-s">2026-08-07 06:08</td><td>win-mgmt-02</td><td><span class="tag">IIS</span></td><td>스케줄러</td><td class="mono-s">4.2s</td><td><span class="badge b-ok">성공</span></td><td class="muted">바인딩 갱신 완료</td></tr>
+            <tr><td class="mono-s">2026-08-04 21:30</td><td>win-mgmt-01</td><td><span class="tag">IIS</span></td><td>스케줄러</td><td class="mono-s">30.0s</td><td><span class="badge b-danger">실패</span></td><td class="muted">WinRM 연결 시간 초과</td></tr>
+            <tr><td class="mono-s">2026-08-07 06:05</td><td>argocd-gw-01</td><td><span class="tag">Java KeyStore</span></td><td>스케줄러</td><td class="mono-s">6.8s</td><td><span class="badge b-ok">성공</span></td><td class="muted">keystore 교체 후 재기동</td></tr>
+            <tr><td class="mono-s">2026-08-07 06:00</td><td>k8s-prod-ing-01,02</td><td><span class="tag">K8s Secret</span></td><td>스케줄러</td><td class="mono-s">2.1s</td><td><span class="badge b-ok">성공</span></td><td class="muted">Secret 갱신 · 무중단</td></tr>
+            <tr><td class="mono-s">2026-08-05 06:02</td><td>lb-edge-02</td><td><span class="tag">Nginx</span></td><td>스케줄러</td><td class="mono-s">1.4s</td><td><span class="badge b-warn">부분 성공</span></td><td class="muted">reload 미수행 — 재배포 필요</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="tpane" id="pane-audit">
+        <table class="tbl">
+          <thead><tr><th>일시</th><th>행위자</th><th>동작</th><th>대상</th><th>출발 IP</th><th>결과</th></tr></thead>
+          <tbody>
+            <tr><td class="mono-s">2026-08-07 09:12</td><td>김운영</td><td>인증서 상세 조회</td><td class="mono-s">CERT-000481</td><td class="mono-s">10.10.3.51</td><td><span class="badge b-ok">허용</span></td></tr>
+            <tr><td class="mono-s">2026-08-06 18:40</td><td>정태현</td><td>태그 수정</td><td class="mono-s">CERT-000481</td><td class="mono-s">10.10.7.22</td><td><span class="badge b-ok">허용</span></td></tr>
+            <tr><td class="mono-s">2026-08-06 14:03</td><td>배포 서비스</td><td>개인키 열람</td><td class="mono-s">KEY-000481</td><td class="mono-s">10.10.0.9</td><td><span class="badge b-ok">허용</span></td></tr>
+            <tr><td class="mono-s">2026-08-05 11:27</td><td>김도윤</td><td>PEM 내보내기</td><td class="mono-s">CERT-000481</td><td class="mono-s">10.10.9.14</td><td><span class="badge b-danger">거부</span></td></tr>
+            <tr><td class="mono-s">2026-08-01 08:00</td><td>정책 엔진</td><td>정책 재평가</td><td class="mono-s">CERT-000481</td><td class="mono-s">127.0.0.1</td><td><span class="badge b-violet">위반 2건</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ 화면 4 — Discovery ════════════════════════════════ -->
+<section class="view" id="view-disc">
+  <div class="page">
+    <div class="phead">
+      <h1>Discovery</h1>
+      <div class="desc">네트워크 대역 스캔으로 미등록 인증서를 찾아냅니다</div>
+      <div class="right">
+        <button class="btn">스캔 대상 목록</button>
+        <button class="btn">제외 대역 관리</button>
+      </div>
+    </div>
+
+    <div class="disc-2">
+      <div class="card">
+        <div class="card-h"><h2>스캔 대상 등록</h2></div>
+        <div class="form">
+          <div class="fld">
+            <label>스캔 이름<span class="req">*</span></label>
+            <input type="text" value="운영망 DMZ 정기 스캔" />
+          </div>
+          <div class="fld">
+            <label>IP / CIDR 대역<span class="req">*</span></label>
+            <textarea spellcheck="false">10.20.0.0/24
+10.30.4.0/23
+10.30.11.0/24
+172.16.8.10-172.16.8.240</textarea>
+            <div class="hint">한 줄에 하나씩 · CIDR, 단일 IP, 범위 표기 지원</div>
+          </div>
+          <div class="fld">
+            <label>포트 목록<span class="req">*</span></label>
+            <input type="text" value="443, 8443, 9443, 636, 5601" />
+            <div class="hint">쉼표로 구분 · 최대 32개</div>
+          </div>
+          <div class="fld-2">
+            <div class="fld">
+              <label>타임아웃 (초)</label>
+              <input type="text" value="5" />
+            </div>
+            <div class="fld">
+              <label>동시 연결 수</label>
+              <input type="text" value="64" />
+            </div>
+          </div>
+          <div class="fld">
+            <label>스캔 주기</label>
+            <select>
+              <option>매주 (월요일 02:00)</option>
+              <option>1회 (즉시 실행)</option>
+              <option>매일 (02:00)</option>
+            </select>
+          </div>
+          <div class="fld">
+            <label>수집 에이전트</label>
+            <select>
+              <option>agent-dmz-01 (10.20.0.9)</option>
+              <option>agent-core-02 (10.10.0.9)</option>
+              <option>agent-dev-01 (10.40.0.9)</option>
+            </select>
+          </div>
+          <div class="fld">
+            <label><input type="checkbox" checked /> 신규 인증서 발견 시 알림 발송</label>
+            <label style="margin-top:6px"><input type="checkbox" checked /> 자동으로 인벤토리에 등록</label>
+          </div>
+        </div>
+        <div class="form-foot">
+          <button class="btn pri">스캔 시작</button>
+          <button class="btn">예약만 저장</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-h">
+          <h2>스캔 작업</h2>
+          <span class="sub">실행 중 1 · 대기 1 · 최근 완료 3</span>
+          <div class="right">
+            <button class="btn sm">새로고침</button>
+            <button class="btn sm">전체 이력</button>
+          </div>
+        </div>
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>작업명</th><th>대역</th><th style="width:150px">상태</th>
+              <th class="num">호스트</th><th class="num">발견</th><th class="num">신규</th>
+              <th>시작 시각</th><th>소요</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="st"><span class="pulse"></span>운영망 DMZ 정기 스캔</td>
+              <td class="mono-s">10.20.0.0/24 외 3</td>
+              <td><div class="prog"><span class="badge b-accent">실행 중</span>
+                <div class="track"><div class="fill" style="width:68%"></div></div>
+                <span class="pc">68%</span></div></td>
+              <td class="num">174 / 256</td><td class="num">61</td><td class="num">5</td>
+              <td class="mono-s">08-07 09:20</td><td class="mono-s">00:25:41</td>
+            </tr>
+            <tr>
+              <td class="st">개발망 전수 스캔</td>
+              <td class="mono-s">10.40.0.0/22</td>
+              <td><span class="badge b-neutral">대기 중</span></td>
+              <td class="num">—</td><td class="num">—</td><td class="num">—</td>
+              <td class="mono-s">08-07 10:00 예약</td><td class="mono-s">—</td>
+            </tr>
+            <tr>
+              <td class="st">코어망 주간 스캔</td>
+              <td class="mono-s">10.10.0.0/22</td>
+              <td><span class="badge b-ok">완료</span></td>
+              <td class="num">1,024</td><td class="num">412</td><td class="num">3</td>
+              <td class="mono-s">08-05 02:00</td><td class="mono-s">01:12:08</td>
+            </tr>
+            <tr>
+              <td class="st">스테이징 대역 스캔</td>
+              <td class="mono-s">10.30.4.0/23</td>
+              <td><span class="badge b-ok">완료</span></td>
+              <td class="num">512</td><td class="num">137</td><td class="num">1</td>
+              <td class="mono-s">08-04 02:00</td><td class="mono-s">00:38:52</td>
+            </tr>
+            <tr>
+              <td class="st">지사망 스캔 (부산)</td>
+              <td class="mono-s">172.16.8.0/24</td>
+              <td><span class="badge b-danger">실패</span></td>
+              <td class="num">36 / 256</td><td class="num">9</td><td class="num">0</td>
+              <td class="mono-s">08-03 02:00</td><td class="mono-s">00:04:11</td>
+            </tr>
+            <tr>
+              <td class="st">레거시 서버 스캔</td>
+              <td class="mono-s">10.20.55.0/24</td>
+              <td><span class="badge b-ok">완료</span></td>
+              <td class="num">256</td><td class="num">88</td><td class="num">7</td>
+              <td class="mono-s">08-01 02:00</td><td class="mono-s">00:21:33</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-h">
+        <h2>최근 스캔 결과</h2>
+        <span class="sub">운영망 DMZ 정기 스캔 · 61건 중 10건 표시</span>
+        <div class="right">
+          <button class="btn sm">신규만 보기</button>
+          <button class="btn sm">CSV 내보내기</button>
+          <button class="btn sm pri">선택 항목 인벤토리 등록</button>
+        </div>
+      </div>
+      <table class="tbl">
+        <thead>
+          <tr>
+            <th style="width:32px"><input type="checkbox" /></th>
+            <th>IP:포트</th><th>호스트명</th><th>Common Name</th><th>Issuer</th>
+            <th>만료일</th><th>TLS</th><th>구분</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><input type="checkbox" checked /></td>
+            <td class="mono-s">10.20.31.44:5601</td><td>kibana-dev-01</td>
+            <td class="cn-cell">kibana.dev.internal</td><td>자체 서명</td>
+            <td class="mono-s">2027-04-02</td><td class="mono-s">TLS 1.2</td>
+            <td><span class="badge b-accent">신규</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" checked /></td>
+            <td class="mono-s">10.20.12.8:8443</td><td>build-master-01</td>
+            <td class="cn-cell">jenkins.build.internal</td><td>INHERIT Internal CA G1</td>
+            <td class="mono-s">2027-01-08</td><td class="mono-s">TLS 1.2</td>
+            <td><span class="badge b-accent">신규</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" /></td>
+            <td class="mono-s">10.30.4.19:443</td><td>stg-lb-01</td>
+            <td class="cn-cell">*.stg.corp.example.com</td><td>INHERIT Issuing CA G2</td>
+            <td class="mono-s">2027-02-05</td><td class="mono-s">TLS 1.3</td>
+            <td><span class="badge b-neutral">기존</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" checked /></td>
+            <td class="mono-s">10.20.55.7:9443</td><td>nas-01</td>
+            <td class="cn-cell">nas-admin.corp.local</td><td>자체 서명</td>
+            <td class="mono-s">2029-06-30</td><td class="mono-s">TLS 1.2</td>
+            <td><span class="badge b-accent">신규</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" checked /></td>
+            <td class="mono-s">10.20.9.201:443</td><td>old-proxy-01</td>
+            <td class="cn-cell">old-proxy.corp.local</td><td>자체 서명</td>
+            <td class="mono-s" style="color:var(--danger)">2025-11-30</td>
+            <td class="mono-s" style="color:var(--violet)">TLS 1.0</td>
+            <td><span class="badge b-accent">신규</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" /></td>
+            <td class="mono-s">10.30.11.20:443</td><td>k8s-prod-ing-01</td>
+            <td class="cn-cell">k8s-ingress.prod.internal</td><td>INHERIT Internal CA G1</td>
+            <td class="mono-s">2026-08-18</td><td class="mono-s">TLS 1.3</td>
+            <td><span class="badge b-neutral">기존</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" /></td>
+            <td class="mono-s">10.30.11.21:443</td><td>k8s-prod-ing-02</td>
+            <td class="cn-cell">k8s-ingress.prod.internal</td><td>INHERIT Internal CA G1</td>
+            <td class="mono-s">2026-08-18</td><td class="mono-s">TLS 1.3</td>
+            <td><span class="badge b-neutral">기존</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" checked /></td>
+            <td class="mono-s">10.20.7.65:636</td><td>ldap-02</td>
+            <td class="cn-cell">ldap.corp.local</td><td>자체 서명</td>
+            <td class="mono-s">2026-09-30</td><td class="mono-s">TLS 1.2</td>
+            <td><span class="badge b-accent">신규</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" /></td>
+            <td class="mono-s">10.20.3.11:443</td><td>dmz-gw-01</td>
+            <td class="cn-cell">api-gw.corp.example.com</td><td>DigiCert TLS RSA CA G1</td>
+            <td class="mono-s">2026-12-02</td><td class="mono-s">TLS 1.3</td>
+            <td><span class="badge b-neutral">기존</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" /></td>
+            <td class="mono-s">10.20.44.90:8443</td><td>win-legacy-03</td>
+            <td class="cn-cell">legacy-iis.corp.local</td><td>자체 서명</td>
+            <td class="mono-s" style="color:var(--danger)">2026-07-29</td>
+            <td class="mono-s" style="color:var(--violet)">TLS 1.1</td>
+            <td><span class="badge b-neutral">기존</span></td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="pager">
+        <span>61건 중 1–10 표시 · 신규 5건</span>
+        <div class="pg">
+          <span class="p dis">‹</span>
+          <span class="p on">1</span><span class="p">2</span><span class="p">3</span>
+          <span class="p">4</span><span class="p">5</span><span class="p">6</span>
+          <span class="p">7</span>
+          <span class="p">›</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+  </div><!-- /.main -->
+</div><!-- /.app -->
+</body>
+</html>
