@@ -10,6 +10,13 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Table,
@@ -20,7 +27,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { canManageInventory, useAuth } from "@/lib/auth";
-import { createScan, getScan, type ScanJob } from "@/lib/api";
+import { createScan, getScan, listSensors, type ScanJob, type Sensor } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 
 /** 이 브라우저에서 시작한 스캔 Job id 목록 (서버에는 목록 API가 없다 — Phase 1 범위). */
@@ -222,13 +229,34 @@ function ScanJobRow({ job }: { job?: ScanJob }) {
   );
 }
 
+/** 실행기 선택에서 "서버 직접"을 뜻하는 값 — SelectItem은 빈 문자열을 못 쓴다. */
+const EXECUTOR_SERVER = "server";
+
 function ScanForm({ onCreated }: { onCreated: (jobId: string) => void }) {
   const [targets, setTargets] = React.useState("");
   const [ports, setPorts] = React.useState("443");
   const [timeoutMs, setTimeoutMs] = React.useState("");
   const [concurrency, setConcurrency] = React.useState("");
+  const [executor, setExecutor] = React.useState(EXECUTOR_SERVER);
+  const [sensors, setSensors] = React.useState<Sensor[]>([]);
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
+
+  // 실행기 후보 — active 센서만 위임 대상이 된다.
+  React.useEffect(() => {
+    let cancelled = false;
+    listSensors()
+      .then((res) => {
+        if (!cancelled)
+          setSensors(res.items.filter((s) => s.status === "active"));
+      })
+      .catch(() => {
+        // 센서 목록을 못 가져와도 서버 직접 실행은 가능하다.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -253,6 +281,7 @@ function ScanForm({ onCreated }: { onCreated: (jobId: string) => void }) {
       if (portList.length > 0) req.ports = portList;
       if (timeoutMs.trim()) req.timeout_ms = Number.parseInt(timeoutMs, 10);
       if (concurrency.trim()) req.concurrency = Number.parseInt(concurrency, 10);
+      if (executor !== EXECUTOR_SERVER) req.sensor_id = executor;
       const accepted = await createScan(req);
       onCreated(accepted.job_id);
     } catch (err) {
@@ -284,6 +313,25 @@ function ScanForm({ onCreated }: { onCreated: (jobId: string) => void }) {
             />
             <p className="text-xs text-muted-foreground">
               한 줄에 하나씩 · CIDR 또는 단일 IP
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="scan-executor">실행기</Label>
+            <Select value={executor} onValueChange={setExecutor}>
+              <SelectTrigger id="scan-executor" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={EXECUTOR_SERVER}>서버 직접</SelectItem>
+                {sensors.map((s) => (
+                  <SelectItem key={s.id} value={s.id}>
+                    센서 · {s.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              서버가 도달할 수 없는 세그먼트는 그곳에 배치한 센서를 선택하십시오.
             </p>
           </div>
           <div className="space-y-2">
