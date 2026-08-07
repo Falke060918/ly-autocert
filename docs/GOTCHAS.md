@@ -87,3 +87,15 @@ Fix: skills are immune since the array syncs `.claude/skills` wholesale (a4bc58e
 Cause: two sessions processed the same user feedback in parallel; both rewrote the same orchestrator.md bullet — push was rejected and the rebase needed a semantic (not textual) merge.
 Fix: `git fetch` and check ahead/behind before authoring template-rule commits; on conflict, merge both rule sets' obligations instead of picking a side.
 (last recurrence: 2026-08)
+
+## Project stack
+
+**shadcn CLI v3 has no --base-color flag; non-interactive init fails**
+Cause: CLI v3 replaced it with explicit base/preset flags.
+Fix: `npx shadcn init -b radix -p nova --yes` (-b base, -p preset)
+(last recurrence: 2026-08)
+
+**`go mod tidy` fails with a toolchain error after adding pgx/v5**
+Cause: pgx/v5 v5.10+ requires Go >=1.25; go.mod pinned lower (1.23).
+Fix: set `go 1.25` in go.mod.
+(last recurrence: 2026-08)
