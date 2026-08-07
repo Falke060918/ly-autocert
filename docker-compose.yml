@@ -35,8 +35,9 @@ services:
     build:
       context: ./frontend
       args:
-        # NEXT_PUBLIC_* 값은 빌드 시점에 번들에 고정되므로 environment가 아니라 build args로 넘긴다.
-        NEXT_PUBLIC_API_URL: http://localhost:8080
+        # 프록시 대상은 rewrites 설정에 빌드 시점 고정되므로 environment가 아니라 build args로 넘긴다.
+        # 브라우저 → frontend(/api/*) → backend 중계 구조라 컨테이너 내부 주소를 쓴다.
+        BACKEND_INTERNAL_URL: http://backend:8080
     ports:
       - "3000:3000"
     depends_on:

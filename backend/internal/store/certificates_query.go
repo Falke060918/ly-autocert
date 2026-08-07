@@ -48,6 +48,8 @@ type ListCertificatesInput struct {
 	Types             []domain.CertificateType
 	Expired           *bool  // 파생 상태: not_after 기준 만료 여부
 	ExpiresWithinDays *int   // 파생 상태: 오늘부터 N일 이내 만료(이미 만료된 것 제외)
+	SelfSigned        *bool  // 파생 상태: subject_dn = issuer_dn (이슈 #8 대시보드 이동용)
+	Unowned           *bool  // 파생 상태: owner_id IS NULL
 	SortField         string // listSortColumns 키. 빈 값이면 not_after
 	SortDesc          bool
 	Page              int // 1부터
@@ -167,6 +169,20 @@ func buildListWhere(in ListCertificatesInput) (conds []string, args []any) {
 		ph := arg(*in.ExpiresWithinDays)
 		conds = append(conds, fmt.Sprintf(
 			"not_after >= now() AND not_after < now() + %s * interval '1 day'", ph))
+	}
+	if in.SelfSigned != nil {
+		if *in.SelfSigned {
+			conds = append(conds, "subject_dn = issuer_dn")
+		} else {
+			conds = append(conds, "subject_dn <> issuer_dn")
+		}
+	}
+	if in.Unowned != nil {
+		if *in.Unowned {
+			conds = append(conds, "owner_id IS NULL")
+		} else {
+			conds = append(conds, "owner_id IS NOT NULL")
+		}
 	}
 	return conds, args
 }

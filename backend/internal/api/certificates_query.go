@@ -54,7 +54,8 @@ func splitMulti(vals []string) []string {
 }
 
 // parseListParams는 목록 쿼리 파라미터를 검증해 store 입력으로 변환한다.
-// 파라미터: q, status, type, expired, expires_within_days, sort, order, page, page_size.
+// 파라미터: q, status, type, expired, expires_within_days, self_signed, unowned,
+// sort, order, page, page_size.
 func parseListParams(r *http.Request) (store.ListCertificatesInput, *paramError) {
 	q := r.URL.Query()
 	in := store.ListCertificatesInput{Page: 1, PageSize: 50}
@@ -91,6 +92,20 @@ func parseListParams(r *http.Request) (store.ListCertificatesInput, *paramError)
 			return in, &paramError{"invalid_expired", "expired는 true 또는 false여야 합니다."}
 		}
 		in.Expired = &b
+	}
+	if v := q.Get("self_signed"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return in, &paramError{"invalid_self_signed", "self_signed는 true 또는 false여야 합니다."}
+		}
+		in.SelfSigned = &b
+	}
+	if v := q.Get("unowned"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return in, &paramError{"invalid_unowned", "unowned는 true 또는 false여야 합니다."}
+		}
+		in.Unowned = &b
 	}
 	if v := q.Get("expires_within_days"); v != "" {
 		n, err := strconv.Atoi(v)

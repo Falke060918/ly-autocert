@@ -31,6 +31,9 @@ export function AppSidebar() {
         </div>
       </div>
       <nav className="flex flex-col gap-1 p-3">
+        <div className="px-3 pb-1 text-xs font-medium text-muted-foreground/70">
+          운영
+        </div>
         {NAV_ITEMS.map(({ href, label, icon: Icon }) => (
           <Link
             key={href}
@@ -45,6 +48,21 @@ export function AppSidebar() {
             <Icon className="size-4" />
             {label}
           </Link>
+        ))}
+      </nav>
+      {/* Phase 2+ 영역 — 목업의 잠금 표시를 유지한다 (설계상 확장점). */}
+      <nav className="flex flex-col gap-1 p-3 pt-1" aria-label="준비 중 메뉴">
+        <div className="px-3 pb-1 text-xs font-medium text-muted-foreground/70">
+          관리
+        </div>
+        {["CA 관리", "정책", "작업", "감사 로그"].map((label) => (
+          <div
+            key={label}
+            className="flex items-center justify-between rounded-md px-3 py-2 text-sm text-muted-foreground/50"
+          >
+            {label}
+            <span className="text-xs">준비 중</span>
+          </div>
         ))}
       </nav>
     </aside>

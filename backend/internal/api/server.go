@@ -50,6 +50,8 @@ func NewServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder) http.Ha
 	// (Viewer의 "제한된 조회" 세분화는 필드 제한 정의가 생기는 시점에). 읽기 전용이라
 	// 감사 이벤트는 남기지 않는다 (7.12 기록 대상에 조회 없음; 내보내기는 범위 외).
 	s.protected("GET /api/v1/certificates", handleListCertificates(st), domain.AllRoles...)
+	// 리터럴 세그먼트가 {id} 와일드카드보다 우선 매칭된다 (Go 1.22+ ServeMux 규칙).
+	s.protected("GET /api/v1/certificates/summary", handleCertificateSummary(st), domain.AllRoles...)
 	s.protected("GET /api/v1/certificates/{id}", handleGetCertificate(st), domain.AllRoles...)
 	// 스캔 생성은 인벤토리를 바꾸므로 관리자·운영자급만. 상태 조회는 읽기 전용이라 전 역할.
 	s.protected("POST /api/v1/discovery/scans", handleCreateScan(disc),
