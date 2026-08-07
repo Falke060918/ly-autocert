@@ -16,6 +16,7 @@ import (
 
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/audit"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/auth"
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/discovery"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/domain"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/store"
 )
@@ -30,6 +31,7 @@ type Server struct {
 // NewServer는 모든 라우트가 등록된 HTTP 핸들러를 반환한다.
 func NewServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder) http.Handler {
 	st := store.New(pool)
+	disc := discovery.NewManager(st)
 	s := &Server{mux: http.NewServeMux(), auth: authSvc, audit: rec}
 
 	// 비보호 라우트: 헬스체크와 로그인뿐이다.
@@ -44,6 +46,10 @@ func NewServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder) http.Ha
 	// 업로드는 인벤토리 변경이므로 관리자·운영자급만 (00-spec 7.11).
 	s.protected("POST /api/v1/certificates/import", handleImportCertificates(st),
 		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
+	// 스캔 생성은 인벤토리를 바꾸므로 관리자·운영자급만. 상태 조회는 읽기 전용이라 전 역할.
+	s.protected("POST /api/v1/discovery/scans", handleCreateScan(disc),
+		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
+	s.protected("GET /api/v1/discovery/scans/{id}", handleGetScan(st), domain.AllRoles...)
 
 	return withRequestID(s.mux)
 }
