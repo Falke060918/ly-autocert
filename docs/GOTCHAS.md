@@ -29,8 +29,7 @@ Fix: write dangerous-command patterns in the generalized form with a leading `*`
 
 **Session-start markers (`RTK-MISSING` etc.) get missed and the user's task is handled first**
 Cause: markers are text signals with no enforcement, and the user message right after them grabs the attention.
-Fix: check the markers in the session-start output **before** handling the user's request.
-(last recurrence: 2026-07)
+Fix: check the markers in the session-start output **before** handling the user's request. (last recurrence: 2026-07)
 
 **Fixed a hook but the session-start marker does not appear**
 Cause: hooks in `.claude/settings.json` are loaded only at session start. `/clear` empties only the conversation context and does not re-read hooks.
@@ -93,4 +92,9 @@ Fix: set `go 1.25` in go.mod.
 **Parallel `go test ./...` wipes sibling packages' test schema**
 Cause: the db package's migration test runs up/down/up against TEST_DATABASE_URL; default package-level parallelism lets its down step drop tables other packages' integration tests are using mid-run.
 Fix: always run `go test -p 1 ./...` (serial packages) against the dedicated autocert_test DB.
+(last recurrence: 2026-08)
+
+**List sort tests fail: uppercase sorts before lowercase**
+Cause: postgres:16-alpine defaults to C collation, so string ORDER BY is byte-order ('AutoCert' < 'app-01') — locale-aware expectations are wrong.
+Fix: write test expectations against C collation (or ORDER BY lower(col) if locale order is a product requirement).
 (last recurrence: 2026-08)
