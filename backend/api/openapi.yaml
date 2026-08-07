@@ -297,6 +297,62 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/discovery/scans:
+    post:
+      operationId: createDiscoveryScan
+      summary: 네트워크 TLS 스캔 시작 (비동기)
+      description: >
+        IP/CIDR 목록과 포트로 에이전트리스 TLS 스캔 Job을 만든다. 즉시 job_id를 반환하고(202)
+        실제 스캔은 백그라운드에서 돈다. 도달 가능한 TLS 엔드포인트의 인증서를 fingerprint
+        기준으로 중복 판정해 인벤토리에 저장한다. 자기서명·만료 인증서도 수집한다(수집 전용,
+        검증하지 않음). 생성·완료는 감사 이벤트를 남긴다. 허용 역할은
+        system_administrator·pki_administrator·operator다.
+      tags: [discovery]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScanRequest" }
+      responses:
+        "202":
+          description: 스캔 Job 생성됨 (백그라운드 실행)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScanAccepted" }
+        "400":
+          description: 잘못된 대상·포트 또는 범위 초과
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/discovery/scans/{id}:
+    get:
+      operationId: getDiscoveryScan
+      summary: 스캔 Job 상태·진행률·결과 요약 조회
+      tags: [discovery]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 스캔 Job 상태
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScanJob" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: 존재하지 않는 Job
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 security:
   - bearerAuth: []
   - cookieAuth: []
@@ -483,6 +539,73 @@ components:
         department_id: { type: string, format: uuid, nullable: true }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+    ScanRequest:
+      type: object
+      description: 네트워크 TLS 스캔 입력 (00-spec 7.1)
+      required: [targets]
+      properties:
+        targets:
+          type: array
+          description: IP 또는 CIDR 목록 (예 "10.0.0.5", "10.0.0.0/24")
+          items: { type: string }
+        ports:
+          type: array
+          description: 스캔할 포트 목록. 미지정 시 [443].
+          items: { type: integer, minimum: 1, maximum: 65535 }
+        timeout_ms:
+          type: integer
+          description: 엔드포인트별 타임아웃(ms). 미지정 시 기본값으로 클램프(100~30000).
+        concurrency:
+          type: integer
+          description: 동시 연결 수. 미지정 시 기본값으로 클램프(1~256).
+    ScanAccepted:
+      type: object
+      required: [job_id, status, total_endpoints]
+      properties:
+        job_id: { type: string, format: uuid }
+        status: { type: string, enum: [pending] }
+        total_endpoints:
+          type: integer
+          description: 펼쳐진 (IP, 포트) 조합 수
+        request_id: { type: string }
+    ScanJob:
+      type: object
+      description: 스캔 Job 상태·진행률·결과 요약
+      required:
+        [id, status, targets, ports, total_endpoints, scanned_endpoints,
+         reachable_endpoints, certificates_found, certificates_new, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [pending, running, completed, failed]
+        targets:
+          type: array
+          items: { type: string }
+        ports:
+          type: array
+          items: { type: integer }
+        timeout_ms:
+          type: integer
+          description: 요청 입력 원문. 0 = 서버 기본값 적용(클램프 규칙 100~30000ms).
+        concurrency:
+          type: integer
+          description: 요청 입력 원문. 0 = 서버 기본값 적용(클램프 규칙 1~256).
+        total_endpoints: { type: integer }
+        scanned_endpoints: { type: integer }
+        reachable_endpoints:
+          type: integer
+          description: TLS 핸드셰이크에 성공해 인증서를 수집한 엔드포인트 수
+        certificates_found:
+          type: integer
+          description: 수집된 인증서 총 개수(중복 포함)
+        certificates_new:
+          type: integer
+          description: fingerprint 신규로 인벤토리에 추가된 인증서 수
+        error: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
     Error:
       type: object
       description: 통일 오류 응답 (00-spec 13장)
