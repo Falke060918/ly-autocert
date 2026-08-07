@@ -1,0 +1,48 @@
+openapi: "3.0.3"
+info:
+  title: INHERIT_AutoCert API
+  description: >
+    폐쇄망·레거시 환경용 온프레미스 인증서 라이프사이클 관리(CLM) 플랫폼 API.
+    Phase 1(인증서 인벤토리) 범위. 엔드포인트는 구현과 함께 추가한다.
+  version: 0.1.0
+servers:
+  - url: http://localhost:8080
+    description: 로컬 개발 (docker compose)
+paths:
+  /healthz:
+    get:
+      operationId: getHealthz
+      summary: 서버·DB 헬스체크
+      description: 서버 생존 여부와 PostgreSQL 연결 상태(ping)를 반환한다.
+      tags: [system]
+      responses:
+        "200":
+          description: 서버와 DB 모두 정상
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Healthz"
+              example:
+                status: ok
+                database: up
+        "503":
+          description: DB 연결 불가
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Healthz"
+              example:
+                status: unavailable
+                database: down
+components:
+  schemas:
+    Healthz:
+      type: object
+      required: [status, database]
+      properties:
+        status:
+          type: string
+          enum: [ok, unavailable]
+        database:
+          type: string
+          enum: [up, down]

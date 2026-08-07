@@ -1,0 +1,3 @@
+-- 0001_init (up)
+-- 초기 마이그레이션 자리. 실제 스키마(Certificate, CertificateLocation, Target,
+-- AuditEvent 등, docs/00-spec.md 12장 기준)는 다음 작업 단위에서 추가한다.
