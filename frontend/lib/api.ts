@@ -161,6 +161,8 @@ export interface ScanRequest {
   ports?: number[];
   timeout_ms?: number;
   concurrency?: number;
+  /** 지정하면 서버 직접 실행 대신 해당 센서가 스캔을 수행한다 (Phase 3a). */
+  sensor_id?: string;
 }
 
 export interface ScanAccepted {
@@ -188,6 +190,44 @@ export interface ScanJob {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+}
+
+// ── 센서 (00-spec 7.8 — 서버 API는 U5에서 구현, 아래는 계약 기준 타입) ────
+
+export type SensorStatus = "pending" | "active" | "disabled";
+
+export interface Sensor {
+  id: string;
+  name: string;
+  status: SensorStatus;
+  client_cert_fingerprint_sha256: string | null;
+  registered_at: string | null;
+  last_seen_at: string | null;
+  disabled_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SensorListResponse {
+  request_id: string;
+  items: Sensor[];
+}
+
+export interface SensorDetailResponse {
+  request_id: string;
+  sensor: Sensor;
+}
+
+/**
+ * 센서 생성 응답. enrollment_token은 이 응답에서 **1회만** 내려온다 —
+ * 서버는 SHA-256 해시만 저장하므로 다시 조회할 수 없다 (00-spec 7.8 등록 흐름).
+ */
+export interface SensorCreateResponse {
+  request_id: string;
+  sensor: Sensor;
+  enrollment_token: string;
+  ca_fingerprint: string;
+  enroll_command_example: string;
 }
 
 // ── 오류·요청 헬퍼 ────────────────────────────────────────────────────────
@@ -312,4 +352,30 @@ export function createScan(req: ScanRequest) {
 
 export function getScan(id: string) {
   return apiFetch<ScanJob>(`/api/v1/discovery/scans/${encodeURIComponent(id)}`);
+}
+
+/** 센서 생성 — 등록 토큰 발급. 서버는 sensor.create 감사 이벤트를 남긴다. */
+export function createSensor(name: string) {
+  return apiFetch<SensorCreateResponse>("/api/v1/sensors", {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function listSensors() {
+  return apiFetch<SensorListResponse>("/api/v1/sensors");
+}
+
+export function getSensor(id: string) {
+  return apiFetch<SensorDetailResponse>(
+    `/api/v1/sensors/${encodeURIComponent(id)}`,
+  );
+}
+
+/** 센서 비활성화 — 이후 mTLS 접속·작업 리스가 거부된다. 서버는 sensor.disable 감사 이벤트를 남긴다. */
+export function disableSensor(id: string) {
+  return apiFetch<SensorDetailResponse>(
+    `/api/v1/sensors/${encodeURIComponent(id)}/disable`,
+    { method: "POST" },
+  );
 }
