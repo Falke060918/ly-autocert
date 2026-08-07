@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/api"
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/audit"
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/auth"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/config"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/db"
 )
@@ -48,9 +50,15 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("migrations applied")
 
+	authSvc := auth.NewService(pool, cfg.SessionTTL)
+	// users가 비어 있으면 초기 관리자를 만든다 (BOOTSTRAP_ADMIN_PASSWORD 필요).
+	if err := authSvc.BootstrapAdmin(ctx, cfg.BootstrapAdminUsername, cfg.BootstrapAdminPassword); err != nil {
+		return err
+	}
+
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewServer(pool),
+		Handler:           api.NewServer(pool, authSvc, audit.NewRecorder(pool)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
