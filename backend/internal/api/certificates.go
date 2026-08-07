@@ -47,9 +47,15 @@ func handleImportCertificates(st *store.Store) http.HandlerFunc {
 		}
 		srcIP := clientIP(r)
 
+		// 감사 이벤트의 행위자 — 보호 라우트이므로 인증 미들웨어가 항상 채운다.
+		var actorID *string
+		if u := userFrom(ctx); u != nil {
+			actorID = &u.ID
+		}
+
 		// 거부된 업로드도 감사 이벤트를 남긴다 (보안 하드 규칙 5). 사유 코드만 기록.
 		auditFailure := func(reason string) {
-			if auditErr := st.RecordImportFailure(ctx, reason, reqID, srcIP); auditErr != nil {
+			if auditErr := st.RecordImportFailure(ctx, reason, actorID, reqID, srcIP); auditErr != nil {
 				slog.Error("audit: record import failure", "error", auditErr.Error(), "request_id", reqIDStr)
 			}
 		}
@@ -97,6 +103,7 @@ func handleImportCertificates(st *store.Store) http.HandlerFunc {
 			FileName:     fileName,
 			RequestID:    reqID,
 			SourceIP:     srcIP,
+			ActorID:      actorID,
 		})
 		if err != nil {
 			// store 오류에는 인증서 본문이 포함되지 않는다.

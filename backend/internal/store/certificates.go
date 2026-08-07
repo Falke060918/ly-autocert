@@ -49,7 +49,7 @@ type ImportInput struct {
 	FileName     *string // 업로드 원본 파일명 (certificate_locations.file_path)
 	RequestID    *string
 	SourceIP     *string
-	ActorID      *string // 이슈 #6(로그인+RBAC) 전까지 nil
+	ActorID      *string // 인증된 업로드 사용자 (보호 라우트에서 항상 채운다)
 }
 
 // ImportedCertificate는 인증서 1개의 저장 결과다.
@@ -176,9 +176,10 @@ func (s *Store) ImportCertificates(ctx context.Context, in ImportInput) (*Import
 
 // RecordImportFailure는 거부된 업로드(개인키 포함·파싱 불가)의 감사 이벤트를 남긴다.
 // reason에는 사유 코드만 담는다 — 업로드 내용은 절대 담지 않는다 (보안 하드 규칙 3·5).
-func (s *Store) RecordImportFailure(ctx context.Context, reason string, requestID, sourceIP *string) error {
+func (s *Store) RecordImportFailure(ctx context.Context, reason string, actorID, requestID, sourceIP *string) error {
 	return audit.Insert(ctx, s.db, audit.Event{
 		Type:       EventCertificateImport,
+		ActorID:    actorID,
 		TargetType: "certificate",
 		RequestID:  requestID,
 		After:      map[string]string{"reason": reason},
