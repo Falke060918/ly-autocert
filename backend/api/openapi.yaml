@@ -187,8 +187,12 @@ paths:
   /api/v1/certificates/{id}:
     get:
       operationId: getCertificate
-      summary: 인증서 상세 (설치 위치 목록 포함)
-      description: 인증된 전 역할(6종) 접근 가능. 응답에 인증서 원문(PEM/DER)은 포함되지 않는다.
+      summary: 인증서 상세 (설치 위치 목록 + 체인 포함)
+      description: |
+        인증된 전 역할(6종) 접근 가능. 응답에 인증서 원문(PEM/DER)은 포함되지 않는다.
+        chain은 자신→상위→루트 순의 발급자 관계 배열이다. 상위 매칭은 AKI = SKI
+        정확 일치 우선, 키 식별자가 없는 데이터(0008 이전)는 issuer_dn = subject_dn
+        폴백이다. 인벤토리에 없는 상위는 stored=false 항목으로 표시된다.
       tags: [certificates]
       parameters:
         - name: id
@@ -561,6 +565,16 @@ components:
         environment: { type: string, nullable: true }
         auto_renew: { type: boolean }
         renewal_policy_id: { type: string, format: uuid, nullable: true }
+        subject_key_id:
+          type: string
+          nullable: true
+          pattern: "^[0-9a-f]+$"
+          description: SKI 소문자 hex. 확장 없는 인증서·0008 이전 데이터는 null
+        authority_key_id:
+          type: string
+          nullable: true
+          pattern: "^[0-9a-f]+$"
+          description: AKI 소문자 hex. 확장 없는 인증서·0008 이전 데이터는 null
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
     CertificateList:
@@ -623,15 +637,40 @@ components:
           nullable: true
           description: 네트워크 스캔이 관측한 협상 TLS 버전 (예 TLS 1.2). 스캔 이력이 없으면 null
         target: { $ref: "#/components/schemas/TargetRef" }
+    CertificateChainItem:
+      type: object
+      description: |
+        체인 1단계. 첫 항목은 조회한 인증서 자신, 마지막은 루트(self_signed=true)
+        또는 인벤토리에 없는 상위(stored=false — subject_dn은 하위의 issuer_dn)다.
+      required: [id, stored, subject_dn, common_name, not_after, certificate_type, status, self_signed]
+      properties:
+        id: { type: string, format: uuid, nullable: true, description: 미보유(stored=false)면 null }
+        stored: { type: boolean, description: 인벤토리 보유 여부 }
+        subject_dn: { type: string }
+        common_name: { type: string, nullable: true }
+        not_after: { type: string, format: date-time, nullable: true }
+        certificate_type:
+          type: string
+          nullable: true
+          enum: [server, client, ca, code_signing, email, other, null]
+        status:
+          type: string
+          nullable: true
+          enum: [active, expired, revoked, replaced, unknown, null]
+        self_signed: { type: boolean, description: 자체 서명(루트) 여부 }
     CertificateDetail:
       type: object
-      required: [request_id, certificate, locations]
+      required: [request_id, certificate, locations, chain]
       properties:
         request_id: { type: string }
         certificate: { $ref: "#/components/schemas/Certificate" }
         locations:
           type: array
           items: { $ref: "#/components/schemas/CertificateLocation" }
+        chain:
+          type: array
+          description: 자신→상위→루트 순 발급자 체인
+          items: { $ref: "#/components/schemas/CertificateChainItem" }
     Healthz:
       type: object
       required: [status, database]

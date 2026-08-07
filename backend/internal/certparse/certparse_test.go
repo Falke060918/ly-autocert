@@ -210,6 +210,50 @@ func TestDescribeServerCert(t *testing.T) {
 	}
 }
 
+// TestDescribeChainKeyIDs는 체인 관계 매칭 키(SKI/AKI) 추출을 검증한다 (M3).
+// CA가 서명한 리프의 AKI는 CA의 SKI와 일치해야 한다.
+func TestDescribeChainKeyIDs(t *testing.T) {
+	leafDER, caDER := newChain(t)
+	leafCert, err := x509.ParseCertificate(leafDER)
+	if err != nil {
+		t.Fatalf("parse leaf: %v", err)
+	}
+	caCert, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatalf("parse ca: %v", err)
+	}
+
+	caD := Describe(caCert, time.Now())
+	if caD.SubjectKeyID == nil {
+		t.Fatal("CA subject_key_id = nil, want SKI hex")
+	}
+	// DB CHECK(0008: certificates_*_key_id_hex)와 동일한 형식이어야 한다.
+	if !regexp.MustCompile(`^[0-9a-f]+$`).MatchString(*caD.SubjectKeyID) {
+		t.Errorf("CA subject_key_id %q is not lowercase hex", *caD.SubjectKeyID)
+	}
+
+	leafD := Describe(leafCert, time.Now())
+	if leafD.AuthorityKeyID == nil {
+		t.Fatal("leaf authority_key_id = nil, want AKI hex")
+	}
+	if *leafD.AuthorityKeyID != *caD.SubjectKeyID {
+		t.Errorf("leaf AKI %q != CA SKI %q — 체인 매칭 키 불일치", *leafD.AuthorityKeyID, *caD.SubjectKeyID)
+	}
+}
+
+// TestDescribeWithoutKeyIDExtensions는 SKI/AKI 확장이 없는 인증서에서 nil을 확인한다.
+func TestDescribeWithoutKeyIDExtensions(t *testing.T) {
+	// 자체 서명 + 비-CA 서버 템플릿은 Go가 SKI를 자동 생성하지 않는다.
+	fx := newSelfSigned(t, serverTemplate())
+	d := Describe(fx.cert, time.Now())
+	if d.SubjectKeyID != nil && *d.SubjectKeyID == "" {
+		t.Error("subject_key_id must be nil or non-empty, got empty string")
+	}
+	if d.AuthorityKeyID != nil && *d.AuthorityKeyID == "" {
+		t.Error("authority_key_id must be nil or non-empty, got empty string")
+	}
+}
+
 func TestDescribeCAAndExpired(t *testing.T) {
 	ca := newSelfSigned(t, caTemplate())
 	if d := Describe(ca.cert, time.Now()); d.CertificateType != domain.CertTypeCA {

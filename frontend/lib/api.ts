@@ -63,6 +63,8 @@ export interface Certificate {
   environment: string | null;
   auto_renew: boolean;
   renewal_policy_id: string | null;
+  subject_key_id: string | null;
+  authority_key_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -103,10 +105,26 @@ export interface CertificateLocation {
   target: TargetRef;
 }
 
+/**
+ * 체인 1단계. 배열은 자신→상위→루트 순이며, 인벤토리에 없는 상위는
+ * stored=false(id=null, subject_dn은 하위의 issuer_dn)로 표시된다.
+ */
+export interface CertificateChainItem {
+  id: string | null;
+  stored: boolean;
+  subject_dn: string;
+  common_name: string | null;
+  not_after: string | null;
+  certificate_type: CertificateType | null;
+  status: CertificateStatus | null;
+  self_signed: boolean;
+}
+
 export interface CertificateDetailResponse {
   request_id: string;
   certificate: Certificate;
   locations: CertificateLocation[];
+  chain: CertificateChainItem[];
 }
 
 export interface CertificateSummary {

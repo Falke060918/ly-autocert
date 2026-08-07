@@ -289,6 +289,7 @@ func recordDiscoveredChain(ctx context.Context, tx *sql.Tx, obs EndpointObservat
 			strings.Join(dc.SANs, sansSep),
 			dc.NotBefore, dc.NotAfter, dc.PublicKeyAlgorithm, dc.PublicKeySize,
 			dc.SignatureAlgorithm, string(dc.CertificateType), string(dc.Status),
+			dc.SubjectKeyID, dc.AuthorityKeyID,
 		).Scan(&id, &status, &createdAt, &updatedAt, &created)
 		if err != nil {
 			return 0, fmt.Errorf("store: upsert discovered certificate: %w", err)
