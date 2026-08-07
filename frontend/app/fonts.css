@@ -1,0 +1,33 @@
+/*
+ * 로컬 번들 폰트 — 폐쇄망 제품이므로 CDN을 쓰지 않는다.
+ * 파일은 npm 패키지(geist, pretendard)에서 가져오며 빌드 시 번들에 포함된다.
+ * 스택: 본문 `Geist, Pretendard, sans-serif` / 모노 `"Geist Mono", D2Coding, monospace`
+ * (라틴 Geist → 한글 Pretendard 폴백 순서 유지. 시스템 폰트 지정 금지.)
+ */
+
+@font-face {
+  font-family: "Geist";
+  src: url("../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2")
+    format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  src: url("../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2")
+    format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Pretendard";
+  src: url("../node_modules/pretendard/dist/web/variable/woff2/PretendardVariable.woff2")
+    format("woff2");
+  font-weight: 45 920;
+  font-style: normal;
+  font-display: swap;
+}
