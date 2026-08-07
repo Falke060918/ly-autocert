@@ -495,6 +495,10 @@ components:
         deployment_status:
           type: string
           enum: [unknown, deployed, pending, failed, removed]
+        tls_version:
+          type: string
+          nullable: true
+          description: 네트워크 스캔이 관측한 협상 TLS 버전 (예 TLS 1.2). 스캔 이력이 없으면 null
         target: { $ref: "#/components/schemas/TargetRef" }
     CertificateDetail:
       type: object

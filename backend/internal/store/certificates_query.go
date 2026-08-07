@@ -72,9 +72,11 @@ type TargetRef struct {
 }
 
 // LocationWithTarget은 설치 위치 + 대상 요약이다.
+// TLSVersion은 네트워크 스캔(이슈 #5)이 관측한 협상 TLS 버전이다 (0006 마이그레이션).
 type LocationWithTarget struct {
 	domain.CertificateLocation
-	Target TargetRef `json:"target"`
+	TLSVersion *string   `json:"tls_version"`
+	Target     TargetRef `json:"target"`
 }
 
 // CertificateDetail은 상세 조회 결과다 (설치 위치 목록 포함).
@@ -254,6 +256,7 @@ func (s *Store) GetCertificateDetail(ctx context.Context, id string) (*Certifica
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT l.id, l.certificate_id, l.target_id, l.location_type, l.file_path,
 			l.store_name, l.service_name, l.port, l.last_verified_at, l.deployment_status,
+			l.tls_version,
 			t.id, t.name, t.target_type, t.hostname, host(t.ip_address)
 		FROM certificate_locations l
 		JOIN targets t ON t.id = l.target_id
@@ -271,6 +274,7 @@ func (s *Store) GetCertificateDetail(ctx context.Context, id string) (*Certifica
 		if err := rows.Scan(
 			&l.ID, &l.CertificateID, &l.TargetID, &locType, &l.FilePath,
 			&l.StoreName, &l.ServiceName, &l.Port, &l.LastVerifiedAt, &depStatus,
+			&l.TLSVersion,
 			&l.Target.ID, &l.Target.Name, &l.Target.TargetType, &l.Target.Hostname, &l.Target.IPAddress,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan location: %w", err)

@@ -227,8 +227,8 @@ func TestGetCertificateDetail(t *testing.T) {
 		t.Fatalf("insert target: %v", err)
 	}
 	if _, err := pool.Exec(`
-		INSERT INTO certificate_locations (certificate_id, target_id, location_type, port, deployment_status)
-		VALUES ($1, $2, 'network_endpoint', 443, 'unknown')`, certID, targetID); err != nil {
+		INSERT INTO certificate_locations (certificate_id, target_id, location_type, port, tls_version, deployment_status)
+		VALUES ($1, $2, 'network_endpoint', 443, 'TLS 1.3', 'unknown')`, certID, targetID); err != nil {
 		t.Fatalf("insert location: %v", err)
 	}
 
@@ -246,6 +246,9 @@ func TestGetCertificateDetail(t *testing.T) {
 		loc := d.Locations[0]
 		if loc.LocationType != domain.LocationNetworkEndpoint || loc.Port == nil || *loc.Port != 443 {
 			t.Errorf("location = %+v, want network_endpoint:443", loc.CertificateLocation)
+		}
+		if loc.TLSVersion == nil || *loc.TLSVersion != "TLS 1.3" {
+			t.Errorf("tls_version = %v, want TLS 1.3", loc.TLSVersion)
 		}
 		if loc.Target.Name != "detail-fixture-target" || loc.Target.IPAddress == nil || *loc.Target.IPAddress != "192.0.2.10" {
 			t.Errorf("target = %+v, want detail-fixture-target/192.0.2.10", loc.Target)
