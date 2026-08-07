@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "agent": "orchestrator",
+  "outputStyle": "brief",
+  "effortLevel": "medium",
+  "alwaysThinkingEnabled": true,
+  "autoCompactEnabled": true,
+  "worktree": {
+    "baseRef": "head"
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "s=scripts/statusline.sh; d=${CLAUDE_PROJECT_DIR:-$PWD}; [ -f \"$d/$s\" ] || { d=$PWD; p=; while [ ! -f \"$d/$s\" ]; do [ \"$d\" != \"$p\" ] || { echo claude; exit; }; p=$d; d=${d%/*}; done; }; exec bash \"$d/$s\""
+  },
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash(rtk:*)",
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git show:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git branch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git init:*)",
+      "Bash(git tag:*)",
+      "Bash(git push:*)",
+      "Bash(git merge:*)",
+      "Bash(git rebase:*)",
+      "Bash(git pull:*)",
+      "Bash(git worktree:*)",
+      "Bash(git stash:*)",
+      "Bash(gh pr:*)",
+      "Bash(gh issue:*)",
+      "Bash(gh label:*)",
+      "Bash(gh release:*)",
+      "Bash(npm run:*)",
+      "Bash(npm install:*)",
+      "Bash(npm test:*)",
+      "Bash(npx:*)",
+      "Bash(node:*)",
+      "Bash(python:*)",
+      "Bash(pip install:*)",
+      "Bash(ls:*)",
+      "Bash(mkdir:*)"
+    ],
+    "ask": [
+      "Bash(git push --force:*)",
+      "Bash(git push --force-with-lease:*)",
+      "Bash(git push -f:*)",
+      "Bash(git push *--force*)",
+      "Bash(git push -f*)",
+      "Bash(git push * -f*)",
+      "Bash(git push *+*)",
+      "Bash(rtk git push --force:*)",
+      "Bash(rtk git push --force-with-lease:*)",
+      "Bash(rtk git push -f:*)",
+      "Bash(rtk git push *--force*)",
+      "Bash(rtk git push -f*)",
+      "Bash(rtk git push * -f*)",
+      "Bash(rtk git push *+*)",
+      "Bash(* git push *--force*)",
+      "Bash(* git push -f*)",
+      "Bash(* git push * -f*)",
+      "Bash(* git push *+*)",
+      "Bash(* push *--force*)",
+      "Bash(* push -f*)",
+      "Bash(* push * -f*)",
+      "Bash(* push *+*)",
+      "Bash(rtk proxy:*)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./.env.local)",
+      "Read(./.env.*.local)",
+      "Read(./**/*.pem)",
+      "Read(./**/secrets/**)"
+    ]
+  },
+  "extraKnownMarketplaces": {
+    "anthropic-agent-skills": {
+      "source": {
+        "source": "github",
+        "repo": "anthropics/skills"
+      }
+    },
+    "scroll-world": {
+      "source": {
+        "source": "github",
+        "repo": "oso95/scroll-world"
+      }
+    }
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "rtk --version || echo \"RTK-MISSING: rtk is not installed. Before handling any user request, delegate running scripts/setup.ps1 (Windows) or scripts/setup.sh (Linux/macOS) to the implementer subagent.\"; d=${CLAUDE_PROJECT_DIR:-$PWD}; m=$d/docs/MAP.md; g=$d/docs/GOTCHAS.md; s=$d/docs/STATE.md; S=\"MAP-STALE: MAP is stale. Refresh it from the first exploration of this session.\"; ml=0; gl=0; sl=0; [ -f \"$m\" ] && ml=$(wc -l < \"$m\" | tr -dc 0-9); [ -f \"$g\" ] && gl=$(wc -l < \"$g\" | tr -dc 0-9); [ -f \"$s\" ] && sl=$(wc -l < \"$s\" | tr -dc 0-9); { [ \"${ml:-0}\" -gt 120 ] || [ \"${gl:-0}\" -gt 100 ] || [ \"${sl:-0}\" -gt 150 ]; } && echo \"KB-OVER-LIMIT: knowledge files exceed their line limit. Compact them in the next /handoff.\"; k=$(head -5 \"$m\" 2>/dev/null | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1); [ -f \"$m\" ] && [ -z \"$k\" ] && echo \"$S\"; t=$(date +%Y-%m-%d); J(){ Y=${1%%-*}; r=${1#*-}; M=${r%%-*}; D=${r##*-}; M=${M#0}; D=${D#0}; a=$(( (14-M)/12 )); y=$(( Y+4800-a )); n=$(( M+12*a-3 )); echo $(( D+(153*n+2)/5+365*y+y/4-y/100+y/400-32045 )); }; [ -n \"$k\" ] && [ -n \"$t\" ] && { jk=$(J \"$k\" 2>/dev/null); jt=$(J \"$t\" 2>/dev/null); [ -n \"$jk\" ] && [ -n \"$jt\" ] && [ $((jt-jk)) -ge 14 ] && echo \"$S\"; }; so=$d/.claude/template-origin; [ -f \"$so\" ] && { T=\"TEMPLATE-REPO: this repository is the template original. Treat requests as work on the template itself, not on a product; /kickoff does not apply.\"; P=\"PROJECT-REPO SETUP-PENDING: this repository came from the template and SETUP.md step 1 is not done. Before handling any user request, ask once whether to initialize first.\"; to=$(grep -E '^[[:space:]]*template_origin:' \"$so\" 2>/dev/null | head -1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '[:space:]'); md=$(grep -E '^[[:space:]]*mode:' \"$so\" 2>/dev/null | head -1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '[:space:]'); ru=$(git -C \"$d\" remote get-url origin 2>/dev/null); while [ \"${ru%/}\" != \"$ru\" ]; do ru=${ru%/}; done; rn=${ru##*/}; rn=${rn##*:}; rn=${rn%.git}; if [ -n \"$rn\" ]; then { [ -n \"$to\" ] && [ \"$rn\" = \"$to\" ] && echo \"$T\"; } || echo \"$P\"; else case \"$md\" in template) echo \"$T\";; project) echo \"$P\";; *) echo \"ASK-MODE: no git remote, so template-vs-project cannot be decided. Ask the user once with AskUserQuestion, then delegate recording the answer in the mode: line of .claude/template-origin to the implementer subagent.\";; esac; fi; }; exit 0"
+          },
+          {
+            "type": "command",
+            "command": "d=${CLAUDE_PROJECT_DIR:-$PWD}; b=$d/scripts/session-banner.sh; [ -f \"$b\" ] && bash \"$b\"; exit 0"
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "frontend-design@claude-plugins-official": true,
+    "context7@claude-plugins-official": true,
+    "typescript-lsp@claude-plugins-official": true,
+    "pyright-lsp@claude-plugins-official": true,
+    "document-skills@anthropic-agent-skills": true
+  }
+}

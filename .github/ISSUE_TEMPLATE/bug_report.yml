@@ -1,0 +1,50 @@
+name: 버그 신고
+description: 동작이 기대와 다른 문제를 신고한다.
+title: "[bug] "
+labels: [bug]
+body:
+  - type: textarea
+    id: steps
+    attributes:
+      label: 재현 절차
+      description: 문제를 재현하는 최소 단계를 순서대로 적는다.
+      placeholder: |
+        1. /login 접속
+        2. 올바른 계정으로 로그인
+        3. 브라우저 뒤로가기
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-actual
+    attributes:
+      label: 기대 동작 / 실제 동작
+      description: 무엇을 기대했고 실제로는 무엇이 일어났는가.
+      placeholder: |
+        기대: 로그인 상태가 유지된 채 이전 페이지가 보인다
+        실제: 세션이 끊기고 /login으로 되돌아간다
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 환경
+      description: OS, 브라우저/런타임 버전, 앱 버전, 관련 로그 등.
+      placeholder: |
+        OS: Windows 11
+        브라우저: Chrome 130
+        앱 버전: web v1.2.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 완료 조건
+      description: 이 이슈가 곧 작업 경계다. 검증 가능한 문장으로, 한 줄에 하나씩 적는다.
+      placeholder: |
+        - 로그인 후 뒤로가기를 눌러도 세션이 유지된다
+        - 동일 시나리오를 검증하는 회귀 테스트가 추가되어 통과한다
+    validations:
+      required: true

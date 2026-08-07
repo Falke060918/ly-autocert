@@ -1,0 +1,35 @@
+# 주의: `gh issue create --body`로 만든 이슈는 이 폼의 required 검증을 우회한다. 에이전트 경로의 완료 조건 강제는 `.claude/skills/kickoff/SKILL.md` 규약이 담당한다.
+name: 기능 요청
+description: 새로운 기능이나 개선 사항을 제안한다.
+title: "[feat] "
+labels: [feat]
+body:
+  - type: textarea
+    id: background
+    attributes:
+      label: 배경
+      description: 왜 이 기능이 필요한가? 어떤 문제나 불편이 있는가?
+      placeholder: 사용자가 로그인 후에도 매번 대시보드를 직접 찾아 들어가야 한다.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 제안
+      description: 무엇을 어떻게 만들 것인가? 범위와 접근 방식을 적는다.
+      placeholder: 로그인 성공 시 자동으로 /dashboard로 리다이렉트한다. 리다이렉트 대상은 쿼리 파라미터 `next`로 덮어쓸 수 있다.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 완료 조건
+      description: 이 이슈가 곧 작업 경계다. 검증 가능한 문장으로, 한 줄에 하나씩 적는다.
+      placeholder: |
+        - 로그인 후 /dashboard로 리다이렉트된다
+        - `next=/settings`가 있으면 /settings로 리다이렉트된다
+        - 로그인 실패 시 리다이렉트되지 않고 에러 메시지가 표시된다
+    validations:
+      required: true

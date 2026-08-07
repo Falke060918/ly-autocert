@@ -1,0 +1,135 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: 설정·스크립트 검증
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 외부 도구 의존 → 없으면 skip
+      - name: shellcheck (scripts/*.sh)
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            echo "skip: shellcheck 바이너리가 러너에 없다 (외부 도구 의존 스텝)"
+            exit 0
+          fi
+          status=0
+          found=0
+          for f in scripts/*.sh; do
+            # 글로브가 하나도 매칭되지 않으면 리터럴 문자열이 들어오므로 건너뛴다
+            [ -f "$f" ] || continue
+            found=1
+            echo "== shellcheck $f"
+            # shellcheck 기본 최소 severity는 style - style/info 지적에도 실패한다
+            shellcheck "$f" || status=1
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "skip: scripts/*.sh 에 해당하는 파일이 없다"
+          fi
+          exit $status
+
+      # 모듈 설치가 네트워크에 의존 → 어떤 경우에도 job을 깨지 않는다
+      - name: PSScriptAnalyzer (scripts/setup.ps1)
+        continue-on-error: true
+        run: |
+          if ! command -v pwsh >/dev/null 2>&1; then
+            echo "skip: pwsh가 러너에 없다 (외부 도구 의존 스텝)"
+            exit 0
+          fi
+          if [ ! -f scripts/setup.ps1 ]; then
+            echo "skip: scripts/setup.ps1 파일이 없다"
+            exit 0
+          fi
+          pwsh -NoProfile -Command '
+            if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer)) {
+              try {
+                Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -ErrorAction Stop
+              } catch {
+                Write-Host "skip: PSScriptAnalyzer 설치 실패 (네트워크 의존) - $($_.Exception.Message)"
+                exit 0
+              }
+            }
+            $r = Invoke-ScriptAnalyzer -Path scripts/setup.ps1 -Severity Error,Warning
+            if ($r) { $r | Format-Table -AutoSize | Out-String | Write-Host } else { Write-Host "PSScriptAnalyzer: 지적 사항 없음" }
+          ' || echo "skip: PSScriptAnalyzer 실행 실패 - 이 스텝은 job을 깨지 않는다"
+
+      # 러너 내장 python으로 가능 → 실패하면 진짜 실패
+      - name: settings.json JSON 유효성
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, sys
+
+          targets = sorted(pathlib.Path(".claude").rglob("*.json"))
+          if not targets:
+              print("FAIL: .claude 아래에 검사할 json 파일이 없다")
+              sys.exit(1)
+
+          failed = False
+          for path in targets:
+              try:
+                  json.loads(path.read_text(encoding="utf-8"))
+                  print(f"OK   {path}")
+              except Exception as exc:
+                  print(f"FAIL {path}: {exc}")
+                  failed = True
+          sys.exit(1 if failed else 0)
+          PY
+
+      # 러너 내장 python으로 가능 → 실패하면 진짜 실패
+      - name: 에이전트·스킬 프론트매터 검사
+        run: |
+          python3 - <<'PY'
+          import pathlib, sys
+
+          def frontmatter_keys(path):
+              lines = path.read_text(encoding="utf-8").splitlines()
+              if not lines or lines[0].strip() != "---":
+                  return None
+              keys = []
+              for line in lines[1:]:
+                  if line.strip() == "---":
+                      return keys
+                  if line[:1] not in (" ", "\t", "#", "") and ":" in line:
+                      keys.append(line.split(":", 1)[0].strip())
+              return None
+
+          checks = [
+              (sorted(pathlib.Path(".claude/agents").glob("*.md")),
+               ["name", "description", "tools"]),
+              (sorted(pathlib.Path(".claude/skills").glob("*/SKILL.md")),
+               ["name", "description"]),
+          ]
+
+          failed = False
+          for paths, required in checks:
+              if not paths:
+                  print(f"FAIL: 검사 대상 파일이 없다 (필수 키 {required})")
+                  failed = True
+                  continue
+              for path in paths:
+                  keys = frontmatter_keys(path)
+                  if keys is None:
+                      print(f"FAIL {path}: 프론트매터 블록(---)이 없거나 닫히지 않았다")
+                      failed = True
+                      continue
+                  missing = [k for k in required if k not in keys]
+                  if missing:
+                      print(f"FAIL {path}: 누락된 키 {missing}")
+                      failed = True
+                  else:
+                      print(f"OK   {path}")
+          sys.exit(1 if failed else 0)
+          PY
