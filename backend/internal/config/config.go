@@ -4,7 +4,9 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"time"
 )
 
 // Config는 서버 기동에 필요한 설정값이다.
@@ -15,17 +17,31 @@ type Config struct {
 	// 예: postgres://user:pass@host:5432/dbname?sslmode=disable
 	// secret이 포함되므로 절대 로그에 출력하지 않는다.
 	DatabaseURL string
+	// SessionTTL은 로그인 세션 유효기간이다 (SESSION_TTL, Go duration 형식).
+	SessionTTL time.Duration
+	// BootstrapAdminUsername/Password는 users가 비어 있을 때 만들 초기
+	// System Administrator 계정이다. 비밀번호는 환경변수로만 주입한다 —
+	// 코드·설정 파일에 하드코딩 금지. 로그에 출력하지 않는다.
+	BootstrapAdminUsername string
+	BootstrapAdminPassword string
 }
 
 // Load는 환경변수에서 설정을 읽는다.
 func Load() (Config, error) {
 	cfg := Config{
-		HTTPAddr:    getenv("HTTP_ADDR", ":8080"),
-		DatabaseURL: os.Getenv("DATABASE_URL"),
+		HTTPAddr:               getenv("HTTP_ADDR", ":8080"),
+		DatabaseURL:            os.Getenv("DATABASE_URL"),
+		BootstrapAdminUsername: getenv("BOOTSTRAP_ADMIN_USERNAME", "admin"),
+		BootstrapAdminPassword: os.Getenv("BOOTSTRAP_ADMIN_PASSWORD"),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("config: DATABASE_URL is required")
 	}
+	ttl, err := time.ParseDuration(getenv("SESSION_TTL", "8h"))
+	if err != nil || ttl <= 0 {
+		return Config{}, fmt.Errorf("config: SESSION_TTL must be a positive Go duration: %w", err)
+	}
+	cfg.SessionTTL = ttl
 	return cfg, nil
 }
 

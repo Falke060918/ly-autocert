@@ -12,8 +12,8 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 )
 
-// coreTables는 이슈 #2에서 만드는 테이블 전체다.
-// 완전 구현 4개 + 자리만 확보(placeholder) 4개.
+// coreTables는 마이그레이션이 만드는 테이블 전체다.
+// 이슈 #2: 완전 구현 4개 + placeholder 4개. 이슈 #6: users/sessions/departments.
 var coreTables = []string{
 	"certificates",
 	"certificate_locations",
@@ -23,6 +23,9 @@ var coreTables = []string{
 	"renewal_jobs",
 	"deployment_jobs",
 	"policies",
+	"users",
+	"sessions",
+	"departments",
 }
 
 // testPool은 TEST_DATABASE_URL로 연결한다. 미설정이면 스킵한다.

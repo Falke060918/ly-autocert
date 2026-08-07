@@ -42,6 +42,7 @@ paths:
         PEM(체인 포함) 또는 DER 인증서를 업로드한다. SHA-256 fingerprint 기준으로
         중복을 판정해, 중복이면 새 Certificate를 만들지 않고 설치 위치만 추가한다.
         개인키가 포함된 업로드는 저장 없이 거부한다. 모든 요청은 감사 이벤트를 남긴다.
+        허용 역할은 system_administrator·pki_administrator·operator다.
       tags: [certificates]
       requestBody:
         required: true
@@ -79,13 +80,154 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "500":
           description: 저장 실패
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/v1/auth/login:
+    post:
+      operationId: login
+      summary: 로컬 계정 로그인
+      description: >
+        자격 증명 검증 후 세션 토큰을 발급한다. 응답 본문 token(Bearer용)과
+        HttpOnly 쿠키(브라우저용)를 함께 준다. 성공·실패 모두 감사 이벤트를 남긴다.
+      tags: [auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+      responses:
+        "200":
+          description: 로그인 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, expires_at, user]
+                properties:
+                  token: { type: string }
+                  expires_at: { type: string, format: date-time }
+                  user: { $ref: "#/components/schemas/User" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/auth/logout:
+    post:
+      operationId: logout
+      summary: 로그아웃 (세션 폐기)
+      tags: [auth]
+      responses:
+        "204": { description: 세션 폐기 완료 }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/auth/me:
+    get:
+      operationId: getMe
+      summary: 현재 인증된 사용자 조회
+      tags: [auth]
+      responses:
+        "200":
+          description: 현재 사용자
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/users:
+    get:
+      operationId: listUsers
+      summary: 사용자 목록 (System Administrator 전용)
+      tags: [users]
+      responses:
+        "200":
+          description: 사용자 목록
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/User" }
+                  total: { type: integer }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      operationId: createUser
+      summary: 사용자 생성 (System Administrator 전용)
+      description: 비밀번호 정책(12자 이상, username과 상이)을 검사한다. 감사 이벤트를 남긴다.
+      tags: [users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password, role]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password, minLength: 12 }
+                display_name: { type: string, nullable: true }
+                role: { $ref: "#/components/schemas/Role" }
+      responses:
+        "201":
+          description: 생성된 사용자
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400":
+          description: 비밀번호 정책 위반 또는 잘못된 역할
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: username 중복
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+security:
+  - bearerAuth: []
+  - cookieAuth: []
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: 로그인 응답의 token
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: autocert_session
+  responses:
+    Unauthorized:
+      description: 인증 실패 (토큰 없음·만료·폐기)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: 역할 권한 부족 (authz.denied 감사 이벤트 기록)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
   schemas:
     ImportResult:
       type: object
@@ -129,20 +271,6 @@ components:
         duplicate:
           type: boolean
           description: true면 fingerprint 중복 — 기존 레코드 재사용
-    Error:
-      type: object
-      required: [error, request_id]
-      properties:
-        error:
-          type: object
-          required: [code, message]
-          properties:
-            code:
-              type: string
-            message:
-              type: string
-        request_id:
-          type: string
     Healthz:
       type: object
       required: [status, database]
@@ -153,3 +281,39 @@ components:
         database:
           type: string
           enum: [up, down]
+    Role:
+      type: string
+      description: 기본 역할 6종 (00-spec 7.11)
+      enum:
+        - system_administrator
+        - pki_administrator
+        - security_administrator
+        - operator
+        - auditor
+        - viewer
+    User:
+      type: object
+      description: 로컬 계정. password_hash는 어떤 응답에도 포함되지 않는다.
+      required: [id, username, role, auth_provider, is_active]
+      properties:
+        id: { type: string, format: uuid }
+        username: { type: string }
+        display_name: { type: string, nullable: true }
+        role: { $ref: "#/components/schemas/Role" }
+        auth_provider: { type: string, description: "MVP는 local. LDAP/AD/OIDC/SAML 확장점." }
+        is_active: { type: boolean }
+        department_id: { type: string, format: uuid, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    Error:
+      type: object
+      description: 통일 오류 응답 (00-spec 13장)
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+        request_id: { type: string }

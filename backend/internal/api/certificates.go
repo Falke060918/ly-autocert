@@ -4,7 +4,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -42,12 +41,16 @@ func handleImportCertificates(st *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		reqID := requestIDFrom(ctx)
+		reqIDStr := ""
+		if reqID != nil {
+			reqIDStr = *reqID
+		}
 		srcIP := clientIP(r)
 
 		// 거부된 업로드도 감사 이벤트를 남긴다 (보안 하드 규칙 5). 사유 코드만 기록.
 		auditFailure := func(reason string) {
-			if auditErr := st.RecordImportFailure(ctx, reason, &reqID, srcIP); auditErr != nil {
-				slog.Error("audit: record import failure", "error", auditErr.Error(), "request_id", reqID)
+			if auditErr := st.RecordImportFailure(ctx, reason, reqID, srcIP); auditErr != nil {
+				slog.Error("audit: record import failure", "error", auditErr.Error(), "request_id", reqIDStr)
 			}
 		}
 
@@ -92,18 +95,18 @@ func handleImportCertificates(st *store.Store) http.HandlerFunc {
 		res, err := st.ImportCertificates(ctx, store.ImportInput{
 			Certificates: domainCerts,
 			FileName:     fileName,
-			RequestID:    &reqID,
+			RequestID:    reqID,
 			SourceIP:     srcIP,
 		})
 		if err != nil {
 			// store 오류에는 인증서 본문이 포함되지 않는다.
-			slog.Error("certificates import failed", "error", err.Error(), "request_id", reqID)
+			slog.Error("certificates import failed", "error", err.Error(), "request_id", reqIDStr)
 			writeError(w, r, http.StatusInternalServerError, "internal_error",
 				"인증서 저장에 실패했습니다. 잠시 후 다시 시도하십시오.")
 			return
 		}
 
-		resp := importResponse{RequestID: reqID, LocationID: res.LocationID}
+		resp := importResponse{RequestID: reqIDStr, LocationID: res.LocationID}
 		status := http.StatusOK // 전부 중복 — 위치만 추가됨
 		for _, ic := range res.Certificates {
 			if ic.Created {
@@ -148,16 +151,4 @@ func readUpload(r *http.Request) (data []byte, fileName *string, err error) {
 		return nil, nil, err
 	}
 	return data, nil, nil
-}
-
-// clientIP는 RemoteAddr에서 IP만 추출한다. 파싱 불가면 nil (audit source_ip NULL).
-func clientIP(r *http.Request) *string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	if net.ParseIP(host) == nil {
-		return nil
-	}
-	return &host
 }
