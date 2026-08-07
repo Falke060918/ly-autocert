@@ -61,19 +61,9 @@ Cause: named spawns (background AND sync) route through the teammate mailbox and
 Fix: spawn subagents unnamed — background is fine, the `name` param alone is the trigger; distrust idle notifications — verify outputs (files/commits) before proceeding.
 (last recurrence: 2026-07)
 
-**The Agent tool always fires asynchronously, whatever `run_in_background` says**
-Cause: the tool_result comes back as `"status":"async_launched"` regardless of the flag, and actual completion arrives later as a `<task-notification>`. So any measurement that reads that flag as a blocking/foreground ratio is meaningless.
-Fix: real parallelism is decided only by whether the `async_launched` → matching task-notification intervals overlap — read the cc1/cc2/cc3+ figures from `bash scripts/fanout.sh 99 --all`.
-(last recurrence: 2026-08)
-
-**Counting parallel tool calls with a line-based grep always returns 0**
-Cause: Claude Code transcript JSONL records one content block per line, so a grep for "two tool_use on one line" reports zero even when calls really were parallel.
-Fix: group by `message.id` — the number of tool_use blocks sharing one `msg_` id is that turn's fan-out width.
-(last recurrence: 2026-08)
-
-**Subagent internals leave no trace in the transcript**
-Cause: `isSidechain:true` appears 0 times across the whole 39-file corpus. Per-agent token spend, and which Bash call was slow inside an agent, are therefore not derivable at all; only main-thread numbers are available and the real totals are much larger.
-Fix: if you need instrumentation from inside an agent, require the agent to report it itself in the delegation prompt.
+**Transcript JSONL misleads when measuring agents/parallelism**
+Cause: tool_result always reports `"status":"async_launched"` whatever `run_in_background` says; JSONL stores one content block per line, so "two tool_use on one line" greps return 0; `isSidechain:true` never appears, so subagent internals (token spend, slow calls) are not derivable at all.
+Fix: group tool_use by `message.id` for fan-out width; judge real parallelism only by overlapping async_launched→task-notification intervals (`bash scripts/fanout.sh 99 --all`); metrics from inside an agent must be self-reported via the delegation prompt.
 (last recurrence: 2026-08)
 
 ## Template machinery
@@ -98,4 +88,9 @@ Fix: `npx shadcn init -b radix -p nova --yes` (-b base, -p preset)
 **`go mod tidy` fails with a toolchain error after adding pgx/v5**
 Cause: pgx/v5 v5.10+ requires Go >=1.25; go.mod pinned lower (1.23).
 Fix: set `go 1.25` in go.mod.
+(last recurrence: 2026-08)
+
+**Parallel `go test ./...` wipes sibling packages' test schema**
+Cause: the db package's migration test runs up/down/up against TEST_DATABASE_URL; default package-level parallelism lets its down step drop tables other packages' integration tests are using mid-run.
+Fix: always run `go test -p 1 ./...` (serial packages) against the dedicated autocert_test DB.
 (last recurrence: 2026-08)
