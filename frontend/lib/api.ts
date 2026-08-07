@@ -257,6 +257,21 @@ export function getCertificateSummary() {
   return apiFetch<CertificateSummary>("/api/v1/certificates/summary");
 }
 
+/**
+ * 인증서 인벤토리 CSV 내보내기 — 목록과 같은 조회 조건, 페이지네이션 없음.
+ * 모든 호출이 서버에서 certificate.export 감사 이벤트를 남긴다.
+ */
+export async function exportCertificatesCsv(
+  params: URLSearchParams,
+): Promise<Blob> {
+  const qs = params.toString();
+  const res = await fetch(`/api/v1/certificates/export${qs ? `?${qs}` : ""}`);
+  if (!res.ok) {
+    throw await toApiError(res);
+  }
+  return res.blob();
+}
+
 /** 인증서 파일 업로드 — 원문 바이트를 그대로 보낸다 (PEM·DER). */
 export async function importCertificateFile(file: File): Promise<ImportResult> {
   const res = await fetch("/api/v1/certificates/import", {

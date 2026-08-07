@@ -271,7 +271,7 @@ func TestRecordImportFailure(t *testing.T) {
 		cleanupAuditByRequestID(pool, reqID)
 	})
 
-	if err := st.RecordImportFailure(context.Background(), "private_key_rejected", &reqID, nil); err != nil {
+	if err := st.RecordImportFailure(context.Background(), "private_key_rejected", nil, &reqID, nil); err != nil {
 		t.Fatalf("record failure: %v", err)
 	}
 	var result string

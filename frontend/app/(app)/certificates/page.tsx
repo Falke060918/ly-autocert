@@ -4,7 +4,7 @@ import * as React from "react";
 import { Suspense } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { ArrowDown, ArrowUp, Search, Upload, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Download, Search, Upload, X } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -30,6 +30,7 @@ import { CertStatusBadge, DdayText } from "@/components/cert-badges";
 import { canManageInventory, useAuth } from "@/lib/auth";
 import {
   ApiError,
+  exportCertificatesCsv,
   importCertificateFile,
   listCertificates,
   type CertificateListResponse,
@@ -88,6 +89,7 @@ function CertificatesBody() {
   const [error, setError] = React.useState<string | null>(null);
   const [uploadOpen, setUploadOpen] = React.useState(false);
   const [reloadKey, setReloadKey] = React.useState(0);
+  const [exporting, setExporting] = React.useState(false);
 
   // URL 쿼리 → API 쿼리 (허용 파라미터만 통과시킨다).
   const apiQuery = React.useMemo(() => {
@@ -147,6 +149,28 @@ function CertificatesBody() {
   const order = searchParams.get("order") ?? "asc";
   const canManage = canManageInventory(user);
 
+  /** 현재 필터 조건 전체를 CSV로 내려받는다 (서버가 certificate.export 감사 기록). */
+  const exportCsv = React.useCallback(async () => {
+    setExporting(true);
+    try {
+      const params = new URLSearchParams(apiQuery);
+      params.delete("page");
+      params.delete("page_size");
+      const blob = await exportCertificatesCsv(params);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `certificates-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "CSV 내보내기에 실패했습니다.");
+    } finally {
+      setExporting(false);
+    }
+  }, [apiQuery]);
+
   return (
     <div className="mx-auto max-w-[1400px] space-y-4">
       <div className="flex items-start gap-3">
@@ -156,12 +180,22 @@ function CertificatesBody() {
             {data ? `조건에 맞는 인증서 ${data.total.toLocaleString()}건` : "인벤토리 목록"}
           </p>
         </div>
-        {canManage && (
-          <Button className="ml-auto" onClick={() => setUploadOpen((v) => !v)}>
-            <Upload data-icon="inline-start" />
-            인증서 등록
+        <div className="ml-auto flex items-center gap-2">
+          <Button
+            variant="outline"
+            disabled={exporting || !data || data.total === 0}
+            onClick={() => void exportCsv()}
+          >
+            <Download data-icon="inline-start" />
+            {exporting ? "내보내는 중…" : "CSV 내보내기"}
           </Button>
-        )}
+          {canManage && (
+            <Button onClick={() => setUploadOpen((v) => !v)}>
+              <Upload data-icon="inline-start" />
+              인증서 등록
+            </Button>
+          )}
+        </div>
       </div>
 
       {canManage && uploadOpen && (
