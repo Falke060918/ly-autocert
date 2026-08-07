@@ -532,6 +532,44 @@ MANUAL_INTERVENTION_REQUIRED
 - 모든 작업 서명 및 검증
 - 실행 결과 감사 로그 기록
 
+### 센서(원격 수집기)
+
+원격 수집 구성요소는 두 계층으로 구분한다.
+
+- 센서(원격 수집기): 네트워크 세그먼트당 배치하는 네트워크 수집기. 서버 대신 에이전트리스 TLS 스캔을 실행한다.
+- 에이전트: 호스트당 설치하는 로컬 구성요소. 로컬 인증서 탐색과 배포를 담당한다.
+
+#### 배치 원칙
+
+- 센서는 스캔 대상 세그먼트에 도달할 수 있는 위치에 배치한다.
+- 센서에서 중앙 서버로 향하는 아웃바운드 HTTPS(mTLS) 경로 1개만 필요하다.
+- 센서에 인바운드 포트를 열지 않는다.
+- 예: B↔C, C↔D는 통신 가능하지만 B↮D인 토폴로지에서 서버가 B에 있으면, 센서를 C에 배치해 D 세그먼트를 수집한다.
+
+#### 등록 흐름
+
+- 관리자가 1회용 등록 토큰을 발급한다. 서버는 토큰의 SHA-256 해시만 저장한다.
+- 센서는 로컬에서 키쌍을 생성하고 CSR을 제출해 클라이언트 인증서를 수령한다.
+- 센서 개인키는 센서 호스트를 떠나지 않는다.
+- 등록 이후 모든 통신은 mTLS로 수행한다.
+- 등록, 비활성화, 토큰 발급은 전건 AuditEvent를 남긴다.
+
+#### 작업 분배
+
+- 센서가 서버에서 작업을 가져가는 pull 리스 방식이다.
+- 작업 상태: pending → leased(만료 시각 포함) → running(하트비트) → completed/failed
+- 리스가 만료되면 작업을 실패로 처리한다.
+- 작업 유형은 폐쇄 enum으로 관리하며 `scan` 하나로 시작한다.
+- 임의 명령 실행 경로와 AI 실행 경로를 두지 않는다.
+
+#### 결과 수집
+
+- 센서는 스캔 결과를 Observation 배치로 POST한다.
+- (job_id, ip, port) 기준으로 멱등하다. 같은 배치를 다시 보내도 결과가 중복되지 않는다.
+- 서버는 기존 upsert 인벤토리 경로를 재사용해 결과를 반영한다.
+
+ACME/SCEP/EST 발급 프로토콜 중계는 Phase 4 이후 후보로만 남긴다.
+
 ---
 
 ## 7.9 정책 엔진
@@ -894,11 +932,11 @@ MVP는 단일 인스턴스를 지원한다.
 ├──────────────────────────────────────────────┤
 │       PostgreSQL │ Queue │ Secret Store      │
 └──────────────────────────────────────────────┘
-             ▲                      ▲
-             │ mTLS                 │
-      ┌──────┴──────┐        ┌──────┴──────┐
-      │ Host Agents │        │ AI Assistant │
-      └─────────────┘        └─────────────┘
+             ▲                ▲                ▲
+             │ mTLS           │ mTLS           │
+      ┌──────┴──────┐  ┌──────┴──────┐  ┌──────┴──────┐
+      │ Host Agents │  │   Sensors   │  │ AI Assistant │
+      └─────────────┘  └─────────────┘  └─────────────┘
 ```
 
 ---
@@ -1015,6 +1053,47 @@ agent_id
 connection_status
 tags
 ```
+
+### Sensor (Phase 3)
+
+```text
+id
+name
+status
+enrollment_token_hash
+client_cert_fingerprint_sha256
+registered_at
+last_seen_at
+disabled_at
+created_at
+updated_at
+```
+
+유의점: 다중 세그먼트 환경에서는 사설 IP 대역이 겹칠 수 있다. 위치 유일성 기준을
+(ip, port)에서 (실행기 스코프, ip, port)로 확장해야 하며, 마이그레이션 0006의
+부분 유니크 인덱스(uq_targets_network_ip, uq_certificate_locations_network_endpoint)도 함께 확장 대상이다.
+
+### ScanJob
+
+```text
+id
+status
+targets
+ports
+timeout_ms
+concurrency
+total_endpoints
+scanned_endpoints
+reachable_endpoints
+certificates_found
+certificates_new
+error
+created_at
+started_at
+finished_at
+```
+
+Phase 3 예정 필드: executor_type(server | sensor), sensor_id — 서버 직접 실행과 센서 위임 실행을 구분한다.
 
 ### CertificateAuthority
 
@@ -1274,7 +1353,28 @@ MVP는 다음 화면을 제공한다.
 - UI 또는 API에서 인증서를 발급할 수 있다.
 - 발급된 인증서가 인벤토리에 자동 등록된다.
 
-## Phase 3: 에이전트와 배포
+## Phase 3: 원격 수집기(센서)·에이전트와 배포
+
+Phase 3a는 Phase 2와 독립적이며 Phase 2보다 먼저 착수할 수 있다.
+
+### Phase 3a: 센서(원격 수집기)
+
+구현 범위:
+
+- 센서 등록(1회용 등록 토큰, 서버는 SHA-256 해시만 저장)
+- 센서 클라이언트 인증서 발급(센서 로컬 키쌍 생성 → CSR)
+- mTLS 통신
+- pull 리스 작업 분배(pending → leased → running → completed/failed)
+- 원격 세그먼트 TLS 스캔 실행(작업 유형 `scan`)
+- Observation 배치 멱등 수집(기존 upsert 인벤토리 경로 재사용)
+- 센서 등록·비활성화·토큰 발급 감사 로그
+
+완료 조건:
+
+- 서버가 직접 도달할 수 없는 세그먼트의 인증서가 센서를 통해 인벤토리에 수집된다.
+- 센서는 인바운드 포트 없이 동작한다.
+
+### Phase 3b: 에이전트와 배포
 
 구현 범위:
 
