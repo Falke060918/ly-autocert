@@ -4,26 +4,27 @@
 INHERIT_AutoCert — 폐쇄망·레거시 환경용 온프레미스 인증서 라이프사이클 관리(CLM) 플랫폼. (명세: docs/00-spec.md v0.1 / 기획: docs/01-plan.md / 목표: docs/02-goals.md)
 
 ## 현재 상태
-**Phase 1(인증서 인벤토리) 공식 완료 — M1·M2·M3 전부 달성 선언(2026-08-08).** 성공 기준 7개 + M3 항목(OpenAPI·보안 점검·문서) reviewer 실측 통과, main=origin/main.
-- 이슈 #1~#9에 더해 M3 보강 4건 머지: 인증서 체인 표시(마이그레이션 0008 SKI/AKI, AKI=SKI 매칭+DN 폴백, 상세 chain 배열+체인 카드) / CSV 내보내기(GET /api/v1/certificates/export, 같은 트랜잭션 감사)+import 감사 actor_id 수정 / 보안 헤더(백엔드 미들웨어+프론트 CSP, HSTS는 HTTPS 전환 시 주석 해제) / OpenAPI 정합(TestOpenAPISpecMatchesRoutes, make openapi-check, GET /api/v1/openapi.yaml 인증 뒤 제공, 라우트 15=명세 15).
-- .env.example에 BOOTSTRAP_ADMIN_USERNAME/PASSWORD(자리표시)/SESSION_TTL(기본 8h, Go duration) 추가 완료 — quickstart만으로 로그인까지 동작 실증.
-- docs/manual INSTALL·OPERATIONS: 지원 사양(형식·파싱·Discovery 한계·폐쇄망 구조) 장 신설 + 웹 콘솔 운영 절차로 갱신.
-- Phase 3 설계 레퍼런스(리서치): 아웃바운드 전용 pull 워커, agent/sensor 2계층, 표준 프로토콜(ACME/SCEP/EST) 중계, 에어갭=사설 CA+수동 반입.
+**Phase 1(인증서 인벤토리) 공식 완료(2026-08-08, main=origin/main). 이어서 센서(원격 수집기) 아키텍처를 계획 문서에 반영 완료(2887930..ddc4ae2, 코드 변경 0건).**
+- 배경: 고객사 다중 분리망(예: B↔C·C↔D 연결, B↮D)에서 서버 설치 지점이 도달 못 하는 세그먼트 대응 요구 — 관리망(A/B) 설치 요청에도 센서로 대응 가능해야 함(DigiCert ONE 센서 유사).
+- 00-spec.md: 7.8장 "센서(원격 수집기)" 하위절(배치 원칙: 아웃바운드 mTLS 1경로·인바운드 불필요 / 1회용 등록 토큰 SHA-256 해시만 저장+CSR+클라이언트 인증서 / pull 리스 상태 머신 pending→leased→running→completed·failed, 폐쇄 enum scan / Observation 멱등 배치 POST). 10장 다이어그램 Sensors 박스. 12장 Sensor 모델 자리+ScanJob 등재+유의점(사설 IP 겹침 → 위치 유일성 (실행기 스코프,ip,port) 확장, 0006 부분 유니크 인덱스 포함). 15장 Phase 3을 3a(센서)/3b(배포 에이전트)로 재구성, "3a는 Phase 2와 독립·선행 착수 가능".
+- 01-plan.md: Phase 3 항목 3a/3b 갱신, 제외 목록에 "원격 수집기(센서)" 명시, 스택 표기 Agent/Sensor.
+- docs/manual/INSTALL.md: 4.0 "설치 위치 선정 기준" 신설 — ①관리자 브라우저→3000 도달 ②스캔 대상 아웃바운드("가장 많은 대상에 도달하는 곳" 기준) ③도달 불가 세그먼트는 수동 업로드 보완+센서 (예정) 안내.
+- docs/MAP.md: scanner.go store/db 비의존 규약(Phase 3a 센서 재사용 전제) 등재.
 
 ## 다음 할 일 (우선순위 순)
-1. Phase 2(CA 연결과 발급) 착수 여부 사용자 결정 대기 — 착수 시 /kickoff 급 기획이 아니라 00-spec 15장 Phase 2 항목(CA 공통 인터페이스, ACME/AD CS/Vault PKI 커넥터, 프로파일, CSR, 발급 이력) 기반 planner 설계부터.
-2. 잔여 low 항목(원하면): 목록 "초기화" 시 검색 인풋 잔류 / HTTPS 배포 시 세션 쿠키 Secure 플래그 / 감사 정본 문자열 0x1F 경계(길이 접두) / Discovery Job 목록 API(현재 localStorage 한정)·서버 재시작 시 running Job 회수 / 감사 로그 조회 UI(현재 API만) / 상세 위치 카드가 hostname 대신 IP 표기.
-3. INSTALL.md의 ".env.example에 인증 변수 미포함 — 수동 추가" 경고 문단 삭제(이제 포함됨 — 확인 후 정리).
+1. Phase 2(CA 연결과 발급) 또는 Phase 3a(센서) 착수 여부 사용자 결정 대기 — 3a는 Phase 2와 독립·선행 가능(00-spec 15장). 착수 시 /kickoff급 기획이 아니라 해당 장 기반 planner 설계부터.
+2. OPERATIONS.md 문서 갭: CSV 내보내기(export 버튼·certificate.export 감사)와 상세 체인 카드가 2.2·2.3·3.1절에 미반영(#8·#9 시점 기준) — 문서만 갱신.
+3. 잔여 low 항목(원하면): 목록 "초기화" 시 검색 인풋 잔류 / HTTPS 배포 시 세션 쿠키 Secure 플래그 / 감사 정본 문자열 0x1F 경계(길이 접두) / Discovery Job 목록 API(현재 localStorage 한정)·서버 재시작 시 running Job 회수 / 감사 로그 조회 UI(현재 API만) / 상세 위치 카드가 hostname 대신 IP 표기.
 
 ## 이번 세션 특이사항
-- .env.example에 사용자가 실비밀번호를 넣었다가 자리표시로 교체한 이력 있음 — 해당 값이 실사용 중이면 회전 권고 전달됨.
 - git author 자동 추정값(markus@jjuui-MacBookAir.local) 커밋 지속 — git config 미적용.
-- 감사 삽입은 "트랜잭션 마지막" 암묵 규약(전역 advisory lock이 tx 끝까지 유지) — 새 감사 경로 작성 시 준수.
-- 마이그레이션 결번: 0003·0005. 최신 0008.
+- INSTALL.md의 ".env.example 인증 변수 미포함" 경고 문단은 이미 삭제된 상태로 확인 — 관련 구항목 정리 완료.
+- .env.example 실비밀번호 이력: 자리표시로 교체됨, 실사용 값이면 회전 권고 기전달.
+- 감사 삽입 규약·마이그레이션 결번은 GOTCHAS.md로 이전됨.
 
 ## 주요 파일
-- docs/00-spec.md: 명세 v0.1 단일 출처(15장 Phase 로드맵, 16장 제외) / docs/02-goals.md: 성공 기준·마일스톤
+- docs/00-spec.md: 명세 단일 출처(7.8 센서, 15장 3a/3b 로드맵, 16장 제외) / docs/02-goals.md: 성공 기준·마일스톤
 - docs/MAP.md: 구조·라우트·검증 명령 캐시 / docs/GOTCHAS.md: 함정 기록
-- docs/manual/: 고객용 INSTALL·OPERATIONS
-- backend/internal/: api·auth·audit·certparse·discovery·store·domain·db / backend/migrations/(최신 0008) / backend/Makefile(openapi-check)
+- docs/manual/: 고객용 INSTALL(4.0 설치 위치 기준)·OPERATIONS
+- backend/internal/: api·auth·audit·certparse·discovery(scanner는 store 비의존)·store·domain·db / backend/migrations/(최신 0008)
 - frontend/app/·lib/·components/ / docker-compose.yml / mockup/index.html

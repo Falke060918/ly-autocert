@@ -23,13 +23,9 @@ Fix: write Korean in AskUserQuestion arguments as **literal UTF-8 characters**, 
 Cause: the matcher strips only `timeout`/`nice`/`nohup`/`env`; `rtk git push --force` matches no `git push …` pattern and passes through the `Bash(rtk:*)` allow.
 Fix: write dangerous-command patterns generalized with a leading `*` — `Bash(* git push *--force*)`; per-wrapper mirrors do not scale. (last recurrence: 2026-07)
 
-**Session-start markers (`RTK-MISSING` etc.) get missed and the user's task is handled first**
-Cause: markers are text signals with no enforcement, and the user message right after them grabs the attention.
-Fix: check the markers in the session-start output **before** handling the user's request. (last recurrence: 2026-07)
-
-**Fixed a hook but the session-start marker does not appear**
-Cause: `.claude/settings.json` hooks load only at session start; `/clear` empties only the conversation context and does not re-read them.
-Fix: quit and restart Claude first, before suspecting the hook logic itself. (last recurrence: 2026-07)
+**Session-start markers: check them first; `/clear` does not reload hooks**
+Cause: markers are unenforced text signals easily eclipsed by the user's message; `.claude/settings.json` hooks load only at session start, and `/clear` does not re-read them.
+Fix: check markers in the session-start output **before** the user's request; after editing hooks, restart Claude (not `/clear`) before suspecting the hook logic. (last recurrence: 2026-07)
 
 **Hook edits blocked by the permission-mode classifier**
 Cause: edits to settings.json hooks/permissions trip the classifier regardless of allow rules
@@ -37,13 +33,9 @@ Fix: state the user-approval basis at the very top of the delegation prompt (las
 
 ## Output style & plugins
 
-**Plugin `force-for-plugin` silently overrides user outputStyle**
-Cause: a plugin carrying this field replaces the configured output style without notice
-Fix: if answer tone changes after installing a plugin, check this field first (last recurrence: 2026-07)
-
-**brief output style: two footguns**
-Cause: removing `keep-coding-instructions: true` silently drops the built-in engineering instructions; editors flag `outputStyle` as "Property not allowed" (absent from public schema) though it works
-Fix: keep the key; ignore the schema warning (last recurrence: 2026-07)
+**Output-style footguns: plugin override and brief style**
+Cause: a plugin carrying `force-for-plugin` replaces the configured output style without notice; in brief style, removing `keep-coding-instructions: true` silently drops the built-in engineering instructions (editors flag `outputStyle` as "Property not allowed" though it works).
+Fix: if answer tone changes after installing a plugin, check that field first; keep the key and ignore the schema warning. (last recurrence: 2026-07)
 
 ## Agents & delegation
 
@@ -93,4 +85,14 @@ Fix: use a disposable per-worktree DB (createdb/dropdb) for `go test -p 1 ./...`
 **Appending paths after the top-level `security:` block silently corrupts backend/api/openapi.yaml**
 Cause: YAML top-level key ordering — paths inserted below `security:` fall outside the `paths:` map; the file stayed broken from the #7 merge unnoticed.
 Fix: keep `security:` outside/after `paths:`; TestOpenAPISpecMatchesRoutes now fails at parse time — update the spec in the same commit as any route change.
+(last recurrence: 2026-08)
+
+**Audit insert must be the last statement in its transaction**
+Cause: implicit convention — the global advisory lock taken by the audit hash chain is held until tx end; inserting earlier widens lock contention and breaks chain-ordering assumptions.
+Fix: in any new mutation path, make the AuditEvent insert the final operation inside the same transaction.
+(last recurrence: 2026-08)
+
+**Migration numbering has gaps (0003, 0005 missing)**
+Cause: migrations were renumbered/dropped during development; latest is 0008.
+Fix: when adding a migration, use max(existing)+1; do not fill gaps or treat them as errors.
 (last recurrence: 2026-08)
