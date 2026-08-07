@@ -54,6 +54,28 @@ func TestParseListParamsFull(t *testing.T) {
 	}
 }
 
+func TestParseListParamsDerivedFlags(t *testing.T) {
+	// self_signed·unowned는 대시보드(이슈 #8) 숫자 → 목록 이동을 위한 파생 필터다.
+	r := httptest.NewRequest("GET", "/api/v1/certificates?self_signed=true&unowned=false", nil)
+	in, perr := parseListParams(r)
+	if perr != nil {
+		t.Fatalf("perr = %+v, want nil", perr)
+	}
+	if in.SelfSigned == nil || *in.SelfSigned != true {
+		t.Errorf("self_signed = %v, want true", in.SelfSigned)
+	}
+	if in.Unowned == nil || *in.Unowned != false {
+		t.Errorf("unowned = %v, want false", in.Unowned)
+	}
+
+	// 미지정이면 nil (필터 없음).
+	r = httptest.NewRequest("GET", "/api/v1/certificates", nil)
+	in, _ = parseListParams(r)
+	if in.SelfSigned != nil || in.Unowned != nil {
+		t.Errorf("defaults self_signed/unowned = %v/%v, want nil/nil", in.SelfSigned, in.Unowned)
+	}
+}
+
 func TestParseListParamsRepeatedFilterValues(t *testing.T) {
 	// 반복 파라미터와 쉼표 구분 혼용을 모두 허용한다.
 	r := httptest.NewRequest("GET", "/api/v1/certificates?status=active&status=revoked", nil)
@@ -76,6 +98,8 @@ func TestParseListParamsInvalid(t *testing.T) {
 		"zero expires_within_days": {"expires_within_days=0", "invalid_expires_within_days"},
 		"non-numeric expires":      {"expires_within_days=abc", "invalid_expires_within_days"},
 		"bad expired":              {"expired=maybe", "invalid_expired"},
+		"bad self_signed":          {"self_signed=maybe", "invalid_self_signed"},
+		"bad unowned":              {"unowned=maybe", "invalid_unowned"},
 		"non-whitelisted sort":     {"sort=fingerprint_sha256", "invalid_sort"},
 		"bad order":                {"order=up", "invalid_order"},
 		"zero page":                {"page=0", "invalid_page"},

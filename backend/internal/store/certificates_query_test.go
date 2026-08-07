@@ -19,32 +19,39 @@ import (
 )
 
 type listFixture struct {
-	cn       string
-	serial   string
-	sans     []string
-	notAfter time.Time
-	ctype    domain.CertificateType
-	status   domain.CertificateStatus
+	cn         string
+	serial     string
+	sans       []string
+	notAfter   time.Time
+	ctype      domain.CertificateType
+	status     domain.CertificateStatus
+	selfSigned bool    // true면 issuer_dn = subject_dn
+	ownerID    *string // nil이면 소유자 없음
 }
 
 // insertListFixture는 목록 테스트용 인증서 1건을 직접 INSERT한다.
 func insertListFixture(t *testing.T, pool *sql.DB, f listFixture) string {
 	t.Helper()
 	sum := sha256.Sum256([]byte("list-fixture:" + f.cn + ":" + f.serial))
+	issuer := "CN=fixture-ca"
+	if f.selfSigned {
+		issuer = "CN=" + f.cn
+	}
 	var id string
 	err := pool.QueryRow(`
 		INSERT INTO certificates (
 			fingerprint_sha256, serial_number, subject_dn, issuer_dn, common_name, sans,
 			not_before, not_after, public_key_algorithm, public_key_size,
-			signature_algorithm, certificate_type, status
+			signature_algorithm, certificate_type, status, owner_id
 		) VALUES (
 			$1, $2, $3, $4, $5,
 			coalesce(string_to_array(nullif($6, ''), chr(31)), '{}'),
-			$7, $8, 'ECDSA', 256, 'ECDSA-SHA256', $9, $10
+			$7, $8, 'ECDSA', 256, 'ECDSA-SHA256', $9, $10, $11::uuid
 		) RETURNING id`,
-		hex.EncodeToString(sum[:]), f.serial, "CN="+f.cn, "CN=fixture-ca", f.cn,
+		hex.EncodeToString(sum[:]), f.serial, "CN="+f.cn, issuer, f.cn,
 		strings.Join(f.sans, sansSep),
 		f.notAfter.Add(-90*24*time.Hour), f.notAfter, string(f.ctype), string(f.status),
+		f.ownerID,
 	).Scan(&id)
 	if err != nil {
 		t.Fatalf("insert fixture %s: %v", f.cn, err)
