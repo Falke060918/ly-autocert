@@ -46,6 +46,8 @@ type Certificate struct {
 	PublicKeyAlgorithm string            `json:"public_key_algorithm"`
 	PublicKeySize      int               `json:"public_key_size"`
 	SignatureAlgorithm string            `json:"signature_algorithm"`
+	SubjectKeyID       *string           `json:"subject_key_id"`   // SKI 소문자 hex. 확장 없음·0008 이전 데이터는 nil
+	AuthorityKeyID     *string           `json:"authority_key_id"` // AKI 소문자 hex. 확장 없음·0008 이전 데이터는 nil
 	CertificateType    CertificateType   `json:"certificate_type"`
 	Status             CertificateStatus `json:"status"`
 	CAID               *string           `json:"ca_id"`

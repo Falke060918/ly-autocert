@@ -81,10 +81,11 @@ type LocationWithTarget struct {
 	Target     TargetRef `json:"target"`
 }
 
-// CertificateDetail은 상세 조회 결과다 (설치 위치 목록 포함).
+// CertificateDetail은 상세 조회 결과다 (설치 위치 목록 + 체인 포함).
 type CertificateDetail struct {
 	Certificate domain.Certificate
 	Locations   []LocationWithTarget
+	Chain       []ChainItem // 자신→상위→루트 순 (certificates_chain.go)
 }
 
 // certificateColumns는 scanCertificate와 순서가 일치해야 한다.
@@ -94,7 +95,7 @@ const certificateColumns = `
 	array_to_string(sans, chr(31)),
 	not_before, not_after, public_key_algorithm, public_key_size, signature_algorithm,
 	certificate_type, status, ca_id, owner_id, department_id, environment,
-	auto_renew, renewal_policy_id, created_at, updated_at`
+	auto_renew, renewal_policy_id, subject_key_id, authority_key_id, created_at, updated_at`
 
 func scanCertificate(sc interface{ Scan(...any) error }) (domain.Certificate, error) {
 	var c domain.Certificate
@@ -104,7 +105,8 @@ func scanCertificate(sc interface{ Scan(...any) error }) (domain.Certificate, er
 		&sans,
 		&c.NotBefore, &c.NotAfter, &c.PublicKeyAlgorithm, &c.PublicKeySize, &c.SignatureAlgorithm,
 		&ctype, &status, &c.CAID, &c.OwnerID, &c.DepartmentID, &c.Environment,
-		&c.AutoRenew, &c.RenewalPolicyID, &c.CreatedAt, &c.UpdatedAt,
+		&c.AutoRenew, &c.RenewalPolicyID, &c.SubjectKeyID, &c.AuthorityKeyID,
+		&c.CreatedAt, &c.UpdatedAt,
 	)
 	if err != nil {
 		return c, err
@@ -302,5 +304,10 @@ func (s *Store) GetCertificateDetail(ctx context.Context, id string) (*Certifica
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate locations: %w", err)
 	}
-	return &CertificateDetail{Certificate: cert, Locations: locations}, nil
+
+	chain, err := s.getCertificateChain(ctx, cert)
+	if err != nil {
+		return nil, err
+	}
+	return &CertificateDetail{Certificate: cert, Locations: locations, Chain: chain}, nil
 }

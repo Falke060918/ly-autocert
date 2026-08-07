@@ -68,13 +68,17 @@ const upsertCertificateSQL = `
 	INSERT INTO certificates (
 		fingerprint_sha256, serial_number, subject_dn, issuer_dn, common_name, sans,
 		not_before, not_after, public_key_algorithm, public_key_size,
-		signature_algorithm, certificate_type, status
+		signature_algorithm, certificate_type, status, subject_key_id, authority_key_id
 	) VALUES (
 		$1, $2, $3, $4, $5,
 		coalesce(string_to_array(nullif($6, ''), chr(31)), '{}'),
-		$7, $8, $9, $10, $11, $12, $13
+		$7, $8, $9, $10, $11, $12, $13, $14, $15
 	)
-	ON CONFLICT (fingerprint_sha256) DO UPDATE SET updated_at = now()
+	ON CONFLICT (fingerprint_sha256) DO UPDATE SET
+		updated_at = now(),
+		-- 0008 이전에 저장된 행은 키 식별자(SKI/AKI)가 NULL — 재업로드·재스캔 시 백필한다.
+		subject_key_id   = coalesce(certificates.subject_key_id, excluded.subject_key_id),
+		authority_key_id = coalesce(certificates.authority_key_id, excluded.authority_key_id)
 	RETURNING id, status, created_at, updated_at, (xmax = 0) AS created`
 
 // ImportCertificates는 업로드 1건을 단일 트랜잭션으로 저장한다.
@@ -101,6 +105,7 @@ func (s *Store) ImportCertificates(ctx context.Context, in ImportInput) (*Import
 			strings.Join(c.SANs, sansSep),
 			c.NotBefore, c.NotAfter, c.PublicKeyAlgorithm, c.PublicKeySize,
 			c.SignatureAlgorithm, string(c.CertificateType), string(c.Status),
+			c.SubjectKeyID, c.AuthorityKeyID,
 		).Scan(&out.ID, &status, &out.CreatedAt, &out.UpdatedAt, &created)
 		if err != nil {
 			return nil, fmt.Errorf("store: upsert certificate: %w", err)

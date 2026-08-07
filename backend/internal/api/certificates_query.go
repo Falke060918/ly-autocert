@@ -32,6 +32,7 @@ type certificateDetailResponse struct {
 	RequestID   string                     `json:"request_id"`
 	Certificate domain.Certificate         `json:"certificate"`
 	Locations   []store.LocationWithTarget `json:"locations"`
+	Chain       []store.ChainItem          `json:"chain"` // 자신→상위→루트 순, 미보유 상위는 stored=false
 }
 
 // paramError는 쿼리 파라미터 검증 실패다 (통일 오류 형식의 code·message로 그대로 나간다).
@@ -190,6 +191,7 @@ func handleGetCertificate(st *store.Store) http.HandlerFunc {
 			RequestID:   deref(requestIDFrom(r.Context())),
 			Certificate: res.Certificate,
 			Locations:   res.Locations,
+			Chain:       res.Chain,
 		})
 	}
 }

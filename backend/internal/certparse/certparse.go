@@ -138,9 +138,21 @@ func Describe(cert *x509.Certificate, now time.Time) domain.Certificate {
 		PublicKeyAlgorithm: cert.PublicKeyAlgorithm.String(),
 		PublicKeySize:      publicKeySize(cert),
 		SignatureAlgorithm: cert.SignatureAlgorithm.String(),
+		SubjectKeyID:       keyIDHex(cert.SubjectKeyId),
+		AuthorityKeyID:     keyIDHex(cert.AuthorityKeyId),
 		CertificateType:    classify(cert),
 		Status:             lifecycleStatus(cert, now),
 	}
+}
+
+// keyIDHex는 SKI/AKI 확장 바이트를 소문자 hex로 변환한다. 확장이 없으면 nil.
+// 체인 관계 매칭(리프의 AKI = 상위의 SKI)에 쓴다 — DB CHECK(0008)와 형식이 일치한다.
+func keyIDHex(b []byte) *string {
+	if len(b) == 0 {
+		return nil
+	}
+	s := hex.EncodeToString(b)
+	return &s
 }
 
 func collectSANs(cert *x509.Certificate) []string {

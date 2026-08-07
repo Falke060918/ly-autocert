@@ -24,7 +24,7 @@ import {
   type CertificateDetailResponse,
   type CertificateLocation,
 } from "@/lib/api";
-import { dnCommonName, formatDateTime, isSelfSigned } from "@/lib/format";
+import { dnCommonName, formatDate, formatDateTime, isSelfSigned } from "@/lib/format";
 
 const TYPE_LABELS: Record<string, string> = {
   server: "서버 인증서",
@@ -219,9 +219,91 @@ export default function CertificateDetailPage() {
           </Card>
         </div>
 
-        <Card className="gap-0 overflow-hidden py-0 xl:order-none">
-          <div className="flex items-baseline gap-2 border-b px-4 py-3">
-            <h2 className="text-sm font-semibold tracking-tight">설치 위치</h2>
+        <div className="grid gap-4 xl:order-none">
+          <Card className="gap-0 overflow-hidden py-0">
+            <div className="flex items-baseline gap-2 border-b px-4 py-3">
+              <h2 className="text-sm font-semibold tracking-tight">인증서 체인</h2>
+              <span className="text-xs text-muted-foreground">
+                {data.chain.length}단계
+              </span>
+            </div>
+            {/* 자신→상위→루트 순. 저장된 상위는 클릭 시 해당 상세로 이동한다. */}
+            <div className="p-2">
+              {data.chain.map((item, i) => {
+                const label =
+                  item.common_name ||
+                  dnCommonName(item.subject_dn) ||
+                  item.subject_dn ||
+                  "(불명)";
+                const isCurrent = i === 0;
+                const clickable = !isCurrent && item.stored && item.id;
+                const row = (
+                  <div className="flex min-w-0 items-start gap-1.5">
+                    {i > 0 && (
+                      <span
+                        aria-hidden
+                        className="shrink-0 font-mono text-xs leading-5 text-muted-foreground/50"
+                        style={{ paddingLeft: (i - 1) * 14 }}
+                      >
+                        └
+                      </span>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span
+                          className={`truncate font-mono text-xs ${
+                            isCurrent ? "font-semibold" : "text-foreground/80"
+                          }`}
+                        >
+                          {label}
+                        </span>
+                        {isCurrent && <Badge variant="secondary">현재</Badge>}
+                        {item.stored &&
+                          item.self_signed &&
+                          item.certificate_type === "ca" && (
+                            <Badge variant="outline">루트 CA</Badge>
+                          )}
+                        {!item.stored && (
+                          <Badge variant="outline" className="text-muted-foreground">
+                            미보유
+                          </Badge>
+                        )}
+                      </div>
+                      {item.stored && item.not_after ? (
+                        <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                          <span className="tabular-nums">
+                            만료 {formatDate(item.not_after)}
+                          </span>
+                          <DdayText notAfter={item.not_after} />
+                        </div>
+                      ) : !item.stored ? (
+                        <div className="mt-0.5 text-xs text-muted-foreground">
+                          인벤토리에 없는 상위 인증서입니다.
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+                return clickable ? (
+                  <Link
+                    key={`${item.id}-${i}`}
+                    href={`/certificates/${item.id}`}
+                    className="block rounded-md px-2 py-1.5 transition-colors hover:bg-secondary/60"
+                  >
+                    {row}
+                  </Link>
+                ) : (
+                  <div key={`${item.subject_dn}-${i}`} className="px-2 py-1.5">
+                    {row}
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+
+          <Card className="gap-0 overflow-hidden py-0">
+            <div className="flex items-baseline gap-2 border-b px-4 py-3">
+              <h2 className="text-sm font-semibold tracking-tight">설치 위치</h2>
             <span className="text-xs text-muted-foreground">
               {data.locations.length}곳
             </span>
@@ -281,7 +363,8 @@ export default function CertificateDetailPage() {
               </TableBody>
             </Table>
           )}
-        </Card>
+          </Card>
+        </div>
       </div>
     </div>
   );
