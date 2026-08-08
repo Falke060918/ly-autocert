@@ -63,7 +63,7 @@ func TestOpenAPISpecMatchesRoutes(t *testing.T) {
 	spec := specOperations(t)
 
 	// 라우트 등록만 필요하므로 의존성 없이 만든다 (핸들러는 호출하지 않는다).
-	srv := newServer(nil, nil, nil)
+	srv := newServer(nil, nil, nil, nil)
 	routes := make(map[string]bool, len(srv.routes))
 	for _, pattern := range srv.routes {
 		routes[pattern] = true

@@ -69,7 +69,12 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	rec := audit.NewRecorder(pool)
 	svc := auth.NewServiceForTest(pool, time.Hour, rec)
-	server := httptest.NewServer(NewServer(pool, svc, rec))
+	// 센서 CA 봉인 키는 테스트마다 난수로 만든다 — 시크릿 하드코딩 금지.
+	caKey := make([]byte, 32)
+	if _, err := rand.Read(caKey); err != nil {
+		t.Fatalf("random sensor ca key: %v", err)
+	}
+	server := httptest.NewServer(NewServer(pool, svc, rec, caKey))
 	t.Cleanup(server.Close)
 	return &testEnv{pool: pool, svc: svc, server: server}
 }

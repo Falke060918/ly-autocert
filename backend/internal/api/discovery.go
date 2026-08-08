@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/discovery"
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/domain"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/store"
 )
 
@@ -19,6 +20,9 @@ type createScanRequest struct {
 	Ports       []int    `json:"ports"`       // 미지정 시 [443]
 	TimeoutMs   int      `json:"timeout_ms"`  // 미지정 시 기본값으로 클램프
 	Concurrency int      `json:"concurrency"` // 미지정 시 기본값으로 클램프
+	// SensorID를 지정하면 서버 직접 실행 대신 해당 센서가 스캔한다 (Phase 3a).
+	// active 센서만 허용 — pending Job만 만들어지고 센서가 pull 리스로 가져간다.
+	SensorID *string `json:"sensor_id"`
 }
 
 type createScanResponse struct {
@@ -30,8 +34,9 @@ type createScanResponse struct {
 
 // handleCreateScan은 POST /api/v1/discovery/scans를 처리한다.
 // 스캔 Job을 만들어 즉시 job id를 반환하고(202), 실제 스캔은 백그라운드에서 돈다.
+// sensor_id가 있으면 센서 위임 pending Job만 만든다(실행은 센서 pull 리스, 00-spec 7.8).
 // 생성은 감사 이벤트를 남긴다(store.CreateScanJob 내부). 허용 역할은 라우트에서 강제한다.
-func handleCreateScan(mgr *discovery.Manager) http.HandlerFunc {
+func handleCreateScan(mgr *discovery.Manager, st *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		reqIDStr := ""
@@ -50,6 +55,36 @@ func handleCreateScan(mgr *discovery.Manager) http.HandlerFunc {
 			req.Ports = []int{443}
 		}
 
+		// 센서 위임 스캔: 존재하고 active인 센서만 허용한다. 무효·비활성은 422 —
+		// 형식 오류(400)와 구분해, 폼 입력이 아니라 선택한 센서가 문제임을 드러낸다.
+		if req.SensorID != nil && *req.SensorID == "" {
+			req.SensorID = nil
+		}
+		if req.SensorID != nil {
+			if !isUUID(*req.SensorID) {
+				writeError(w, r, http.StatusUnprocessableEntity, "invalid_sensor",
+					"유효한 활성 센서가 아닙니다.")
+				return
+			}
+			sn, err := st.GetSensor(ctx, *req.SensorID)
+			if errors.Is(err, store.ErrSensorNotFound) {
+				writeError(w, r, http.StatusUnprocessableEntity, "invalid_sensor",
+					"유효한 활성 센서가 아닙니다.")
+				return
+			}
+			if err != nil {
+				slog.Error("discovery: lookup sensor failed", "error", err.Error(), "request_id", reqIDStr)
+				writeError(w, r, http.StatusInternalServerError, "internal_error",
+					"스캔 작업을 시작할 수 없습니다.")
+				return
+			}
+			if sn.Status != domain.SensorActive {
+				writeError(w, r, http.StatusUnprocessableEntity, "invalid_sensor",
+					"유효한 활성 센서가 아닙니다.")
+				return
+			}
+		}
+
 		var actorID *string
 		if u := userFrom(ctx); u != nil {
 			actorID = &u.ID
@@ -60,6 +95,7 @@ func handleCreateScan(mgr *discovery.Manager) http.HandlerFunc {
 			Ports:       req.Ports,
 			TimeoutMs:   req.TimeoutMs,
 			Concurrency: req.Concurrency,
+			SensorID:    req.SensorID,
 			ActorID:     actorID,
 			RequestID:   requestIDFrom(ctx),
 			SourceIP:    clientIP(r),
