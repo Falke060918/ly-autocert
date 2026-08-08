@@ -31,7 +31,7 @@ INHERIT_AutoCert — 폐쇄망·레거시 환경용 온프레미스 인증서 �
 
 ## 이번 세션 특이사항
 - 로드맵 공백 5건 배정 확정·문서 반영: 사용자 관리=Phase 1 / Prometheus 메트릭·오프라인 번들=Phase 2(번들은 3b 이전, Helm 선행) / OpenTelemetry·Helm·K8s=Phase 4. 11장 관측성 4항목 중 구조화 JSON 로그·Request ID는 이미 구현 완료로 정정.
-- 오프라인 라이선스(MAC 지문 + 유효기간 방식) 설계 진행 중 — Phase 배정 미정. 제외 선언하지 않는다.
+- 오프라인 라이선스 설계 완료(docs/design/03-license.md) — 상용화 준비 트랙(Phase 2 병렬, 마감=첫 유상 납품 직전) 배정, 구현 착수 보류. 평가판 없음·만료 시 관리자 전용 라이선스 등록 경로만 개방으로 확정.
 - git author 자동 추정값(markus@jjuui-MacBookAir.local) 커밋 지속 — git config 미적용.
 - 이전 STATE의 "INSTALL.md `.env.example` 경고 문단 이미 삭제됨" 기록은 오류였고 이번 세션에 실제로 삭제(25cc399).
 - OPERATIONS.md 문서 갭(CSV 내보내기·상세 체인 카드)은 이번 세션에 해소(4603819).

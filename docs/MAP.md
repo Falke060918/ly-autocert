@@ -44,7 +44,8 @@
   - 베이스 이미지 3종: `golang:1.25-alpine`·`gcr.io/distroless/static-debian12`(backend/Dockerfile), `node:24-alpine`(frontend/Dockerfile) — 폐쇄망 빌드 시 내부 레지스트리 미러 필요
 - `mockup/index.html` — 승인된 4화면 정적 목업 (제품 코드 아님)
 - `docs/` — 00-spec(명세) / 01-plan(기획) / 02-goals(목표) / STATE / GOTCHAS
-  - 00-spec 15장=Phase 1~5 로드맵, 16장=MVP 제외 목록, 02-goals=성공 기준 7개+M1~M3(Phase 판정 시 대조 출처)
+  - 00-spec 15장=Phase 1~5 로드맵 + 상용화 준비 트랙(Phase 2 병렬), 16장=MVP 제외 목록, 02-goals=성공 기준 7개+M1~M3(Phase 판정 시 대조 출처)
+  - `docs/design/` — 착수 전 설계 확정본 (03-license — 오프라인 라이선스. 구현 코드 없음)
   - `docs/manual/` — 고객용 매뉴얼 (INSTALL/OPERATIONS — #8·#9 UI 기준 운영 절차 + 지원 사양(3장: 형식·스캔 범위·프록시 구조) 반영. SENSOR — Phase 3a 센서 설치·등록·서비스화·운영·트러블슈팅, INSTALL 4.0/4.1/5.2·OPERATIONS 2.5/3.1과 상호 참조. 미구현 기능은 "(예정)" 표기 — 이슈 완료 시마다 갱신)
 
 ## 포트
