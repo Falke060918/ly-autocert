@@ -52,6 +52,7 @@
 
 ## 실행
 - `cp .env.example .env && docker compose up --build` [unix]
+- `.env` 필수 2개 = POSTGRES_PASSWORD·BOOTSTRAP_ADMIN_PASSWORD. SENSOR_CA_ENC_KEY/SENSOR_ADVERTISED_HOSTS/SENSOR_LISTEN_ADDR는 compose엔 배선돼 있으나 .env.example엔 없어 수동 추가(INSTALL 5.2).
 
 ## 검증 명령
 - backend: `go build ./...`, `go vet ./...`, 단위 테스트 `go test ./...` (backend/ 에서. 로컬 Go 없으면 Docker 경유)
