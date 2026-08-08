@@ -1,0 +1,161 @@
+// Package sensor는 원격 수집기(센서) 바이너리의 클라이언트 측 구현이다 (docs/00-spec.md 7.8).
+// 서버 게이트웨이(/sensor/v1/*)와 sensorwire DTO로 통신하고, 스캔 자체는
+// internal/discovery의 store 비의존 함수(Expand·ScanEndpoint)를 그대로 재사용한다.
+//
+// 보안: 개인키·인증서·등록 토큰 바이트를 로그·에러 메시지에 절대 넣지 않는다 (보안 하드 규칙 3).
+// 개인키는 센서 호스트를 떠나지 않으며(전송 금지), 표준 라이브러리 crypto만 사용한다 (규칙 2).
+package sensor
+
+import (
+	"crypto/ecdsa"
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+)
+
+// 상태 디렉토리 파일 이름. 개인키가 있으므로 디렉토리 0700, 파일 0600을 유지한다.
+const (
+	fileKey        = "key.pem"    // 센서 개인키 (PKCS#8 PEM) — 절대 전송·로그 금지
+	fileClientCert = "client.pem" // mTLS 클라이언트 인증서 (PEM)
+	fileCACert     = "ca.pem"     // 서버 검증용 CA 인증서 (PEM)
+	fileSensorID   = "sensor_id"  // 서버가 발급한 센서 ID
+)
+
+const (
+	dirPerm  = os.FileMode(0o700)
+	filePerm = os.FileMode(0o600)
+)
+
+const pemTypePrivateKey = "PRIVATE KEY"
+
+// DefaultStateDir는 OS별 상태 디렉토리 기본값이다. --state-dir로 재정의할 수 있다.
+func DefaultStateDir() string {
+	if runtime.GOOS == "windows" {
+		base := os.Getenv("ProgramData")
+		if base == "" {
+			base = `C:\ProgramData`
+		}
+		return filepath.Join(base, "AutocertSensor")
+	}
+	return "/var/lib/autocert-sensor"
+}
+
+// SaveEnrollment는 등록 결과(개인키·클라이언트 인증서·CA·센서 ID)를 상태 디렉토리에 저장한다.
+// 디렉토리는 0700, 파일은 0600이다. 재등록 시 기존 상태를 덮어쓴다.
+func SaveEnrollment(dir, sensorID string, key *ecdsa.PrivateKey, clientCertPEM, caCertPEM []byte) error {
+	if sensorID == "" {
+		return errors.New("sensor: sensor id is required")
+	}
+	if err := ensureStateDir(dir); err != nil {
+		return err
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return errors.New("sensor: marshal private key failed")
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: pemTypePrivateKey, Bytes: keyDER})
+
+	// 키를 먼저 쓴다 — 인증서만 있고 키가 없는 상태보다 그 반대가 복구하기 쉽다.
+	if err := writeFileAtomic(filepath.Join(dir, fileKey), keyPEM, filePerm); err != nil {
+		return err
+	}
+	if err := writeFileAtomic(filepath.Join(dir, fileClientCert), clientCertPEM, filePerm); err != nil {
+		return err
+	}
+	if err := writeFileAtomic(filepath.Join(dir, fileCACert), caCertPEM, filePerm); err != nil {
+		return err
+	}
+	return writeFileAtomic(filepath.Join(dir, fileSensorID), []byte(sensorID+"\n"), filePerm)
+}
+
+// ReplaceClientCert는 갱신된 클라이언트 인증서를 원자적으로 교체 저장한다 (임시 파일 + rename).
+// 개인키는 재사용하므로 인증서 파일 1개만 바뀐다 — 교체 도중 크래시에도 키/인증서 불일치가 없다.
+func ReplaceClientCert(dir string, clientCertPEM []byte) error {
+	return writeFileAtomic(filepath.Join(dir, fileClientCert), clientCertPEM, filePerm)
+}
+
+// LoadIdentity는 상태 디렉토리에서 센서 신원(키·인증서·CA·ID)을 복원한다.
+func LoadIdentity(dir string) (*Identity, error) {
+	keyPEM, err := os.ReadFile(filepath.Join(dir, fileKey))
+	if err != nil {
+		return nil, fmt.Errorf("sensor: state not found in %s — run 'enroll' first", dir)
+	}
+	block, _ := pem.Decode(keyPEM)
+	if block == nil || block.Type != pemTypePrivateKey {
+		return nil, errors.New("sensor: key file is not a private key PEM block")
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, errors.New("sensor: parse private key failed")
+	}
+	key, ok := parsed.(*ecdsa.PrivateKey)
+	if !ok {
+		return nil, errors.New("sensor: private key is not an ECDSA key")
+	}
+
+	certPEM, err := os.ReadFile(filepath.Join(dir, fileClientCert))
+	if err != nil {
+		return nil, errors.New("sensor: client certificate file missing — run 'enroll' first")
+	}
+	leaf, err := clientCertForKey(certPEM, key)
+	if err != nil {
+		return nil, err
+	}
+
+	caPEM, err := os.ReadFile(filepath.Join(dir, fileCACert))
+	if err != nil {
+		return nil, errors.New("sensor: ca certificate file missing — run 'enroll' first")
+	}
+	caPool := x509.NewCertPool()
+	if !caPool.AppendCertsFromPEM(caPEM) {
+		return nil, errors.New("sensor: ca certificate file contains no valid certificate")
+	}
+
+	idBytes, err := os.ReadFile(filepath.Join(dir, fileSensorID))
+	if err != nil {
+		return nil, errors.New("sensor: sensor_id file missing — run 'enroll' first")
+	}
+	sensorID := strings.TrimSpace(string(idBytes))
+	if sensorID == "" {
+		return nil, errors.New("sensor: sensor_id file is empty")
+	}
+
+	id := &Identity{SensorID: sensorID, key: key, caPool: caPool}
+	id.install(leaf)
+	return id, nil
+}
+
+// ensureStateDir는 상태 디렉토리를 0700으로 만든다. 이미 있으면 권한을 조인다.
+func ensureStateDir(dir string) error {
+	if err := os.MkdirAll(dir, dirPerm); err != nil {
+		return fmt.Errorf("sensor: create state dir: %w", err)
+	}
+	// MkdirAll은 기존 디렉토리 권한을 바꾸지 않는다. (Windows에서는 chmod가 제한적 — best effort)
+	if err := os.Chmod(dir, dirPerm); err != nil {
+		return fmt.Errorf("sensor: chmod state dir: %w", err)
+	}
+	return nil
+}
+
+// writeFileAtomic은 임시 파일에 쓰고 rename으로 원자 교체한다.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, perm); err != nil {
+		return fmt.Errorf("sensor: write %s: %w", filepath.Base(path), err)
+	}
+	// WriteFile의 perm은 파일 생성 시에만 적용된다 — 재사용된 임시 파일도 0600을 보장한다.
+	if err := os.Chmod(tmp, perm); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("sensor: chmod %s: %w", filepath.Base(path), err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("sensor: replace %s: %w", filepath.Base(path), err)
+	}
+	return nil
+}
