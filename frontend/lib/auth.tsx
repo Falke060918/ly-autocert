@@ -7,9 +7,17 @@
  */
 
 import * as React from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 
-import { ApiError, fetchMe, logout as apiLogout, type Role, type User } from "@/lib/api";
+import {
+  ApiError,
+  bounceToLogin,
+  clearSessionCookie,
+  fetchMe,
+  logout as apiLogout,
+  type Role,
+  type User,
+} from "@/lib/api";
 
 /** 인벤토리 변경(업로드·스캔 생성)이 허용되는 역할 — 백엔드 protected 등록과 일치. */
 const MANAGE_ROLES: readonly Role[] = [
@@ -62,7 +70,6 @@ export function useAuth(): AuthContextValue {
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
-  const pathname = usePathname();
   const [user, setUser] = React.useState<User | null>(null);
   const [loading, setLoading] = React.useState(true);
 
@@ -79,22 +86,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (cancelled) return;
         setLoading(false);
         if (err instanceof ApiError && err.status === 401) {
-          const next = pathname === "/" ? "" : `?next=${encodeURIComponent(pathname)}`;
-          router.replace(`/login${next}`);
+          // 세션이 폐기돼도 HttpOnly 쿠키는 브라우저에 남는다 — 쿠키를 만료시킨 뒤
+          // 로그인으로 보낸다 (bounceToLogin). 그래야 proxy.ts가 되돌리지 않는다.
+          bounceToLogin();
         }
       });
     return () => {
       cancelled = true;
     };
-    // pathname은 최초 마운트 시점 값만 쓴다 — 이동마다 me를 다시 부르지 않는다.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // 이동마다 me를 다시 부르지 않는다 — 소프트 내비게이션 중 세션이 폐기되면
+    // 각 화면의 API 401을 apiFetch가 잡아 같은 탈출 경로로 보낸다.
   }, []);
 
   const logout = React.useCallback(async () => {
     try {
       await apiLogout();
     } catch {
-      // 세션이 이미 만료됐어도 로그인 화면으로 보낸다.
+      // 세션이 이미 폐기됐으면 401이라 백엔드가 쿠키를 지워주지 못한다 — 직접 만료시킨다.
+      await clearSessionCookie();
     }
     router.replace("/login");
   }, [router]);
