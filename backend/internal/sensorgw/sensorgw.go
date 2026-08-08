@@ -128,6 +128,10 @@ func (g *Gateway) NewHTTPServer(addr string, dnsNames []string, ips []net.IP) (*
 	if err != nil {
 		return nil, errors.New("sensorgw: parse server key failed")
 	}
+	caBlock, _ := pem.Decode(g.ca.CertPEM())
+	if caBlock == nil {
+		return nil, errors.New("sensorgw: decode ca certificate failed")
+	}
 	clientCAs := x509.NewCertPool()
 	if !clientCAs.AppendCertsFromPEM(g.ca.CertPEM()) {
 		return nil, errors.New("sensorgw: build client ca pool failed")
@@ -136,8 +140,11 @@ func (g *Gateway) NewHTTPServer(addr string, dnsNames []string, ips []net.IP) (*
 		Addr:    addr,
 		Handler: g.Handler(),
 		TLSConfig: &tls.Config{
-			MinVersion:   tls.VersionTLS12,
-			Certificates: []tls.Certificate{{Certificate: [][]byte{block.Bytes}, PrivateKey: key}},
+			MinVersion: tls.VersionTLS12,
+			// 제시 체인은 리프+CA다 — 센서 enroll의 --ca-fingerprint 핀은
+			// 서버가 제시한 체인 안에서 CA를 찾으므로(sensor.verifyPinnedChain)
+			// 리프만 보내면 실환경 등록이 실패한다.
+			Certificates: []tls.Certificate{{Certificate: [][]byte{block.Bytes, caBlock.Bytes}, PrivateKey: key}},
 			// enroll은 인증서 없이 들어와야 하므로 Require가 아니라 VerifyIfGiven이다.
 			// 제시된 인증서는 핸드셰이크에서 센서 CA로 검증되고, 신원 확인(store 대조)은
 			// requireSensor 미들웨어가 요청마다 수행한다.

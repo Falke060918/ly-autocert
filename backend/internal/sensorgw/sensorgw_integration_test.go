@@ -29,6 +29,7 @@ import (
 
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/audit"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/db"
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/sensor"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/sensorwire"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/store"
 )
@@ -321,6 +322,38 @@ func TestSensorGatewayEndToEnd(t *testing.T) {
 	job, err = env.st.GetScanJob(ctx, jobID)
 	if err != nil || job.Status != "completed" {
 		t.Fatalf("final job = %+v, err %v; want completed", job, err)
+	}
+}
+
+// TestSensorGatewayEnrollWithCAPin은 실제 게이트웨이 TLS 체인을 대상으로 센서
+// 바이너리의 enroll(--ca-fingerprint = CA 지문 핀, sensor.Enroll의 verifyPinnedChain)이
+// 통과하는지 본다. 회귀 방지: 서버가 리프 인증서만 제시하면 체인에서 CA 핀을 찾지
+// 못해 실환경 등록이 실패한다 — 제시 체인은 리프+CA여야 한다.
+func TestSensorGatewayEnrollWithCAPin(t *testing.T) {
+	env := newGatewayEnv(t)
+	ctx := context.Background()
+
+	_, token, err := env.st.CreateSensor(ctx, store.CreateSensorInput{Name: "gw-capin"})
+	if err != nil {
+		t.Fatalf("create sensor: %v", err)
+	}
+	pin, err := env.gw.CAFingerprintSHA256()
+	if err != nil {
+		t.Fatalf("ca fingerprint: %v", err)
+	}
+
+	sensorID, err := sensor.Enroll(ctx, sensor.EnrollOptions{
+		ServerURL:     env.baseURL,
+		Token:         token,
+		CAFingerprint: pin,
+		StateDir:      t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("enroll with ca pin against live gateway tls chain: %v", err)
+	}
+	sn, err := env.st.GetSensor(ctx, sensorID)
+	if err != nil || string(sn.Status) != "active" {
+		t.Fatalf("sensor after pinned enroll = %+v, err %v; want active", sn, err)
 	}
 }
 
