@@ -38,7 +38,7 @@
   - `app/login/` — 로그인 (셸 밖). `proxy.ts` — autocert_session 쿠키 없으면 /login 리다이렉트(1차 관문, 실검증은 /auth/me 401)
   - API 경로: 브라우저는 같은 출처 `/api/*`만 호출 → next.config.ts rewrites가 백엔드로 중계(쿠키 CORS 불요). 프록시 대상은 build-arg `BACKEND_INTERNAL_URL`(compose는 http://backend:8080)로 빌드 시 고정. headers()가 전 페이지에 CSP('self' 기반, script/style만 'unsafe-inline' — Next 인라인 요구, dev만 'unsafe-eval')·nosniff·DENY·no-referrer 부착. HSTS는 HTTP 배포라 주석 처리(HTTPS 전환 시 활성화)
   - `components/ui/` — shadcn/ui (badge/button/card/input/separator/table/label/textarea/select/progress/skeleton/alert/dialog)
-  - `components/` — app-sidebar(운영 메뉴 + 관리 메뉴 — `/users`는 system_administrator에게만 렌더), app-topbar(사용자·로그아웃), cert-badges(파생 상태 뱃지·D-day), secret-field(1회 노출 비밀값 + 복사 버튼 — 센서 등록 토큰·임시 비밀번호 공용)
+  - `components/` — app-sidebar(운영 메뉴 + 관리 메뉴 — `/users`는 system_administrator에게만 렌더), app-topbar(사용자·로그아웃), cert-badges(파생 상태 뱃지·D-day), secret-field(1회 노출 비밀값 + 복사 버튼 — 센서 등록 다이얼로그 전용. 비밀번호 재설정은 서버가 임시 비밀번호를 만들지 않아 쓰지 않는다)
   - `lib/` — api.ts(타입+엔드포인트 함수+ApiError), auth.tsx(useAuth·역할 게이트 — 업로드·스캔은 3역할, `isSystemAdministrator`·`ALL_ROLES`), format.ts
   - `app/fonts.css` — 폰트는 npm 패키지 셀프호스팅 `@font-face` (폐쇄망 대응, CDN 없음)
 - `docker-compose.yml` / `.env.example` — 루트. backend + postgres + frontend

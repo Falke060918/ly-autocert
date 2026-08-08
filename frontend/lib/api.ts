@@ -39,15 +39,6 @@ export interface UserUpdateRequest {
   display_name?: string | null;
 }
 
-/**
- * 관리자 비밀번호 재설정 응답. 서버가 임시 비밀번호를 생성하는 경우에만
- * temporary_password가 내려오며, 그 값은 이 응답에서 **1회만** 확인할 수 있다.
- */
-export interface UserPasswordResetResponse {
-  request_id?: string;
-  temporary_password?: string;
-}
-
 export type CertificateStatus =
   | "active"
   | "expired"
@@ -370,12 +361,15 @@ export function enableUser(id: string) {
   });
 }
 
-/** 관리자 비밀번호 재설정 — 해당 사용자의 기존 세션은 서버에서 즉시 폐기된다. */
+/**
+ * 관리자 비밀번호 재설정 — 관리자가 새 비밀번호를 직접 정한다.
+ * 서버 응답은 204(본문 없음)이고, 해당 사용자의 기존 세션은 서버에서 즉시 폐기된다.
+ */
 export function resetUserPassword(id: string, password: string) {
-  return apiFetch<UserPasswordResetResponse>(
-    `/api/v1/users/${encodeURIComponent(id)}/password`,
-    { method: "POST", body: JSON.stringify({ password }) },
-  );
+  return apiFetch<void>(`/api/v1/users/${encodeURIComponent(id)}/password`, {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  });
 }
 
 export function listCertificates(params: URLSearchParams) {

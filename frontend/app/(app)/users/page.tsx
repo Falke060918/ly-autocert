@@ -35,7 +35,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { SecretField } from "@/components/secret-field";
 import { ALL_ROLES, isSystemAdministrator, roleLabel, useAuth } from "@/lib/auth";
 import {
   ApiError,
@@ -56,15 +55,17 @@ const MIN_PASSWORD_LENGTH = 12;
 
 /**
  * 서버 거부 사유를 운영자 언어로 바꾼다.
- * 락아웃 방지(자기 자신·마지막 관리자)는 코드 이름이 서버 구현마다 갈릴 수 있어
- * 명시 코드표 → 키워드 → 서버 메시지 순으로 낮춰 잡는다.
+ * 코드는 backend/internal/api/handlers_users.go(writeUserMutationError)의 실제 값이고,
+ * 명시 코드표 → 키워드 → 서버 메시지 순으로 낮춰 잡는다(키워드 단계는 안전망).
  */
 const ERROR_MESSAGES: Record<string, string> = {
-  last_admin: "마지막 관리자 계정은 비활성화하거나 권한을 낮출 수 없습니다.",
-  last_administrator: "마지막 관리자 계정은 비활성화하거나 권한을 낮출 수 없습니다.",
+  last_admin_protected:
+    "마지막 관리자 계정은 비활성화하거나 권한을 낮출 수 없습니다.",
   self_disable_forbidden: "자기 자신의 계정은 비활성화할 수 없습니다.",
-  self_demote_forbidden: "자기 자신의 권한은 낮출 수 없습니다.",
-  weak_password: `비밀번호가 정책에 맞지 않습니다. ${MIN_PASSWORD_LENGTH}자 이상, 사용자 이름과 다른 값으로 설정하십시오.`,
+  self_role_change_forbidden: "자기 자신의 역할은 변경할 수 없습니다.",
+  weak_password: `비밀번호가 정책에 미달합니다. ${MIN_PASSWORD_LENGTH}자 이상, 사용자 이름과 다른 값으로 설정하십시오.`,
+  no_fields: "변경할 항목이 없습니다. 역할이나 표시 이름을 바꾸십시오.",
+  invalid_body: "요청 형식이 올바르지 않습니다. 입력값을 확인하십시오.",
   username_taken: "이미 사용 중인 사용자 이름입니다.",
   invalid_role: "선택한 역할이 올바르지 않습니다.",
   not_found: "사용자를 찾을 수 없습니다. 목록을 새로 고치십시오.",
@@ -78,7 +79,7 @@ function errorMessage(err: unknown, fallback: string): string {
   const code = err.code.toLowerCase();
   if (ERROR_MESSAGES[code]) return ERROR_MESSAGES[code];
   if (code.includes("last") && code.includes("admin")) {
-    return ERROR_MESSAGES.last_admin;
+    return ERROR_MESSAGES.last_admin_protected;
   }
   if (code.includes("self")) {
     return "자기 자신의 계정에는 적용할 수 없습니다. 다른 관리자에게 요청하십시오.";
@@ -827,8 +828,9 @@ function DisableUserDialog({
 }
 
 /**
- * 관리자 비밀번호 재설정. 재설정 즉시 해당 사용자의 기존 세션은 폐기된다.
- * 서버가 임시 비밀번호를 생성해 돌려주면 그 값은 이 창에서 1회만 볼 수 있다.
+ * 관리자 비밀번호 재설정. 관리자가 새 비밀번호를 직접 입력하고,
+ * 서버는 204(본문 없음)로 답한다 — 임시 비밀번호를 돌려주지 않는다.
+ * 재설정 즉시 해당 사용자의 기존 세션은 모두 폐기된다.
  */
 function ResetPasswordDialog({
   user,
@@ -840,7 +842,6 @@ function ResetPasswordDialog({
   const [password, setPassword] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  const [issued, setIssued] = React.useState<string | null>(null);
   const [done, setDone] = React.useState(false);
 
   function handleOpenChange(next: boolean) {
@@ -848,7 +849,6 @@ function ResetPasswordDialog({
     if (!next) {
       setPassword("");
       setError(null);
-      setIssued(null);
       setDone(false);
       setBusy(false);
     }
@@ -864,8 +864,8 @@ function ResetPasswordDialog({
     setBusy(true);
     setError(null);
     try {
-      const res = await resetUserPassword(user.id, password);
-      setIssued(res?.temporary_password ?? null);
+      // 서버는 204(본문 없음)로 답한다 — 응답을 파싱하지 않는다.
+      await resetUserPassword(user.id, password);
       setDone(true);
       setPassword("");
     } catch (err) {
@@ -877,41 +877,21 @@ function ResetPasswordDialog({
 
   return (
     <Dialog open={user != null} onOpenChange={handleOpenChange}>
-      <DialogContent
-        className="sm:max-w-lg"
-        // 임시 비밀번호 표시 중에는 바깥 클릭·ESC로 실수로 닫히지 않게 한다.
-        onInteractOutside={(e) => {
-          if (issued) e.preventDefault();
-        }}
-        onEscapeKeyDown={(e) => {
-          if (issued) e.preventDefault();
-        }}
-      >
+      <DialogContent className="sm:max-w-lg">
         {done ? (
           <div className="grid gap-4">
             <DialogHeader>
               <DialogTitle>비밀번호를 재설정했습니다</DialogTitle>
               <DialogDescription>
                 <span className="font-mono text-xs">{user?.username}</span>{" "}
-                계정의 기존 세션은 모두 폐기되었습니다. 새 비밀번호를 본인에게
-                안전한 경로로 전달하십시오.
+                계정의 비밀번호가 재설정되었습니다. 해당 사용자의 세션이 모두
+                종료되었습니다. 방금 입력한 새 비밀번호를 본인에게 안전한 경로로
+                전달하십시오.
               </DialogDescription>
             </DialogHeader>
-            {issued && (
-              <>
-                <Alert className="border-amber-200 bg-amber-50 text-amber-800">
-                  <AlertTitle>지금 한 번만 표시됩니다</AlertTitle>
-                  <AlertDescription className="text-amber-800/90">
-                    임시 비밀번호는 이 창을 닫으면 다시 볼 수 없습니다. 분실하면
-                    비밀번호를 다시 재설정해야 합니다.
-                  </AlertDescription>
-                </Alert>
-                <SecretField label="임시 비밀번호" value={issued} />
-              </>
-            )}
             <DialogFooter>
               <Button type="button" onClick={() => handleOpenChange(false)}>
-                {issued ? "전달했습니다, 닫기" : "닫기"}
+                닫기
               </Button>
             </DialogFooter>
           </div>
