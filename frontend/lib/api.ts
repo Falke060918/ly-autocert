@@ -180,9 +180,15 @@ export type ScanJobStatus =
   | "completed"
   | "failed";
 
+/** Job 실행 주체 — server = 서버 직접 실행, sensor = 센서 위임(pull 리스). */
+export type ScanExecutorType = "server" | "sensor";
+
 export interface ScanJob {
   id: string;
   status: ScanJobStatus;
+  executor_type: ScanExecutorType;
+  /** executor_type이 sensor일 때 실행을 맡은 센서 id. 서버 실행이면 null. */
+  sensor_id: string | null;
   targets: string[];
   ports: number[];
   timeout_ms: number;
