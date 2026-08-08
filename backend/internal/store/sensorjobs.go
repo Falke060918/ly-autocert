@@ -104,12 +104,24 @@ type SensorProgress struct {
 // 같은 UPDATE로 반영한다. 관측 배치가 재계산하는 절대값과 섞이지 않도록
 // GREATEST로 앞선 값만 취한다(뒤늦은 하트비트가 진행률을 되돌리지 않는다).
 // running이 아니면 오류(리스 만료로 이미 failed 회수된 경우 포함).
+//
+// 보고값은 total_endpoints로 상한 클램프한다(LEAST). 진행률은 센서가 보내는
+// 값이고 GREATEST 병합은 되돌릴 수 없으므로, 오작동·조작 센서가 한 번이라도
+// 과대 보고하면 그 값에 고착돼 "1200/300 스캔됨" 같은 표시가 굳는다.
+// 상한은 대상 전개 결과(MarkSensorJobRunning의 total_endpoints)가 정한다.
+// reachable도 정의상 total을 넘을 수 없어 같이 클램프한다. certificates_found는
+// 엔드포인트당 체인 여러 장이 나올 수 있어 total과 무관하므로 클램프하지 않는다.
+//
+// 클램프 로그는 남기지 않는다: 하트비트는 30초 주기라 고장 난 센서 하나가
+// Job 내내 로그를 도배하게 되고, 값은 조용히 교정되어 표시가 깨지지 않는다.
+// mTLS로 인증된 주체이므로 차단이 아니라 교정이 맞고, 실제 이상은 종료 시점의
+// scanned/total 불일치로 드러난다.
 func (s *Store) ExtendSensorJobLease(ctx context.Context, jobID, sensorID string, p SensorProgress) error {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE scan_jobs
 		   SET lease_expires_at    = now() + make_interval(secs => $3),
-		       scanned_endpoints   = GREATEST(scanned_endpoints, $4),
-		       reachable_endpoints = GREATEST(reachable_endpoints, $5),
+		       scanned_endpoints   = GREATEST(scanned_endpoints, LEAST($4, total_endpoints)),
+		       reachable_endpoints = GREATEST(reachable_endpoints, LEAST($5, total_endpoints)),
 		       certificates_found  = GREATEST(certificates_found, $6)
 		 WHERE id = $1::uuid AND sensor_id = $2::uuid AND status = 'running'`,
 		jobID, sensorID, sensorLeaseTTL.Seconds(),

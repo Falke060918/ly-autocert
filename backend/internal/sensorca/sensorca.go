@@ -37,6 +37,17 @@ const (
 	pemTypeCSR  = "CERTIFICATE REQUEST"
 )
 
+// 기동 실패 원인을 호출자가 문자열 대조 없이 구분할 수 있게 센티넬로 노출한다.
+// cmd/server가 errors.Is로 갈라 어떤 환경변수를 고쳐야 하는지 지목한다 —
+// 원인과 무관한 변수를 지목하면 운영자가 엉뚱한 곳을 보게 된다.
+// 두 메시지 모두 키·인증서 바이트를 담지 않는다 (보안 하드 규칙 3).
+var (
+	// ErrNoSAN은 서버 인증서에 넣을 SAN이 하나도 없을 때다 (SENSOR_ADVERTISED_HOSTS 미설정).
+	ErrNoSAN = errors.New("sensorca: at least one SAN (dns name or ip) is required")
+	// ErrOpen은 봉인된 값을 풀지 못했을 때다 (봉인 키 불일치 또는 암호문 변조).
+	ErrOpen = errors.New("sensorca: open failed (wrong key or tampered ciphertext)")
+)
+
 // CA는 메모리에 로드된 센서 CA다. 개인키를 담으므로 로그·직렬화에 노출하지 않는다.
 type CA struct {
 	cert *x509.Certificate
@@ -163,7 +174,7 @@ func (c *CA) IssueServerCert(commonName string, dnsNames []string, ips []net.IP)
 		return nil, nil, errors.New("sensorca: common name is required")
 	}
 	if len(dnsNames) == 0 && len(ips) == 0 {
-		return nil, nil, errors.New("sensorca: at least one SAN (dns name or ip) is required")
+		return nil, nil, ErrNoSAN
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -221,7 +232,7 @@ func Open(key, ciphertext, nonce []byte) ([]byte, error) {
 	}
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
-		return nil, errors.New("sensorca: open failed (wrong key or tampered ciphertext)")
+		return nil, ErrOpen
 	}
 	return plaintext, nil
 }

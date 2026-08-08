@@ -88,7 +88,11 @@ type HeartbeatRequest struct {
 	CertificatesFound  int `json:"certificates_found"`
 }
 
-// Validate는 카운터 형식을 검사한다.
+// Validate는 카운터 형식을 검사한다. 하한(>= 0)만 본다 —
+// 상한은 Job의 total_endpoints가 정하는 상태 의존 값인데 이 패키지는 Job 상태를
+// 모르므로(내부 패키지 의존 0) 서버가 반영 시점에 클램프한다
+// (store.ExtendSensorJobLease의 LEAST). 여기서 400으로 거절하지 않는 이유는
+// 센서의 진행률 카운터가 원자적으로 함께 읽히지 않아 일시적 역전이 정상이기 때문이다.
 func (r HeartbeatRequest) Validate() error {
 	if r.ScannedEndpoints < 0 || r.ReachableEndpoints < 0 || r.CertificatesFound < 0 {
 		return errors.New("sensorwire: heartbeat: counters must be >= 0")

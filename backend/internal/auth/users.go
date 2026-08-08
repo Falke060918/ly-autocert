@@ -261,6 +261,21 @@ func lockUser(ctx context.Context, tx *sql.Tx, id string) (*domain.User, error) 
 
 // ensureAnotherActiveAdmin은 excludeID 외에 활성 System Administrator가
 // 최소 1명 남는지 확인한다. 없으면 ErrLastAdmin.
+//
+// 도달성 주의 — 현재 HTTP 경로에서는 ErrLastAdmin이 발생하지 않는다.
+// 두 호출자(UpdateUser·SetUserActive)는 모두 system_administrator 전용 라우트이고
+// (server.go의 protected(..., RoleSystemAdministrator)), Authenticate가 `u.is_active`를
+// 요구하므로 actor는 항상 "활성 system_administrator"다. 게다가 두 호출자 모두
+// 자기 자신 가드(ErrSelfRoleChange·ErrSelfDisable)를 먼저 통과시키므로
+// target != actor가 보장된다 → actor가 곧 excludeID 밖의 활성 관리자라 count >= 1이다.
+// 즉 마지막 관리자의 자가 강등·자가 비활성화는 ErrLastAdmin이 아니라
+// self_role_change_forbidden·self_disable_forbidden으로 먼저 걸린다.
+//
+// 그럼에도 가드를 남기는 이유는 심층 방어다: 위 전제(역할 게이트·활성 세션 요구·
+// 자기 자신 가드) 중 하나라도 깨지거나 호출 경로가 늘면(내부 배치·향후 API·
+// 위임 관리자 역할) 즉시 도달 가능해지고, 그때 실패하면 제품 전체가 잠긴다.
+// 서비스 계층 직접 호출은 지금도 도달 가능한 경로이며
+// api/users_integration_test.go의 "lockout guard" 케이스들이 이를 고정한다.
 func ensureAnotherActiveAdmin(ctx context.Context, tx *sql.Tx, excludeID string) error {
 	var n int
 	err := tx.QueryRowContext(ctx,

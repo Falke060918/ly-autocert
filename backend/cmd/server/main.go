@@ -16,6 +16,7 @@ import (
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/auth"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/config"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/db"
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/sensorca"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/sensorgw"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/store"
 )
@@ -41,13 +42,41 @@ type gatewayStarter func() (*http.Server, func(), error)
 func startSensorGateway(logger *slog.Logger, start gatewayStarter) (*http.Server, func()) {
 	srv, stop, err := start()
 	if err != nil {
-		// SAN이 비면 서버 인증서를 발급할 수 없다 — 가장 흔한 원인이라 변수명을 문구에 박아 둔다.
-		logger.Warn("sensor gateway disabled: startup failed — check SENSOR_ADVERTISED_HOSTS "+
-			"(comma-separated DNS names/IPs the sensors connect to) and SENSOR_LISTEN_ADDR; core API keeps running",
-			"error", err.Error())
+		logger.Warn(sensorGatewayFailureHint(err), "error", err.Error())
 		return nil, func() {}
 	}
 	return srv, stop
+}
+
+// sensorGatewayFailureHint는 기동 실패 원인에 맞는 조치 문구를 고른다.
+// 원인과 무관하게 한 변수만 지목하면(이전 동작: 항상 SENSOR_ADVERTISED_HOSTS)
+// 키 회전·오배포로 CA 봉인 해제가 실패한 경우에도 같은 문구가 나와 오진을 부른다.
+// 어떤 분기든 고쳐야 할 환경변수 이름을 문구에 포함한다 — 이름이 없으면
+// DB·포트 문제로 읽힌다. 오류 값은 상수 문구뿐이라 키·인증서를 싣지 않는다.
+func sensorGatewayFailureHint(err error) string {
+	switch {
+	case errors.Is(err, sensorca.ErrNoSAN):
+		return "sensor gateway disabled: server certificate has no SAN — set SENSOR_ADVERTISED_HOSTS " +
+			"(comma-separated DNS names/IPs the sensors connect to); core API keeps running"
+	case errors.Is(err, sensorca.ErrOpen):
+		return "sensor gateway disabled: stored sensor CA key could not be unsealed — SENSOR_CA_ENC_KEY " +
+			"does not match the key that sealed it (rotated or wrong deployment); core API keeps running"
+	default:
+		return "sensor gateway disabled: startup failed — check SENSOR_CA_ENC_KEY, SENSOR_ADVERTISED_HOSTS " +
+			"and SENSOR_LISTEN_ADDR; core API keeps running"
+	}
+}
+
+// logSensorGatewayDisabled는 게이트웨이를 아예 구성하지 않는 경우의 사유를 한 줄로 남긴다.
+// 설정 오류가 있으면 그 사유만 남긴다 — 키 형식 오류는 "값이 있으나 무효"인 상태라
+// "not set" INFO를 함께 내면 서로 모순되게 읽힌다.
+func logSensorGatewayDisabled(logger *slog.Logger, configErr error) {
+	if configErr != nil {
+		logger.Warn("sensor gateway disabled: SENSOR_CA_ENC_KEY is invalid — core API keeps running",
+			"error", configErr.Error())
+		return
+	}
+	logger.Info("sensor gateway disabled (SENSOR_CA_ENC_KEY not set)")
 }
 
 func run(logger *slog.Logger) error {
@@ -95,12 +124,6 @@ func run(logger *slog.Logger) error {
 
 	errCh := make(chan error, 1)
 
-	// 센서 전용 설정 오류는 게이트웨이만 끄고 코어 API는 그대로 띄운다.
-	if cfg.SensorConfigError != nil {
-		logger.Warn("sensor gateway disabled: invalid sensor configuration — core API keeps running",
-			"error", cfg.SensorConfigError.Error())
-	}
-
 	// 센서 게이트웨이(mTLS 8443)는 SENSOR_CA_ENC_KEY가 설정된 경우에만 띄운다 —
 	// 미설정이면 리스너 자체를 열지 않아 기존 zero-config 실행에 영향이 없다.
 	var sensorSrv *http.Server
@@ -129,7 +152,8 @@ func run(logger *slog.Logger) error {
 			}()
 		}
 	} else {
-		logger.Info("sensor gateway disabled (SENSOR_CA_ENC_KEY not set)")
+		// 센서 전용 설정 오류는 게이트웨이만 끄고 코어 API는 그대로 띄운다.
+		logSensorGatewayDisabled(logger, cfg.SensorConfigError)
 	}
 
 	go func() {
