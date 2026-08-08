@@ -32,13 +32,15 @@ type Server struct {
 }
 
 // NewServer는 모든 라우트가 등록된 HTTP 핸들러를 반환한다.
-func NewServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder) http.Handler {
-	return withSecurityHeaders(withRequestID(newServer(pool, authSvc, rec).mux))
+// sensorCAKey는 센서 mTLS 내부 CA 개인키의 봉인 키(32바이트)다 — 센서 CA를
+// 처음 부트스트랩하는 시점(첫 센서 생성)에만 필요하며 nil이어도 기동은 된다.
+func NewServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorCAKey []byte) http.Handler {
+	return withSecurityHeaders(withRequestID(newServer(pool, authSvc, rec, sensorCAKey).mux))
 }
 
 // newServer는 라우트를 등록한 Server를 만든다. 핸들러를 호출하지 않는 한
 // 의존성은 nil이어도 안전하다 — 정합 테스트가 라우트 목록만 뽑을 때 쓴다.
-func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder) *Server {
+func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorCAKey []byte) *Server {
 	st := store.New(pool)
 	disc := discovery.NewManager(st)
 	s := &Server{mux: http.NewServeMux(), auth: authSvc, audit: rec}
@@ -66,9 +68,17 @@ func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder) *Server
 	s.protected("GET /api/v1/certificates/export", handleExportCertificates(st), domain.AllRoles...)
 	s.protected("GET /api/v1/certificates/{id}", handleGetCertificate(st), domain.AllRoles...)
 	// 스캔 생성은 인벤토리를 바꾸므로 관리자·운영자급만. 상태 조회는 읽기 전용이라 전 역할.
-	s.protected("POST /api/v1/discovery/scans", handleCreateScan(disc),
+	s.protected("POST /api/v1/discovery/scans", handleCreateScan(disc, st),
 		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
 	s.protected("GET /api/v1/discovery/scans/{id}", handleGetScan(st), domain.AllRoles...)
+	// 센서(원격 수집기, 00-spec 7.8) — 생성(1회용 토큰 발급)·비활성화는 System
+	// Administrator 전용, 목록·상세는 읽기 전용이라 전 역할 (감사 이벤트 없음).
+	s.protected("POST /api/v1/sensors", handleCreateSensor(st, sensorCAKey),
+		domain.RoleSystemAdministrator)
+	s.protected("GET /api/v1/sensors", handleListSensors(st), domain.AllRoles...)
+	s.protected("GET /api/v1/sensors/{id}", handleGetSensor(st), domain.AllRoles...)
+	s.protected("POST /api/v1/sensors/{id}/disable", handleDisableSensor(st),
+		domain.RoleSystemAdministrator)
 	// 감사 로그 조회·무결성 검증 — 00-spec 7.11에서 감사 로그 조회 권한은
 	// Security Administrator와 Auditor에만 명시되어 있다.
 	s.protected("GET /api/v1/audit/events", s.handleListAuditEvents,

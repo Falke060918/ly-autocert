@@ -354,7 +354,7 @@ export function getScan(id: string) {
   return apiFetch<ScanJob>(`/api/v1/discovery/scans/${encodeURIComponent(id)}`);
 }
 
-/** 센서 생성 — 등록 토큰 발급. 서버는 sensor.create 감사 이벤트를 남긴다. */
+/** 센서 생성 — 등록 토큰 발급. 서버는 sensor.token.issue 감사 이벤트를 남긴다. */
 export function createSensor(name: string) {
   return apiFetch<SensorCreateResponse>("/api/v1/sensors", {
     method: "POST",
