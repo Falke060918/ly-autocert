@@ -308,3 +308,66 @@ func TestUserManagementAPI(t *testing.T) {
 		}
 	})
 }
+
+// TestLastAdminGuardCountsOnlyActiveAdministrators는 마지막 관리자 가드가
+// 비활성 관리자를 "남은 관리자"로 세지 않는지 고정한다.
+// 가드의 is_active 술어가 빠지면 비활성 관리자 계정 하나가 남았다는 이유로
+// 마지막 활성 관리자의 비활성화·강등이 통과해 제품 전체가 잠긴다.
+//
+// ErrLastAdmin은 HTTP 경로에서는 자기 자신 가드에 먼저 걸려 도달하지 않는다
+// (auth/users.go의 ensureAnotherActiveAdmin 주석 참조). 도달 가능한 경로인
+// 서비스 계층 직접 호출로 검증한다 — actor는 관리자가 아닌 사용자다.
+// newTestEnv가 users/sessions/audit_events를 비우므로 다른 테스트와 격리된다.
+func TestLastAdminGuardCountsOnlyActiveAdministrators(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	admin, err := env.svc.CreateUser(ctx, "la-admin", randomPassword(t), nil,
+		domain.RoleSystemAdministrator, nil, auth.AuditMeta{})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	spare, err := env.svc.CreateUser(ctx, "la-spare-admin", randomPassword(t), nil,
+		domain.RoleSystemAdministrator, nil, auth.AuditMeta{})
+	if err != nil {
+		t.Fatalf("create spare admin: %v", err)
+	}
+	viewer, err := env.svc.CreateUser(ctx, "la-viewer", randomPassword(t), nil,
+		domain.RoleViewer, nil, auth.AuditMeta{})
+	if err != nil {
+		t.Fatalf("create viewer: %v", err)
+	}
+
+	// 대조군: 활성 관리자가 2명이면 한 명은 비활성화할 수 있다.
+	if _, err := env.svc.SetUserActive(ctx, spare.ID, false, admin.ID, auth.AuditMeta{}); err != nil {
+		t.Fatalf("disable spare admin: %v", err)
+	}
+
+	// 이제 관리자 계정은 2개지만 활성은 admin 하나뿐이다 — 비활성 관리자는 세면 안 된다.
+	if _, err := env.svc.SetUserActive(ctx, admin.ID, false, viewer.ID, auth.AuditMeta{}); !errors.Is(err, auth.ErrLastAdmin) {
+		t.Errorf("disable last active admin err = %v, want ErrLastAdmin", err)
+	}
+	role := domain.RoleViewer
+	if _, err := env.svc.UpdateUser(ctx, admin.ID, auth.UserUpdate{Role: &role}, viewer.ID, auth.AuditMeta{}); !errors.Is(err, auth.ErrLastAdmin) {
+		t.Errorf("demote last active admin err = %v, want ErrLastAdmin", err)
+	}
+
+	// 거부는 상태를 남기지 않는다.
+	users, err := env.svc.ListUsers(ctx)
+	if err != nil {
+		t.Fatalf("list users: %v", err)
+	}
+	for _, u := range users {
+		if u.ID == admin.ID && (!u.IsActive || u.Role != domain.RoleSystemAdministrator) {
+			t.Errorf("admin changed after rejected calls: role=%s active=%v", u.Role, u.IsActive)
+		}
+	}
+
+	// 예비 관리자를 되살리면 가드가 풀린다 — 가드가 무조건 막는 게 아님을 확인한다.
+	if _, err := env.svc.SetUserActive(ctx, spare.ID, true, admin.ID, auth.AuditMeta{}); err != nil {
+		t.Fatalf("re-enable spare admin: %v", err)
+	}
+	if _, err := env.svc.SetUserActive(ctx, admin.ID, false, viewer.ID, auth.AuditMeta{}); err != nil {
+		t.Errorf("disable admin with another active admin present: %v", err)
+	}
+}

@@ -377,6 +377,80 @@ func TestHeartbeatProgressReachesJobRow(t *testing.T) {
 	}
 }
 
+// TestHeartbeatProgressIsClampedToTotalEndpoints는 과대 보고된 하트비트 진행률이
+// total_endpoints로 상한 클램프되는지 본다. GREATEST 병합은 되돌릴 수 없으므로
+// 클램프가 없으면 오작동·조작 센서의 한 번의 과대 보고가 Job 내내 고착되어
+// 운영자에게 "1200/4 스캔됨" 같은 표시가 남는다.
+func TestHeartbeatProgressIsClampedToTotalEndpoints(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool)
+	ctx := context.Background()
+	sensorID := newTestSensor(t, pool, "sensor-fixture-hb-clamp")
+
+	const ip = "203.0.113.79" // 문서화용 예약 대역 — 실제 주소 아님
+	jobID := newSensorScanJob(t, st, pool, sensorID, ip, "test-req-sensor-hb-clamp")
+
+	if _, err := st.LeaseNextSensorJob(ctx, sensorID); err != nil {
+		t.Fatalf("lease: %v", err)
+	}
+	const total = 4
+	if err := st.MarkSensorJobRunning(ctx, jobID, sensorID, total); err != nil {
+		t.Fatalf("running: %v", err)
+	}
+
+	readCounters := func() (scanned, reachable, found int) {
+		t.Helper()
+		if err := pool.QueryRow(`
+			SELECT scanned_endpoints, reachable_endpoints, certificates_found
+			  FROM scan_jobs WHERE id = $1::uuid`,
+			jobID).Scan(&scanned, &reachable, &found); err != nil {
+			t.Fatalf("read counters: %v", err)
+		}
+		return scanned, reachable, found
+	}
+
+	// 과대 보고: scanned·reachable은 total로 잘리고, certificates_found는
+	// 엔드포인트당 체인 여러 장이 가능하므로 그대로 반영된다.
+	if err := st.ExtendSensorJobLease(ctx, jobID, sensorID,
+		SensorProgress{ScannedEndpoints: 1200, ReachableEndpoints: 900, CertificatesFound: 7}); err != nil {
+		t.Fatalf("inflated heartbeat: %v", err)
+	}
+	if sc, re, fo := readCounters(); sc != total || re != total || fo != 7 {
+		t.Fatalf("counters after inflated heartbeat = (%d,%d,%d), want (%d,%d,7)", sc, re, fo, total, total)
+	}
+
+	// 클램프 이후에도 정상 하트비트는 되돌리지 않는다(GREATEST 유지).
+	if err := st.ExtendSensorJobLease(ctx, jobID, sensorID,
+		SensorProgress{ScannedEndpoints: 2, ReachableEndpoints: 1, CertificatesFound: 1}); err != nil {
+		t.Fatalf("normal heartbeat: %v", err)
+	}
+	if sc, re, fo := readCounters(); sc != total || re != total || fo != 7 {
+		t.Errorf("counters after normal heartbeat = (%d,%d,%d), want (%d,%d,7)", sc, re, fo, total, total)
+	}
+
+	// 상한 이하의 보고는 그대로 통과한다(클램프가 정상값을 깎지 않는다).
+	other := newSensorScanJob(t, st, pool, sensorID, ip, "test-req-sensor-hb-clamp-2")
+	if _, err := st.LeaseNextSensorJob(ctx, sensorID); err != nil {
+		t.Fatalf("lease second: %v", err)
+	}
+	if err := st.MarkSensorJobRunning(ctx, other, sensorID, 10); err != nil {
+		t.Fatalf("running second: %v", err)
+	}
+	if err := st.ExtendSensorJobLease(ctx, other, sensorID,
+		SensorProgress{ScannedEndpoints: 6, ReachableEndpoints: 3, CertificatesFound: 2}); err != nil {
+		t.Fatalf("second heartbeat: %v", err)
+	}
+	var sc, re, fo int
+	if err := pool.QueryRow(`
+		SELECT scanned_endpoints, reachable_endpoints, certificates_found
+		  FROM scan_jobs WHERE id = $1::uuid`, other).Scan(&sc, &re, &fo); err != nil {
+		t.Fatalf("read second counters: %v", err)
+	}
+	if sc != 6 || re != 3 || fo != 2 {
+		t.Errorf("in-range counters = (%d,%d,%d), want (6,3,2)", sc, re, fo)
+	}
+}
+
 func TestRecordObservationBatchIdempotent(t *testing.T) {
 	pool := testPool(t)
 	st := New(pool)
