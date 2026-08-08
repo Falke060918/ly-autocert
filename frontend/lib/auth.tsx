@@ -40,6 +40,9 @@ export function roleLabel(role: Role): string {
   return ROLE_LABELS[role] ?? role;
 }
 
+/** 역할 6종 — 사용자 관리 화면의 선택 목록 순서(권한이 넓은 쪽부터). */
+export const ALL_ROLES = Object.keys(ROLE_LABELS) as Role[];
+
 interface AuthContextValue {
   /** null이면 아직 로딩 중이거나 미인증. */
   user: User | null;
