@@ -216,7 +216,7 @@ func TestSensorJobTransitions(t *testing.T) {
 	}
 
 	// leased 상태의 하트비트는 금지(running에서만).
-	if err := st.ExtendSensorJobLease(ctx, jobID, sensorID); !errors.Is(err, ErrSensorJobState) {
+	if err := st.ExtendSensorJobLease(ctx, jobID, sensorID, SensorProgress{}); !errors.Is(err, ErrSensorJobState) {
 		t.Errorf("heartbeat while leased = %v, want ErrSensorJobState", err)
 	}
 
@@ -232,7 +232,7 @@ func TestSensorJobTransitions(t *testing.T) {
 		`UPDATE scan_jobs SET lease_expires_at = now() + interval '1 second' WHERE id = $1::uuid`, jobID); err != nil {
 		t.Fatalf("shrink lease: %v", err)
 	}
-	if err := st.ExtendSensorJobLease(ctx, jobID, sensorID); err != nil {
+	if err := st.ExtendSensorJobLease(ctx, jobID, sensorID, SensorProgress{}); err != nil {
 		t.Fatalf("heartbeat: %v", err)
 	}
 	var extended bool
@@ -250,7 +250,7 @@ func TestSensorJobTransitions(t *testing.T) {
 	}
 
 	// 터미널 이후의 모든 전이는 오류다.
-	if err := st.ExtendSensorJobLease(ctx, jobID, sensorID); !errors.Is(err, ErrSensorJobState) {
+	if err := st.ExtendSensorJobLease(ctx, jobID, sensorID, SensorProgress{}); !errors.Is(err, ErrSensorJobState) {
 		t.Errorf("heartbeat after completed = %v, want ErrSensorJobState", err)
 	}
 	reason := "late failure"
@@ -284,6 +284,96 @@ func TestSensorJobTransitions(t *testing.T) {
 	}
 	if j.Status != ScanStatusFailed || j.Error == nil || *j.Error != expandErr {
 		t.Errorf("jobB = (%s, %v), want (failed, %q)", j.Status, j.Error, expandErr)
+	}
+}
+
+// TestHeartbeatProgressReachesJobRow는 하트비트가 보고한 진행률이 Job 행에 반영되고
+// (예전엔 lease_expires_at만 갱신하고 버렸다), 이후 관측 배치의 절대값 재계산과
+// 이중 계상되지 않는지 본다.
+func TestHeartbeatProgressReachesJobRow(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool)
+	ctx := context.Background()
+	sensorID := newTestSensor(t, pool, "sensor-fixture-heartbeat")
+
+	const ip = "203.0.113.78" // 문서화용 예약 대역 — 실제 주소 아님
+	jobID := newSensorScanJob(t, st, pool, sensorID, ip, "test-req-sensor-heartbeat")
+	t.Cleanup(func() {
+		_, _ = pool.Exec(`DELETE FROM certificates WHERE common_name LIKE 'sensor-hb-%.example.test'`)
+		_, _ = pool.Exec(`DELETE FROM targets WHERE ip_address = $1::inet AND target_type = 'network'`, ip)
+	})
+
+	if _, err := st.LeaseNextSensorJob(ctx, sensorID); err != nil {
+		t.Fatalf("lease: %v", err)
+	}
+	if err := st.MarkSensorJobRunning(ctx, jobID, sensorID, 4); err != nil {
+		t.Fatalf("running: %v", err)
+	}
+
+	readCounters := func() (scanned, reachable, found, newCerts int) {
+		t.Helper()
+		if err := pool.QueryRow(`
+			SELECT scanned_endpoints, reachable_endpoints, certificates_found, certificates_new
+			  FROM scan_jobs WHERE id = $1::uuid`,
+			jobID).Scan(&scanned, &reachable, &found, &newCerts); err != nil {
+			t.Fatalf("read counters: %v", err)
+		}
+		return scanned, reachable, found, newCerts
+	}
+
+	// 하트비트 진행률이 Job 행에 반영된다.
+	if err := st.ExtendSensorJobLease(ctx, jobID, sensorID,
+		SensorProgress{ScannedEndpoints: 3, ReachableEndpoints: 2, CertificatesFound: 2}); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	if sc, re, fo, nw := readCounters(); sc != 3 || re != 2 || fo != 2 || nw != 0 {
+		t.Fatalf("counters after heartbeat = (%d,%d,%d,%d), want (3,2,2,0)", sc, re, fo, nw)
+	}
+
+	// 뒤늦게 도착한(낮은) 하트비트는 진행률을 되돌리지 않는다.
+	if err := st.ExtendSensorJobLease(ctx, jobID, sensorID,
+		SensorProgress{ScannedEndpoints: 1, ReachableEndpoints: 0, CertificatesFound: 0}); err != nil {
+		t.Fatalf("stale heartbeat: %v", err)
+	}
+	if sc, re, fo, _ := readCounters(); sc != 3 || re != 2 || fo != 2 {
+		t.Errorf("counters after stale heartbeat = (%d,%d,%d), want (3,2,2)", sc, re, fo)
+	}
+
+	// 관측 배치는 절대값으로 재계산한다 — 하트비트 값에 더해지지 않는다.
+	first := []EndpointObservation{
+		{
+			IP: ip, Port: 8443, Reachable: true, TLSVersion: "TLS 1.3",
+			Hostname: "sensor-hb.example.test",
+			Chain:    []*x509.Certificate{newTestX509Leaf(t, "sensor-hb-a.example.test")},
+		},
+		{IP: ip, Port: 8444, Reachable: false},
+	}
+	if applied, err := st.RecordObservationBatch(ctx, jobID, sensorID, first); err != nil || applied != 2 {
+		t.Fatalf("first batch = (%d, %v), want (2, nil)", applied, err)
+	}
+	if sc, re, fo, nw := readCounters(); sc != 3 || re != 2 || fo != 2 || nw != 1 {
+		t.Fatalf("counters after first batch = (%d,%d,%d,%d), want (3,2,2,1)", sc, re, fo, nw)
+	}
+
+	// 나머지 관측이 도착하면 절대값이 하트비트 값을 앞선다. 재전송은 중복되지 않는다.
+	second := []EndpointObservation{
+		{
+			IP: ip, Port: 8445, Reachable: true, TLSVersion: "TLS 1.3",
+			Chain: []*x509.Certificate{newTestX509Leaf(t, "sensor-hb-b.example.test")},
+		},
+		{
+			IP: ip, Port: 8446, Reachable: true, TLSVersion: "TLS 1.2",
+			Chain: []*x509.Certificate{newTestX509Leaf(t, "sensor-hb-c.example.test")},
+		},
+	}
+	if applied, err := st.RecordObservationBatch(ctx, jobID, sensorID, second); err != nil || applied != 2 {
+		t.Fatalf("second batch = (%d, %v), want (2, nil)", applied, err)
+	}
+	if applied, err := st.RecordObservationBatch(ctx, jobID, sensorID, second); err != nil || applied != 0 {
+		t.Fatalf("second batch resend = (%d, %v), want (0, nil)", applied, err)
+	}
+	if sc, re, fo, nw := readCounters(); sc != 4 || re != 3 || fo != 3 || nw != 3 {
+		t.Fatalf("counters after all batches = (%d,%d,%d,%d), want (4,3,3,3)", sc, re, fo, nw)
 	}
 }
 

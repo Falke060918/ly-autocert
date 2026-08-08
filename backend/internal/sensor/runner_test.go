@@ -201,6 +201,66 @@ func TestRunScanJob(t *testing.T) {
 	}
 }
 
+// TestObservationsFlushOnInterval은 시간 기반 플러시를 본다: 배치 상한(100건)에
+// 한참 못 미치는 스캔이라도 플러시 주기마다 관측이 서버로 올라가야 한다
+// (예전엔 100건이 모이거나 스캔이 끝날 때까지 아무 진척도 보이지 않았다).
+func TestObservationsFlushOnInterval(t *testing.T) {
+	ca := newTestCA(t)
+	dir := t.TempDir()
+	id := newEnrolledIdentity(t, ca, dir, time.Now().Add(90*24*time.Hour))
+
+	tlsPort, _ := newTLSTarget(t)
+	stallPort := newStallTarget(t) // 타임아웃까지 붙잡아 스캔을 길게 만든다.
+
+	const jobID = "job-0003"
+	rec := newGatewayRecorder()
+	job := &sensorwire.LeaseResponse{
+		JobID:          jobID,
+		JobType:        "scan",
+		Targets:        []string{"127.0.0.1"},
+		Ports:          []int{tlsPort, stallPort},
+		TimeoutMs:      2000,
+		Concurrency:    4,
+		LeaseExpiresAt: time.Now().Add(time.Minute),
+	}
+	ts := newMTLSGateway(t, ca, rec.mux(jobID, job))
+
+	client, err := NewClient(ts.URL, id)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	runner := &Runner{
+		Client:            client,
+		Identity:          id,
+		StateDir:          dir,
+		Logger:            discardLogger(),
+		PollInterval:      10 * time.Millisecond,
+		HeartbeatInterval: time.Hour, // 하트비트는 이 테스트 대상이 아니다.
+		FlushInterval:     50 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	runner.runJob(ctx, job)
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.batches) < 2 {
+		t.Fatalf("observation batches = %d, want >= 2 (스캔 도중 시간 기반 플러시)", len(rec.batches))
+	}
+	// 첫 배치는 느린 대상이 끝나기 전에 올라간 것이다 — 관측 1건짜리여야 한다.
+	if len(rec.batches[0].Observations) != 1 {
+		t.Errorf("first batch size = %d, want 1", len(rec.batches[0].Observations))
+	}
+	var total int
+	for _, b := range rec.batches {
+		total += len(b.Observations)
+	}
+	if total != 2 {
+		t.Errorf("uploaded observations = %d, want 2", total)
+	}
+}
+
 // TestRunJobRejectsUnknownType은 폐쇄 enum 규약을 본다 — 모르는 유형은 실행 없이 failed.
 func TestRunJobRejectsUnknownType(t *testing.T) {
 	ca := newTestCA(t)

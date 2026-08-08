@@ -2,6 +2,7 @@ package config
 
 import (
 	"net"
+	"strings"
 	"testing"
 )
 
@@ -54,6 +55,30 @@ func TestLoadSensorAdvertisedHosts(t *testing.T) {
 	}
 	if len(cfg.SensorAdvertisedIPs) != 1 || !cfg.SensorAdvertisedIPs[0].Equal(net.ParseIP("10.0.0.5")) {
 		t.Fatalf("SensorAdvertisedIPs = %v, want [10.0.0.5]", cfg.SensorAdvertisedIPs)
+	}
+}
+
+// TestLoadInvalidSensorCAEncKeyIsNotFatal은 센서 전용 설정 오류가 코어 기동을
+// 막지 않는지 본다: Load는 성공하고, 키는 비고, 오류만 따로 실려 온다
+// (cmd/server가 경고 후 게이트웨이만 비활성화한다).
+func TestLoadInvalidSensorCAEncKeyIsNotFatal(t *testing.T) {
+	setRequired(t)
+	t.Setenv("SENSOR_CA_ENC_KEY", "not-hex")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load must not fail on a bad sensor key: %v", err)
+	}
+	if cfg.SensorCAEncKey != nil {
+		t.Error("SensorCAEncKey must stay nil when the value is invalid")
+	}
+	if cfg.SensorConfigError == nil {
+		t.Fatal("SensorConfigError = nil, want the format requirement")
+	}
+	if !strings.Contains(cfg.SensorConfigError.Error(), "SENSOR_CA_ENC_KEY") {
+		t.Errorf("SensorConfigError = %q, want it to name the variable", cfg.SensorConfigError)
+	}
+	if strings.Contains(cfg.SensorConfigError.Error(), "not-hex") {
+		t.Error("SensorConfigError must not echo the configured value")
 	}
 }
 

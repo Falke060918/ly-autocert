@@ -279,6 +279,14 @@ func TestSensorGatewayEndToEnd(t *testing.T) {
 		sensorwire.HeartbeatRequest{ScannedEndpoints: 1}, nil); status != http.StatusNoContent {
 		t.Fatalf("heartbeat = %d, want 204", status)
 	}
+	// 보고된 진행률은 Job 행에 반영된다 — 리스만 연장하고 버리지 않는다.
+	hb, err := env.st.GetScanJob(ctx, jobID)
+	if err != nil {
+		t.Fatalf("get scan job after heartbeat: %v", err)
+	}
+	if hb.ScannedEndpoints != 1 {
+		t.Fatalf("scanned_endpoints after heartbeat = %d, want 1", hb.ScannedEndpoints)
+	}
 
 	// 관측 배치: 도달 1건(체인 1개) + 미도달 1건.
 	leafDER := testLeafCertDER(t, "svc.example.internal")

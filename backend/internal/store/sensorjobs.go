@@ -92,14 +92,28 @@ func (s *Store) MarkSensorJobRunning(ctx context.Context, jobID, sensorID string
 	return s.checkSensorJobAffected(ctx, res, jobID, sensorID, "running")
 }
 
-// ExtendSensorJobLease는 running 중 하트비트로 리스 만료 시각만 연장한다.
+// SensorProgress는 센서가 하트비트로 보고하는 누적 진행률이다.
+// 센서 로컬 집계라 서버가 반영한 관측 수보다 앞선다(수집 후 배치 전송).
+type SensorProgress struct {
+	ScannedEndpoints   int
+	ReachableEndpoints int
+	CertificatesFound  int
+}
+
+// ExtendSensorJobLease는 running 중 하트비트로 리스를 연장하고 보고된 진행률을
+// 같은 UPDATE로 반영한다. 관측 배치가 재계산하는 절대값과 섞이지 않도록
+// GREATEST로 앞선 값만 취한다(뒤늦은 하트비트가 진행률을 되돌리지 않는다).
 // running이 아니면 오류(리스 만료로 이미 failed 회수된 경우 포함).
-func (s *Store) ExtendSensorJobLease(ctx context.Context, jobID, sensorID string) error {
+func (s *Store) ExtendSensorJobLease(ctx context.Context, jobID, sensorID string, p SensorProgress) error {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE scan_jobs
-		   SET lease_expires_at = now() + make_interval(secs => $3)
+		   SET lease_expires_at    = now() + make_interval(secs => $3),
+		       scanned_endpoints   = GREATEST(scanned_endpoints, $4),
+		       reachable_endpoints = GREATEST(reachable_endpoints, $5),
+		       certificates_found  = GREATEST(certificates_found, $6)
 		 WHERE id = $1::uuid AND sensor_id = $2::uuid AND status = 'running'`,
-		jobID, sensorID, sensorLeaseTTL.Seconds())
+		jobID, sensorID, sensorLeaseTTL.Seconds(),
+		p.ScannedEndpoints, p.ReachableEndpoints, p.CertificatesFound)
 	if err != nil {
 		return fmt.Errorf("store: extend sensor job lease: %w", err)
 	}
@@ -229,7 +243,7 @@ func (s *Store) RecordObservationBatch(ctx context.Context, jobID, sensorID stri
 
 	scope := sensorScopePrefix + sensorID
 	applied := 0
-	reachableSum, foundSum, newSum := 0, 0, 0
+	newSum := 0
 	for _, obs := range batch {
 		res, err := tx.ExecContext(ctx, `
 			INSERT INTO scan_job_endpoints (job_id, ip, port)
@@ -246,18 +260,23 @@ func (s *Store) RecordObservationBatch(ctx context.Context, jobID, sensorID stri
 		if n == 0 {
 			continue // 이미 처리된 관측 — 멱등 재전송
 		}
-		reachable, certsFound, certsNew, err := applyEndpointObservation(ctx, tx, scope, obs)
+		_, certsFound, certsNew, err := applyEndpointObservation(ctx, tx, scope, obs)
 		if err != nil {
 			return 0, err
 		}
+		// 엔드포인트별 결과를 남긴다 — 진행률 카운터를 절대값으로 재계산하는 근거다(0011).
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE scan_job_endpoints SET reachable = $4, certificates_found = $5
+			 WHERE job_id = $1::uuid AND ip = $2::inet AND port = $3`,
+			jobID, obs.IP, obs.Port, obs.Reachable, certsFound); err != nil {
+			return 0, fmt.Errorf("store: update scan job endpoint result: %w", err)
+		}
 		applied++
-		reachableSum += reachable
-		foundSum += certsFound
 		newSum += certsNew
 	}
 
 	if applied > 0 {
-		if err := addScanCounters(ctx, tx, jobID, applied, reachableSum, foundSum, newSum); err != nil {
+		if err := syncSensorScanCounters(ctx, tx, jobID, newSum); err != nil {
 			return 0, err
 		}
 	}
@@ -266,6 +285,29 @@ func (s *Store) RecordObservationBatch(ctx context.Context, jobID, sensorID stri
 		return 0, fmt.Errorf("store: commit: %w", err)
 	}
 	return applied, nil
+}
+
+// syncSensorScanCounters는 센서 Job의 진행률 카운터를 scan_job_endpoints에서
+// 절대값으로 재계산한다. 증분(+=)이 아니라 재계산이므로 하트비트가 앞서 반영한
+// 진행률과 이중 계상되지 않는다(GREATEST로 큰 쪽을 남긴다).
+// certificates_new는 서버만 아는 값이라 하트비트가 건드리지 않으므로 증분한다.
+func syncSensorScanCounters(ctx context.Context, tx *sql.Tx, jobID string, certsNew int) error {
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE scan_jobs sj SET
+			scanned_endpoints   = GREATEST(sj.scanned_endpoints, agg.scanned),
+			reachable_endpoints = GREATEST(sj.reachable_endpoints, agg.reachable),
+			certificates_found  = GREATEST(sj.certificates_found, agg.found),
+			certificates_new    = sj.certificates_new + $2
+		  FROM (
+			SELECT count(*)                                  AS scanned,
+			       count(*) FILTER (WHERE reachable)         AS reachable,
+			       coalesce(sum(certificates_found), 0)      AS found
+			  FROM scan_job_endpoints WHERE job_id = $1::uuid) agg
+		 WHERE sj.id = $1::uuid`,
+		jobID, certsNew); err != nil {
+		return fmt.Errorf("store: sync sensor scan counters: %w", err)
+	}
+	return nil
 }
 
 // checkSensorJobAffected는 가드된 UPDATE가 0행이면 원인을 구분해 오류를 만든다.
