@@ -404,6 +404,155 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/users/{id}:
+    patch:
+      operationId: updateUser
+      summary: 사용자 수정 (System Administrator 전용)
+      description: >
+        role·display_name을 부분 수정한다. 제공한 필드만 바뀌며, display_name에 null을
+        보내면 값을 지운다. user.update 감사 이벤트를 같은 트랜잭션으로 남긴다.
+        락아웃 방지: 자기 역할 변경과 마지막 활성 System Administrator 강등은 409로 거부한다.
+      tags: [users]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                role: { $ref: "#/components/schemas/Role" }
+                display_name: { type: string, nullable: true }
+      responses:
+        "200":
+          description: 수정된 사용자
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400":
+          description: 잘못된 역할 또는 수정할 필드 없음 (invalid_role·no_fields)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: 존재하지 않는 사용자
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 락아웃 방지 거부 (self_role_change_forbidden·last_admin_protected)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/users/{id}/disable:
+    post:
+      operationId: disableUser
+      summary: 사용자 비활성화 (System Administrator 전용)
+      description: >
+        is_active를 false로 바꾸고 해당 사용자의 활성 세션을 같은 트랜잭션에서 전부
+        폐기한다 — 퇴사자 차단이 즉시 발효된다. user.disable 감사 이벤트를 남긴다.
+        락아웃 방지: 자기 계정과 마지막 활성 System Administrator는 409로 거부한다.
+      tags: [users]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 비활성화된 사용자
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: 존재하지 않는 사용자
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 락아웃 방지 거부 (self_disable_forbidden·last_admin_protected)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/users/{id}/enable:
+    post:
+      operationId: enableUser
+      summary: 사용자 활성화 (System Administrator 전용)
+      description: is_active를 true로 되돌린다. user.enable 감사 이벤트를 남긴다.
+      tags: [users]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 활성화된 사용자
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: 존재하지 않는 사용자
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/users/{id}/password:
+    post:
+      operationId: resetUserPassword
+      summary: 비밀번호 재설정 (System Administrator 전용)
+      description: >
+        관리자가 대상 사용자의 비밀번호를 재설정한다. 비밀번호 정책(12자 이상,
+        username과 상이)을 검사하며, 성공 시 대상의 활성 세션을 전부 폐기한다.
+        user.password.reset 감사 이벤트를 남긴다 — 감사 payload에 비밀번호·해시는 없다.
+        응답 본문은 없다(204).
+      tags: [users]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string, format: password, minLength: 12 }
+      responses:
+        "204": { description: 재설정 완료 (세션 폐기됨) }
+        "400":
+          description: 비밀번호 정책 위반 (weak_password)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: 존재하지 않는 사용자
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /api/v1/discovery/scans:
     post:
       operationId: createDiscoveryScan

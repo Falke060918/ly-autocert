@@ -54,6 +54,13 @@ func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorC
 	s.protected("GET /api/v1/auth/me", s.handleMe, domain.AllRoles...)
 	s.protected("POST /api/v1/users", s.handleCreateUser, domain.RoleSystemAdministrator)
 	s.protected("GET /api/v1/users", s.handleListUsers, domain.RoleSystemAdministrator)
+	// 사용자 수정·활성 토글·비밀번호 재설정 (00-spec 7.11 사용자 관리).
+	// 전부 감사 이벤트를 남기며, 비활성화·비밀번호 재설정은 대상의 활성 세션을
+	// 즉시 폐기한다 — DB 직접 UPDATE로만 가능하던 퇴사자 차단 경로를 없앤다.
+	s.protected("PATCH /api/v1/users/{id}", s.handleUpdateUser, domain.RoleSystemAdministrator)
+	s.protected("POST /api/v1/users/{id}/disable", s.handleDisableUser, domain.RoleSystemAdministrator)
+	s.protected("POST /api/v1/users/{id}/enable", s.handleEnableUser, domain.RoleSystemAdministrator)
+	s.protected("POST /api/v1/users/{id}/password", s.handleResetUserPassword, domain.RoleSystemAdministrator)
 	// 업로드는 인벤토리 변경이므로 관리자·운영자급만 (00-spec 7.11).
 	s.protected("POST /api/v1/certificates/import", handleImportCertificates(st),
 		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
