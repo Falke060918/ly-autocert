@@ -16,6 +16,7 @@
   - `internal/sensorwire/` — 서버-센서 mTLS API wire DTO + Validate (00-spec 7.8): Enroll/Renew(CSR PEM)·Lease·JobStart·Heartbeat·ObservationBatch(base64 DER 체인, 배치 상한 1000)·Complete. **내부 패키지 의존 0**(stdlib만) — 센서 바이너리와 공유 전제
   - `internal/sensor/` — 센서 바이너리 클라이언트 측 구현(서버 게이트웨이 `/sensor/v1/*`와 sensorwire로 통신, 스캔은 discovery.Expand/ScanEndpoint 재사용 — store/db/서버 패키지 비의존): `enroll.go`(로컬 ECDSA P-256 키 생성·CSR 제출·`--ca-fingerprint` SHA-256 핀 검증), `state.go`(상태 디렉토리 0700/0600, 기본 /var/lib/autocert-sensor·%ProgramData%\AutocertSensor, 원자 교체 저장), `identity.go`(mTLS 신원, renew 무중단 스왑), `runner.go`(pull 리스 폴링 루프: lease 204 백오프→start→세마포어 스캔→관측 배치 ≤100건 멱등 재전송→complete, 30s 하트비트, 기동 시+일 1회 잔여 30일 미만 renew). 개인키·인증서·토큰 로그 출력 금지. 테스트는 httptest 모의 게이트웨이 — DB 불필요
   - `internal/sensorca/` — 센서 mTLS 내부 CA 순수 crypto(저장 비의존): ECDSA P-256 CA(10년, MaxPathLenZero)·클라이언트 CSR 서명(90일)·서버 인증서 발급(SAN 인자)·AES-256-GCM Seal/Open(키 32B 고정). CA 개인키는 Seal 암호문으로만 저장(sensor_ca) — 평문 저장·로그 출력 금지
+  - `internal/sensorgw/` — 센서 전용 mTLS 게이트웨이(8443, `/sensor/v1/*`: enroll/renew/jobs lease·{id}/start·heartbeat·observations·complete). TLS는 VerifyClientCertIfGiven + 센서 CA ClientCAs — enroll만 비인증(1회용 토큰), 그 외는 requireSensor가 요청마다 클라이언트 인증서 fingerprint→store 대조(active만)·last_seen best-effort 갱신. CA는 store 로드(없으면 생성→Seal 봉인 저장, ErrSensorCAExists 경합 시 재로드), 리스너 서버 인증서는 기동 시 IssueServerCert(SAN 인자) 메모리 발급. 리스 만료 reaper는 `StartReaper`(30s 주기, stop 함수 반환). **리스너 기동 배선은 cmd/server 미구현(U7)** — 생성자(`New`)·`NewHTTPServer`·핸들러까지만
   - `internal/api/` — 라우팅·핸들러·미들웨어. 라우트 등록은 `public()`/`protected(roles...)` 둘뿐 — 보호 라우트는 역할 명시 강제(빈 역할은 panic), 등록 패턴은 `Server.routes`에 기록되어 OpenAPI 정합 테스트(`openapi_conformance_test.go`)가 명세와 양방향 대조(누락/초과 검출, DB 불필요). 모든 응답에 X-Request-ID + 보안 헤더(nosniff·X-Frame-Options DENY·no-referrer·CSP default-src 'none', `/api/*`는 Cache-Control no-store — `withSecurityHeaders`)
     - 라우트: `/healthz`·`POST /api/v1/auth/login`(public) / logout·me(전 역할) / `GET|POST /api/v1/users`(system_administrator만) / `POST /api/v1/certificates/import`·`POST /api/v1/discovery/scans`(system_administrator·pki_administrator·operator) / `GET /api/v1/certificates`·`GET /api/v1/certificates/summary`·`GET /api/v1/certificates/{id}`·`GET /api/v1/discovery/scans/{id}`·`GET /api/v1/sensors`·`GET /api/v1/sensors/{id}`(전 역할, 읽기 전용 — 감사 이벤트 없음. summary는 리터럴 세그먼트라 {id}보다 우선 매칭) / `GET /api/v1/certificates/export`(전 역할, 목록과 같은 필터로 CSV — 읽기지만 데이터 유출 경로라 certificate.export 감사 전건 기록, 7.12) / `POST /api/v1/sensors`·`POST /api/v1/sensors/{id}/disable`(system_administrator만) / `GET /api/v1/audit/events`·`GET /api/v1/audit/verify`(security_administrator·auditor만 — 7.11) / `GET /api/v1/openapi.yaml`(전 역할 — 임베드 명세 원문, 폐쇄망이라 인증 뒤)
     - users API는 생성(POST)/조회(GET)만 존재 — 수정·비활성 핸들러 없음(`handlers_users.go`)
@@ -29,6 +30,7 @@
     - `0008_chain_keys` — certificates.subject_key_id/authority_key_id(소문자 hex CHECK) + SKI·subject_dn 인덱스. 기존 행은 NULL(원문 미보관 — 백필 불가), 체인 조회는 DN 폴백·재업로드 시 upsert 백필
     - `0009_sensors` — sensors(상태 pending/active/disabled, 1회용 등록 토큰은 SHA-256 해시만·클라이언트 인증서 fingerprint UNIQUE) + sensor_ca(단일 행 강제 boolean PK, CA 키는 AES-256-GCM 암호문+nonce만)
     - `0010_sensor_scan_jobs` — scan_jobs 리스 확장(job_type 'scan' 폐쇄·executor_type·sensor_id·leased_at/lease_expires_at·status에 'leased' 추가) + targets.executor_scope + 인덱스 스왑 uq_targets_network_ip→uq_targets_network_scope_ip(스코프,ip) + scan_job_endpoints(Observation 멱등 아비터, PK(job_id,ip,port)). store/discovery.go의 targets ON CONFLICT 아비터도 (executor_scope, ip)로 갱신 완료 — 서버 스캔 정상
+  - `api/sensor-openapi.yaml` — 센서 게이트웨이(/sensor/v1/*) OpenAPI 3 명세. `api/embed_sensor.go`가 임베드하고 internal/sensorgw의 정합 테스트가 라우트와 양방향 대조 — 게이트웨이 라우트 변경 시 같은 커밋에서 갱신
   - `api/openapi.yaml` — OpenAPI 3 명세 (certificates 목록/summary/상세/import/export·auth·users·discovery/scans·audit/events·audit/verify·openapi.yaml 경로, bearer+cookie 보안 스킴 포함). `api/embed.go`(package apispec)가 go:embed로 바이너리에 포함 — 서버가 그대로 제공하고 정합 테스트도 같은 바이트를 파싱. 라우트 추가/제거 시 명세를 같은 커밋에서 고쳐야 테스트가 통과
 - `frontend/` — Next.js (App Router) + TypeScript. 전 화면 클라이언트 fetch (이슈 #8·#9 구현)
   - `app/(app)/` — 인증 셸(사이드바+탑바+AuthProvider): `/`(대시보드 — KPI 8종·만료 구간·임박 표), `/certificates`(목록 — URL 쿼리 구동 검색·필터·정렬·페이지네이션 + 업로드 패널 + CSV 내보내기 버튼), `/certificates/[id]`(상세 — 위치·tls_version·체인 카드(상위 클릭 이동, 미보유 표시)), `/discovery`(스캔 폼 + 2s 폴링 + 실행기 선택(서버 직접/active 센서). Job 목록 API가 없어 localStorage로 이 브라우저 Job만 추적), `/sensors`(센서 목록·등록 다이얼로그(토큰·CA fingerprint·enroll 명령 1회 표시)·비활성화(system_administrator 전용) — 서버 sensors API(U5) 구현 완료, api.ts 계약과 1:1)
@@ -46,7 +48,7 @@
   - `docs/manual/` — 고객용 매뉴얼 (INSTALL/OPERATIONS — #8·#9 UI 기준 운영 절차 + 지원 사양(3장: 형식·스캔 범위·프록시 구조) 반영. 미구현 기능은 "(예정)" 표기 — 이슈 완료 시마다 갱신)
 
 ## 포트
-- backend: 8080 / PostgreSQL: 5432 / frontend: 3000
+- backend: 8080 / 센서 게이트웨이: 8443(sensorgw 기본값 — cmd/server 배선은 U7 예정) / PostgreSQL: 5432 / frontend: 3000
 
 ## 실행
 - `cp .env.example .env && docker compose up --build` [unix]
