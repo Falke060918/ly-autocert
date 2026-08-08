@@ -37,6 +37,8 @@ type StartResult struct {
 
 // Start는 입력을 검증·펼쳐 Job을 만들고 백그라운드 스캔을 띄운 뒤 즉시 반환한다.
 // 입력 오류는 discovery.ErrInvalidScanInput으로 감싸 반환한다(핸들러가 400 매핑).
+// SensorID가 지정되면 executor_type='sensor'인 pending Job만 만들고 즉시 반환한다 —
+// 실행은 센서가 pull 리스로 가져간다(서버 goroutine 없음, 00-spec 7.8 작업 분배).
 func (m *Manager) Start(ctx context.Context, in store.ScanInput) (*StartResult, error) {
 	endpoints, err := Expand(in.Targets, in.Ports)
 	if err != nil {
@@ -45,6 +47,18 @@ func (m *Manager) Start(ctx context.Context, in store.ScanInput) (*StartResult, 
 
 	timeout := clampTimeout(in.TimeoutMs)
 	concurrency := clampConcurrency(in.Concurrency)
+
+	if in.SensorID != nil {
+		// 센서는 리스 응답의 timeout_ms/concurrency를 그대로 쓰므로
+		// 서버 실행 경로와 같은 클램프를 저장값에 반영해 둔다.
+		in.TimeoutMs = int(timeout / time.Millisecond)
+		in.Concurrency = concurrency
+		jobID, err := m.store.CreateScanJob(ctx, in)
+		if err != nil {
+			return nil, err
+		}
+		return &StartResult{JobID: jobID, TotalEndpoints: len(endpoints)}, nil
+	}
 
 	jobID, err := m.store.CreateScanJob(ctx, in)
 	if err != nil {
