@@ -1,0 +1,386 @@
+openapi: "3.0.3"
+info:
+  title: INHERIT_AutoCert Sensor Gateway API
+  description: >
+    센서(원격 수집기) 전용 mTLS 게이트웨이 API (docs/00-spec.md 7.8, Phase 3a).
+    관리자 API(8080)와 분리된 8443 리스너에서 제공한다.
+    인증: POST /sensor/v1/enroll 만 1회용 등록 토큰으로 접근하고,
+    그 외 모든 경로는 센서 CA가 발급한 클라이언트 인증서(mTLS)를 요구한다 —
+    서버는 요청마다 인증서 SHA-256 fingerprint를 등록 정보(status=active)와 대조한다.
+    OpenAPI 3.0에는 mutualTLS 보안 스킴이 없어 본문으로만 기술한다.
+  version: 0.1.0
+servers:
+  - url: https://localhost:8443
+    description: 센서 게이트웨이 (mTLS 전용 리스너)
+paths:
+  /sensor/v1/enroll:
+    post:
+      summary: 센서 최초 등록 (1회용 토큰 + CSR → 클라이언트 인증서 발급)
+      description: >
+        1회용 등록 토큰과 센서 로컬 키쌍의 CSR을 제출한다. 서버는 토큰을
+        SHA-256 해시로만 대조하며(무효·소진·만료는 구분하지 않는다),
+        성공 시 클라이언트 인증서와 서버 검증용 CA 인증서를 반환한다.
+        성공·실패 모두 감사 이벤트(sensor.enroll)를 남긴다.
+      operationId: enrollSensor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EnrollRequest"
+      responses:
+        "200":
+          description: 등록 성공 — 발급된 클라이언트 인증서
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnrollResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: 등록 토큰 무효·소진·만료 (구분하지 않음)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /sensor/v1/renew:
+    post:
+      summary: 클라이언트 인증서 갱신 (새 CSR → fingerprint 원자 교체)
+      description: >
+        현재 클라이언트 인증서(mTLS)가 아이덴티티 증명이다. 새 CSR로 발급한
+        인증서의 fingerprint로 원자 교체하며, 경합(이미 교체됨)은 409다.
+        감사 이벤트(sensor.renew)를 남긴다.
+      operationId: renewSensorCertificate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RenewRequest"
+      responses:
+        "200":
+          description: 갱신된 클라이언트 인증서
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RenewResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: 인증서가 이미 교체됨 (동시 갱신 경합)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /sensor/v1/jobs/lease:
+    post:
+      summary: 작업 pull 리스 (pending → leased)
+      description: >
+        자기 센서에 배정된 가장 오래된 pending Job 1건을 리스한다.
+        작업이 없으면 204. 작업 유형은 폐쇄 enum('scan')이다.
+      operationId: leaseSensorJob
+      responses:
+        "200":
+          description: 리스된 작업 1건
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeaseResponse"
+        "204":
+          description: 배정할 작업 없음
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /sensor/v1/jobs/{id}/start:
+    post:
+      summary: 실행 시작 보고 (leased → running)
+      description: 대상 전개 후 총 엔드포인트 수를 기록하고 리스를 연장한다.
+      operationId: startSensorJob
+      parameters:
+        - $ref: "#/components/parameters/JobID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JobStartRequest"
+      responses:
+        "204":
+          description: 전이 완료
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/StateConflict"
+  /sensor/v1/jobs/{id}/heartbeat:
+    post:
+      summary: 진행률 보고 + 리스 연장 (running 한정)
+      description: >
+        running 상태에서만 허용된다. 리스 만료로 이미 회수(failed)된 Job의
+        하트비트는 409로 거절된다.
+      operationId: heartbeatSensorJob
+      parameters:
+        - $ref: "#/components/parameters/JobID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HeartbeatRequest"
+      responses:
+        "204":
+          description: 리스 연장 완료
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/StateConflict"
+  /sensor/v1/jobs/{id}/observations:
+    post:
+      summary: 스캔 관측 배치 반영 (멱등)
+      description: >
+        (job_id, ip, port) 기준으로 멱등하다 — 같은 배치를 다시 보내도 결과가
+        중복되지 않는다. 체인은 base64(DER) 배열이며 서버가 x509 파싱 후
+        기존 upsert 인벤토리 경로로 반영한다. 종결된 Job에는 409.
+      operationId: postSensorObservations
+      parameters:
+        - $ref: "#/components/parameters/JobID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ObservationBatch"
+      responses:
+        "204":
+          description: 배치 반영 완료 (이미 처리된 관측은 건너뜀)
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/StateConflict"
+  /sensor/v1/jobs/{id}/complete:
+    post:
+      summary: 종결 보고 (running → completed / leased·running → failed)
+      description: >
+        completed는 running에서만, failed는 leased/running에서 허용된다.
+        터미널 상태(completed/failed)의 Job에 대한 재보고는 409다.
+        종료 감사 이벤트(discovery.scan)를 남긴다.
+      operationId: completeSensorJob
+      parameters:
+        - $ref: "#/components/parameters/JobID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompleteRequest"
+      responses:
+        "204":
+          description: 종결 완료
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/StateConflict"
+components:
+  parameters:
+    JobID:
+      name: id
+      in: path
+      required: true
+      description: 스캔 작업 ID (UUID)
+      schema:
+        type: string
+        format: uuid
+  responses:
+    BadRequest:
+      description: 요청 형식 오류 (본문·CSR·체인 해석 불가 포함)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: 클라이언트 인증서 부재 또는 등록된 active 센서가 아님
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: 해당 센서 소유의 스캔 작업이 없음
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    StateConflict:
+      description: 상태 머신이 허용하지 않는 전이 (터미널 상태 포함)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              example: state_conflict
+            message:
+              type: string
+        request_id:
+          type: string
+    EnrollRequest:
+      type: object
+      required: [token, csr_pem]
+      properties:
+        token:
+          type: string
+          description: 1회용 등록 토큰 평문 (서버는 SHA-256 해시로만 대조)
+        csr_pem:
+          type: string
+          description: CERTIFICATE REQUEST PEM 블록 정확히 1개
+    EnrollResponse:
+      type: object
+      required: [sensor_id, client_cert_pem, ca_cert_pem]
+      properties:
+        sensor_id:
+          type: string
+          format: uuid
+        client_cert_pem:
+          type: string
+        ca_cert_pem:
+          type: string
+          description: 이후 mTLS 서버 검증용 센서 CA 인증서
+    RenewRequest:
+      type: object
+      required: [csr_pem]
+      properties:
+        csr_pem:
+          type: string
+    RenewResponse:
+      type: object
+      required: [client_cert_pem]
+      properties:
+        client_cert_pem:
+          type: string
+    LeaseResponse:
+      type: object
+      required: [job_id, job_type, targets, ports, timeout_ms, concurrency, lease_expires_at]
+      properties:
+        job_id:
+          type: string
+          format: uuid
+        job_type:
+          type: string
+          enum: [scan]
+          description: 폐쇄 enum — 센서는 모르는 유형을 거부한다
+        targets:
+          type: array
+          items:
+            type: string
+          description: IP/CIDR 입력 원문
+        ports:
+          type: array
+          items:
+            type: integer
+        timeout_ms:
+          type: integer
+        concurrency:
+          type: integer
+        lease_expires_at:
+          type: string
+          format: date-time
+    JobStartRequest:
+      type: object
+      required: [total_endpoints]
+      properties:
+        total_endpoints:
+          type: integer
+          minimum: 0
+    HeartbeatRequest:
+      type: object
+      required: [scanned_endpoints, reachable_endpoints, certificates_found]
+      properties:
+        scanned_endpoints:
+          type: integer
+          minimum: 0
+        reachable_endpoints:
+          type: integer
+          minimum: 0
+        certificates_found:
+          type: integer
+          minimum: 0
+    Observation:
+      type: object
+      required: [ip, port, reachable, observed_at]
+      properties:
+        ip:
+          type: string
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        reachable:
+          type: boolean
+        tls_version:
+          type: string
+          description: 협상된 프로토콜 버전. 도달 실패 시 생략
+        hostname:
+          type: string
+          description: 역방향 DNS 또는 리프 CN 폴백. 없으면 생략
+        chain_der:
+          type: array
+          items:
+            type: string
+            format: byte
+          description: 서버 제시 순서(리프 우선)의 인증서 DER base64 배열. 도달 실패 시 생략
+        observed_at:
+          type: string
+          format: date-time
+    ObservationBatch:
+      type: object
+      required: [observations]
+      properties:
+        observations:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items:
+            $ref: "#/components/schemas/Observation"
+    CompleteRequest:
+      type: object
+      required: [status, scanned_endpoints, reachable_endpoints, certificates_found]
+      properties:
+        status:
+          type: string
+          enum: [completed, failed]
+        error:
+          type: string
+          description: failed일 때 사유. 인증서·키 내용 금지
+        scanned_endpoints:
+          type: integer
+          minimum: 0
+        reachable_endpoints:
+          type: integer
+          minimum: 0
+        certificates_found:
+          type: integer
+          minimum: 0
