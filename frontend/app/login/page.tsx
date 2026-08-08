@@ -24,6 +24,8 @@ function LoginForm() {
   const [password, setPassword] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
+  // 세션이 폐기돼 튕겨나온 경우 이유를 알린다 (lib/auth.tsx의 401 처리).
+  const bounced = searchParams.get("reason") === "session_expired";
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -66,6 +68,13 @@ function LoginForm() {
         <CardDescription>발급받은 로컬 계정으로 로그인하십시오.</CardDescription>
       </CardHeader>
       <CardContent>
+        {bounced && !error && (
+          <Alert className="mb-4">
+            <AlertDescription>
+              세션이 만료되었거나 계정이 비활성화되었습니다. 다시 로그인해 주세요.
+            </AlertDescription>
+          </Alert>
+        )}
         <form onSubmit={onSubmit} className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="username">아이디</Label>

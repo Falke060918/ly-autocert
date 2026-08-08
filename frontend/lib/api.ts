@@ -288,6 +288,40 @@ async function toApiError(res: Response): Promise<ApiError> {
   }
 }
 
+/**
+ * 401을 자체 UI로 처리하는 엔드포인트 — 전역 탈출 경로를 태우지 않는다.
+ * login은 자격 증명 오류가 401이고, logout은 auth.tsx가 직접 뒷정리한다.
+ */
+const BOUNCE_EXEMPT = ["/api/v1/auth/login", "/api/v1/auth/logout"];
+
+/** 401 응답 하나마다 탈출을 시작하지 않도록 하는 1회 빗장. */
+let bouncing = false;
+
+/**
+ * 세션이 만료·폐기됐을 때의 탈출 경로.
+ * 남은 HttpOnly 쿠키를 먼저 만료시켜야 proxy.ts가 /login을 다시 /로 되돌리지 않는다.
+ * reason 파라미터는 로그인 화면의 안내 문구와 proxy.ts의 2차 방어에 함께 쓰인다.
+ */
+export function bounceToLogin(): void {
+  if (typeof window === "undefined" || bouncing) return;
+  bouncing = true;
+  const here = window.location.pathname + window.location.search;
+  const params = new URLSearchParams({ reason: "session_expired" });
+  if (here !== "/") params.set("next", here);
+  void clearSessionCookie().then(() => {
+    window.location.replace(`/login?${params.toString()}`);
+  });
+}
+
+async function failed(path: string, res: Response): Promise<ApiError> {
+  // 소프트 내비게이션에서는 /auth/me를 다시 부르지 않으므로, 폐기된 세션은 각 화면의
+  // API 401로만 드러난다 — 여기서 잡지 않으면 앱 안에 갇힌다.
+  if (res.status === 401 && !BOUNCE_EXEMPT.includes(path.split("?")[0])) {
+    bounceToLogin();
+  }
+  return toApiError(res);
+}
+
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
@@ -297,7 +331,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     },
   });
   if (!res.ok) {
-    throw await toApiError(res);
+    throw await failed(path, res);
   }
   if (res.status === 204) {
     return undefined as T;
@@ -320,6 +354,19 @@ export function logout() {
 
 export function fetchMe() {
   return apiFetch<User>("/api/v1/auth/me");
+}
+
+/**
+ * 남은 세션 쿠키를 만료시킨다 (Next 로컬 라우트 — app/session/clear).
+ * 세션이 서버에서 이미 폐기된 경우 /auth/logout이 401이라 HttpOnly 쿠키가 남는다.
+ * 실패해도 로그인 이동은 계속한다 — proxy.ts가 reason 파라미터를 통과시킨다.
+ */
+export async function clearSessionCookie(): Promise<void> {
+  try {
+    await fetch("/session/clear", { method: "POST" });
+  } catch {
+    // 네트워크 실패는 무시한다.
+  }
 }
 
 // ── 사용자 관리 (System Administrator 전용 — 00-spec 7.11) ────────────────
@@ -397,9 +444,10 @@ export async function exportCertificatesCsv(
   params: URLSearchParams,
 ): Promise<Blob> {
   const qs = params.toString();
-  const res = await fetch(`/api/v1/certificates/export${qs ? `?${qs}` : ""}`);
+  const path = `/api/v1/certificates/export${qs ? `?${qs}` : ""}`;
+  const res = await fetch(path);
   if (!res.ok) {
-    throw await toApiError(res);
+    throw await failed(path, res);
   }
   return res.blob();
 }
@@ -412,7 +460,7 @@ export async function importCertificateFile(file: File): Promise<ImportResult> {
     body: await file.arrayBuffer(),
   });
   if (!res.ok) {
-    throw await toApiError(res);
+    throw await failed("/api/v1/certificates/import", res);
   }
   return res.json() as Promise<ImportResult>;
 }
