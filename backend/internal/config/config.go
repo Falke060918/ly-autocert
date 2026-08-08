@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -30,6 +32,14 @@ type Config struct {
 	// 미설정이면 nil — 센서 CA 부트스트랩이 필요한 시점(첫 센서 생성)에만 오류가
 	// 된다. secret이므로 절대 로그에 출력하지 않는다.
 	SensorCAEncKey []byte
+	// SensorListenAddr는 센서 게이트웨이(mTLS) 리슨 주소다
+	// (SENSOR_LISTEN_ADDR, 기본 ":8443"). SENSOR_CA_ENC_KEY가 설정된 경우에만 쓰인다.
+	SensorListenAddr string
+	// SensorAdvertisedDNS/IPs는 센서가 게이트웨이에 접속할 때 쓰는 주소다
+	// (SENSOR_ADVERTISED_HOSTS, 콤마 구분 DNS/IP 혼용). 게이트웨이 서버 인증서의
+	// SAN에 들어간다 — 여기 없는 주소로 접속하는 센서는 TLS 검증에 실패한다.
+	SensorAdvertisedDNS []string
+	SensorAdvertisedIPs []net.IP
 }
 
 // Load는 환경변수에서 설정을 읽는다.
@@ -55,6 +65,18 @@ func Load() (Config, error) {
 			return Config{}, errors.New("config: SENSOR_CA_ENC_KEY must be 64 hex chars (32 bytes)")
 		}
 		cfg.SensorCAEncKey = key
+	}
+	cfg.SensorListenAddr = getenv("SENSOR_LISTEN_ADDR", ":8443")
+	for _, h := range strings.Split(os.Getenv("SENSOR_ADVERTISED_HOSTS"), ",") {
+		h = strings.TrimSpace(h)
+		if h == "" {
+			continue
+		}
+		if ip := net.ParseIP(h); ip != nil {
+			cfg.SensorAdvertisedIPs = append(cfg.SensorAdvertisedIPs, ip)
+		} else {
+			cfg.SensorAdvertisedDNS = append(cfg.SensorAdvertisedDNS, h)
+		}
 	}
 	return cfg, nil
 }

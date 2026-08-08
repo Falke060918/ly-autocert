@@ -3,9 +3,9 @@
 
 ## 저장소 구조
 - `backend/` — Go 백엔드
-  - `cmd/server/main.go` — 엔트리포인트. config 로드 → DB 연결 → 마이그레이션 → HTTP 서버 기동
+  - `cmd/server/main.go` — 엔트리포인트. config 로드 → DB 연결 → 마이그레이션 → HTTP 서버 기동. `SENSOR_CA_ENC_KEY` 설정 시에만 sensorgw 리스너(8443)+리스 reaper 기동 — 미설정이면 로그 1줄 남기고 8443을 아예 열지 않음(zero-config 무영향), 종료 시 두 서버 모두 graceful shutdown
   - `cmd/sensor/main.go` — 센서(원격 수집기) 바이너리 엔트리포인트. `enroll`/`run` 서브커맨드, slog JSON 로그. 정적 크로스 빌드: `CGO_ENABLED=0 GOOS=linux|windows GOARCH=amd64 go build ./cmd/sensor`
-  - `internal/config/` — 환경변수 기반 설정 (`SESSION_TTL` 기본 8h, `BOOTSTRAP_ADMIN_USERNAME`/`_PASSWORD`, `SENSOR_CA_ENC_KEY` hex 64자 — 센서 CA 개인키 봉인 키, 미설정이면 첫 센서 생성 시점에만 오류)
+  - `internal/config/` — 환경변수 기반 설정 (`SESSION_TTL` 기본 8h, `BOOTSTRAP_ADMIN_USERNAME`/`_PASSWORD`, `SENSOR_CA_ENC_KEY` hex 64자 — 센서 CA 개인키 봉인 키, 미설정이면 첫 센서 생성 시점에만 오류. `SENSOR_LISTEN_ADDR` 기본 ":8443", `SENSOR_ADVERTISED_HOSTS` 콤마 구분 DNS/IP 혼용 — 게이트웨이 서버 인증서 SAN, IP는 net.ParseIP로 분류)
   - `internal/db/` — PostgreSQL 연결 + 마이그레이션 적용. DB 테스트는 `TEST_DATABASE_URL` 설정 시에만 실행(미설정 시 스킵)
   - `internal/domain/` — 핵심 데이터 모델 Go 타입 (00-spec 12장 기준: Certificate/CertificateLocation/Target/AuditEvent + User/Role 6종 + 상태 enum. `sensor.go` — Sensor/SensorStatus·JobType('scan' 폐쇄)·ExecutorType·ExecutorScopeServer)
   - `internal/certparse/` — 인증서 파서 (PEM 체인·DER, crypto/x509만). 개인키 검출 시 `ErrPrivateKeyFound`로 전체 거부. 새 포맷(P7B/PFX)은 `decoders` 목록에 추가. SKI/AKI를 소문자 hex로 추출(체인 매칭 키)
@@ -16,7 +16,7 @@
   - `internal/sensorwire/` — 서버-센서 mTLS API wire DTO + Validate (00-spec 7.8): Enroll/Renew(CSR PEM)·Lease·JobStart·Heartbeat·ObservationBatch(base64 DER 체인, 배치 상한 1000)·Complete. **내부 패키지 의존 0**(stdlib만) — 센서 바이너리와 공유 전제
   - `internal/sensor/` — 센서 바이너리 클라이언트 측 구현(서버 게이트웨이 `/sensor/v1/*`와 sensorwire로 통신, 스캔은 discovery.Expand/ScanEndpoint 재사용 — store/db/서버 패키지 비의존): `enroll.go`(로컬 ECDSA P-256 키 생성·CSR 제출·`--ca-fingerprint` SHA-256 핀 검증), `state.go`(상태 디렉토리 0700/0600, 기본 /var/lib/autocert-sensor·%ProgramData%\AutocertSensor, 원자 교체 저장), `identity.go`(mTLS 신원, renew 무중단 스왑), `runner.go`(pull 리스 폴링 루프: lease 204 백오프→start→세마포어 스캔→관측 배치 ≤100건 멱등 재전송→complete, 30s 하트비트, 기동 시+일 1회 잔여 30일 미만 renew). 개인키·인증서·토큰 로그 출력 금지. 테스트는 httptest 모의 게이트웨이 — DB 불필요
   - `internal/sensorca/` — 센서 mTLS 내부 CA 순수 crypto(저장 비의존): ECDSA P-256 CA(10년, MaxPathLenZero)·클라이언트 CSR 서명(90일)·서버 인증서 발급(SAN 인자)·AES-256-GCM Seal/Open(키 32B 고정). CA 개인키는 Seal 암호문으로만 저장(sensor_ca) — 평문 저장·로그 출력 금지
-  - `internal/sensorgw/` — 센서 전용 mTLS 게이트웨이(8443, `/sensor/v1/*`: enroll/renew/jobs lease·{id}/start·heartbeat·observations·complete). TLS는 VerifyClientCertIfGiven + 센서 CA ClientCAs — enroll만 비인증(1회용 토큰), 그 외는 requireSensor가 요청마다 클라이언트 인증서 fingerprint→store 대조(active만)·last_seen best-effort 갱신. CA는 store 로드(없으면 생성→Seal 봉인 저장, ErrSensorCAExists 경합 시 재로드), 리스너 서버 인증서는 기동 시 IssueServerCert(SAN 인자) 메모리 발급. 리스 만료 reaper는 `StartReaper`(30s 주기, stop 함수 반환). **리스너 기동 배선은 cmd/server 미구현(U7)** — 생성자(`New`)·`NewHTTPServer`·핸들러까지만
+  - `internal/sensorgw/` — 센서 전용 mTLS 게이트웨이(8443, `/sensor/v1/*`: enroll/renew/jobs lease·{id}/start·heartbeat·observations·complete). TLS는 VerifyClientCertIfGiven + 센서 CA ClientCAs — enroll만 비인증(1회용 토큰), 그 외는 requireSensor가 요청마다 클라이언트 인증서 fingerprint→store 대조(active만)·last_seen best-effort 갱신. CA는 store 로드(없으면 생성→Seal 봉인 저장, ErrSensorCAExists 경합 시 재로드), 리스너 서버 인증서는 기동 시 IssueServerCert(SAN 인자) 메모리 발급. 리스 만료 reaper는 `StartReaper`(30s 주기, stop 함수 반환). 리스너 기동 배선은 cmd/server(U7 완료) — `ListenAndServeTLS("", "")`(인증서는 TLSConfig 메모리 탑재)
   - `internal/api/` — 라우팅·핸들러·미들웨어. 라우트 등록은 `public()`/`protected(roles...)` 둘뿐 — 보호 라우트는 역할 명시 강제(빈 역할은 panic), 등록 패턴은 `Server.routes`에 기록되어 OpenAPI 정합 테스트(`openapi_conformance_test.go`)가 명세와 양방향 대조(누락/초과 검출, DB 불필요). 모든 응답에 X-Request-ID + 보안 헤더(nosniff·X-Frame-Options DENY·no-referrer·CSP default-src 'none', `/api/*`는 Cache-Control no-store — `withSecurityHeaders`)
     - 라우트: `/healthz`·`POST /api/v1/auth/login`(public) / logout·me(전 역할) / `GET|POST /api/v1/users`(system_administrator만) / `POST /api/v1/certificates/import`·`POST /api/v1/discovery/scans`(system_administrator·pki_administrator·operator) / `GET /api/v1/certificates`·`GET /api/v1/certificates/summary`·`GET /api/v1/certificates/{id}`·`GET /api/v1/discovery/scans/{id}`·`GET /api/v1/sensors`·`GET /api/v1/sensors/{id}`(전 역할, 읽기 전용 — 감사 이벤트 없음. summary는 리터럴 세그먼트라 {id}보다 우선 매칭) / `GET /api/v1/certificates/export`(전 역할, 목록과 같은 필터로 CSV — 읽기지만 데이터 유출 경로라 certificate.export 감사 전건 기록, 7.12) / `POST /api/v1/sensors`·`POST /api/v1/sensors/{id}/disable`(system_administrator만) / `GET /api/v1/audit/events`·`GET /api/v1/audit/verify`(security_administrator·auditor만 — 7.11) / `GET /api/v1/openapi.yaml`(전 역할 — 임베드 명세 원문, 폐쇄망이라 인증 뒤)
     - users API는 생성(POST)/조회(GET)만 존재 — 수정·비활성 핸들러 없음(`handlers_users.go`)
@@ -48,7 +48,7 @@
   - `docs/manual/` — 고객용 매뉴얼 (INSTALL/OPERATIONS — #8·#9 UI 기준 운영 절차 + 지원 사양(3장: 형식·스캔 범위·프록시 구조) 반영. 미구현 기능은 "(예정)" 표기 — 이슈 완료 시마다 갱신)
 
 ## 포트
-- backend: 8080 / 센서 게이트웨이: 8443(sensorgw 기본값 — cmd/server 배선은 U7 예정) / PostgreSQL: 5432 / frontend: 3000
+- backend: 8080 / 센서 게이트웨이: 8443(`SENSOR_CA_ENC_KEY` 설정 시에만 리슨, compose도 노출) / PostgreSQL: 5432 / frontend: 3000
 
 ## 실행
 - `cp .env.example .env && docker compose up --build` [unix]
@@ -56,6 +56,7 @@
 ## 검증 명령
 - backend: `go build ./...`, `go vet ./...`, 단위 테스트 `go test ./...` (backend/ 에서. 로컬 Go 없으면 Docker 경유)
 - 라우트-OpenAPI 명세 정합: `make openapi-check` (backend/ 에서, DB 불필요 — backend/Makefile)
+- 센서 배포판: `make sensor-dist` (backend/ 에서, Docker golang:1.25-alpine 경유 linux/windows amd64 정적 빌드 + SHA256SUMS → dist/, gitignore 대상)
 - DB 통합 테스트(db·store·api): compose db 기동 후 전용 테스트 DB 생성(`docker compose exec db createdb -U autocert autocert_test`) 뒤 `TEST_DATABASE_URL=postgres://autocert:<pw>@db:5432/autocert_test?sslmode=disable go test -p 1 ./...` — db 패키지가 up/down/up 전체를 돌리므로 **메인 DB(autocert)에는 돌리지 않는다**. **`-p 1` 필수**: 패키지 병렬 실행 시 db 패키지의 down이 다른 패키지가 쓰는 스키마를 지운다. 로컬 Go 없으면 compose 네트워크(`inherit_autocert_default`)에 붙인 golang 컨테이너 경유
 - frontend: `npm run build`, `npm run lint` (frontend/ 에서)
 
