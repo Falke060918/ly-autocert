@@ -34,7 +34,7 @@
   - `api/sensor-openapi.yaml` — 센서 게이트웨이(/sensor/v1/*) OpenAPI 3 명세. `api/embed_sensor.go`가 임베드하고 internal/sensorgw의 정합 테스트가 라우트와 양방향 대조 — 게이트웨이 라우트 변경 시 같은 커밋에서 갱신
   - `api/openapi.yaml` — OpenAPI 3 명세 (certificates 목록/summary/상세/import/export·auth·users(목록/생성/{id} PATCH/disable/enable/password)·discovery/scans·audit/events·audit/verify·openapi.yaml 경로, bearer+cookie 보안 스킴 포함). `api/embed.go`(package apispec)가 go:embed로 바이너리에 포함 — 서버가 그대로 제공하고 정합 테스트도 같은 바이트를 파싱. 라우트 추가/제거 시 명세를 같은 커밋에서 고쳐야 테스트가 통과
 - `frontend/` — Next.js (App Router) + TypeScript. 전 화면 클라이언트 fetch (이슈 #8·#9 구현)
-  - `app/(app)/` — 인증 셸(사이드바+탑바+AuthProvider): `/`(대시보드 — KPI 8종·만료 구간·임박 표), `/certificates`(목록 — URL 쿼리 구동 검색·필터·정렬·페이지네이션 + 업로드 패널 + CSV 내보내기 버튼), `/certificates/[id]`(상세 — 위치·tls_version·체인 카드(상위 클릭 이동, 미보유 표시)), `/discovery`(스캔 폼 + 2s 폴링(pending/leased/running 대상) + 실행기 선택(서버 직접/active 센서). Job 목록 API가 없어 localStorage로 이 브라우저 Job만 추적), `/sensors`(센서 목록·등록 다이얼로그(토큰·CA fingerprint·enroll 명령 1회 표시)·비활성화 — 등록·비활성화 모두 화면 게이트가 system_administrator 전용(서버 권한과 일치), 서버 sensors API(U5) 구현 완료, api.ts 계약과 1:1), `/users`(사용자 관리 — 목록(검색·역할·활성 필터는 URL 쿼리 구동, 목록 API에 조회 조건이 없어 필터링은 클라이언트 측)·생성·역할/표시이름 수정·비활성화(확인 다이얼로그)·활성화(즉시)·관리자 비밀번호 재설정. 화면·사이드바 메뉴 모두 system_administrator 전용. 락아웃 방지 4xx는 `ERROR_MESSAGES` 코드표→키워드→서버 메시지 순으로 한국어 치환)
+  - `app/(app)/` — 인증 셸(사이드바+탑바+AuthProvider): `/`(대시보드 — KPI 8종·만료 구간·임박 표), `/certificates`(목록 — URL 쿼리 구동 검색·필터·정렬·페이지네이션 + 업로드 패널 + CSV 내보내기 버튼), `/certificates/[id]`(상세 — 위치·tls_version·체인 카드(상위 클릭 이동, 미보유 표시)), `/discovery`(스캔 폼 + 2s 폴링(pending/leased/running 대상) + 실행기 선택(서버 직접/active 센서). 센서 목록은 페이지가 1회 조회해 폼·표가 공유 — 대기(pending)는 진행률 바 대신 "대기 중" 배지 + 누구를 기다리는지(센서 이름)·경과 시간 표시, 90초 초과나 센서 비활성이면 앰버로 전환. Job 목록 API가 없어 localStorage로 이 브라우저 Job만 추적), `/sensors`(센서 목록·등록 다이얼로그(토큰·CA fingerprint·enroll 명령 1회 표시)·비활성화 — 등록·비활성화 모두 화면 게이트가 system_administrator 전용(서버 권한과 일치), 서버 sensors API(U5) 구현 완료, api.ts 계약과 1:1), `/users`(사용자 관리 — 목록(검색·역할·활성 필터는 URL 쿼리 구동, 목록 API에 조회 조건이 없어 필터링은 클라이언트 측)·생성·역할/표시이름 수정·비활성화(확인 다이얼로그)·활성화(즉시)·관리자 비밀번호 재설정(관리자가 새 비밀번호를 직접 입력, 서버는 204라 응답 본문 파싱 없음). 화면·사이드바 메뉴 모두 system_administrator 전용. 락아웃 방지 4xx는 `ERROR_MESSAGES` 코드표→키워드→서버 메시지 순으로 한국어 치환)
   - `app/login/` — 로그인 (셸 밖). `proxy.ts` — autocert_session 쿠키 없으면 /login 리다이렉트(1차 관문, 실검증은 /auth/me 401)
   - API 경로: 브라우저는 같은 출처 `/api/*`만 호출 → next.config.ts rewrites가 백엔드로 중계(쿠키 CORS 불요). 프록시 대상은 build-arg `BACKEND_INTERNAL_URL`(compose는 http://backend:8080)로 빌드 시 고정. headers()가 전 페이지에 CSP('self' 기반, script/style만 'unsafe-inline' — Next 인라인 요구, dev만 'unsafe-eval')·nosniff·DENY·no-referrer 부착. HSTS는 HTTP 배포라 주석 처리(HTTPS 전환 시 활성화)
   - `components/ui/` — shadcn/ui (badge/button/card/input/separator/table/label/textarea/select/progress/skeleton/alert/dialog)
@@ -54,7 +54,7 @@
 
 ## 실행
 - `cp .env.example .env && docker compose up --build` [unix]
-- `.env` 필수 2개 = POSTGRES_PASSWORD·BOOTSTRAP_ADMIN_PASSWORD. SENSOR_CA_ENC_KEY/SENSOR_ADVERTISED_HOSTS/SENSOR_LISTEN_ADDR는 compose엔 배선돼 있으나 .env.example엔 없어 수동 추가(INSTALL 5.2). 앞의 두 개는 세트 — CA 키만 넣고 HOSTS를 비우면 SAN 없는 서버 인증서라 프로세스가 기동 실패로 종료된다(8080까지 안 뜸).
+- `.env` 필수 2개 = POSTGRES_PASSWORD·BOOTSTRAP_ADMIN_PASSWORD. SENSOR_CA_ENC_KEY/SENSOR_ADVERTISED_HOSTS/SENSOR_LISTEN_ADDR는 compose엔 배선돼 있으나 .env.example엔 없어 수동 추가(INSTALL 5.2). 앞의 두 개는 세트 — CA 키만 넣고 HOSTS를 비우면 SAN이 없어 게이트웨이가 경고 로그 후 비활성화된다(8080은 정상 기동, 센서만 못 붙음).
 
 ## 검증 명령
 - backend: `go build ./...`, `go vet ./...`, 단위 테스트 `go test ./...` (backend/ 에서. 로컬 Go 없으면 Docker 경유)

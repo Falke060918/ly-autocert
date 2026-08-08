@@ -34,6 +34,21 @@ import { formatDateTime } from "@/lib/format";
 const STORAGE_KEY = "autocert.scan_job_ids";
 const MAX_TRACKED = 20;
 const POLL_MS = 2000;
+/**
+ * 이 시간을 넘도록 대기 중이면 "지연"으로 표시한다.
+ * 센서 pull 주기는 5초, 백오프 최대 60초, 리스 TTL 90초이므로(manual/SENSOR.md)
+ * 정상이라면 90초 안에는 수령된다 — 넘으면 센서 미가동을 의심할 구간이다.
+ */
+const STALE_WAIT_MS = 90_000;
+
+/** "3분째" / "12초째" — 대기가 얼마나 길어졌는지 알려주는 경과 표기. */
+function elapsedLabel(fromISO: string, now: number): string {
+  const sec = Math.max(0, Math.floor((now - new Date(fromISO).getTime()) / 1000));
+  if (sec < 60) return `${sec}초째`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}분째`;
+  return `${Math.floor(min / 60)}시간 ${min % 60}분째`;
+}
 
 function loadJobIds(): string[] {
   try {
@@ -55,6 +70,31 @@ export default function DiscoveryPage() {
 
   const [jobIds, setJobIds] = React.useState<string[] | null>(null);
   const [jobs, setJobs] = React.useState<Record<string, ScanJob>>({});
+  const [sensors, setSensors] = React.useState<Sensor[]>([]);
+
+  // 센서 목록은 실행기 선택과 대기 Job의 "누구를 기다리는가" 표시에 모두 쓴다.
+  // 비활성 센서도 담아둔다 — 대기가 안 풀리는 원인이 바로 그것일 수 있다.
+  React.useEffect(() => {
+    let cancelled = false;
+    listSensors()
+      .then((res) => {
+        if (!cancelled) setSensors(res.items);
+      })
+      .catch(() => {
+        // 센서 목록을 못 가져와도 서버 직접 실행과 Job 조회는 가능하다.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const sensorById = React.useMemo(() => {
+    const map: Record<string, Sensor> = {};
+    sensors.forEach((s) => {
+      map[s.id] = s;
+    });
+    return map;
+  }, [sensors]);
 
   // 최초 로드: 저장된 job id들의 현재 상태를 한 번 가져온다.
   // localStorage는 클라이언트 전용이라 마운트 후 비동기로 읽는다 (SSR 불일치 방지).
@@ -116,7 +156,7 @@ export default function DiscoveryPage() {
 
       <div className="grid items-start gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
         {canManage ? (
-          <ScanForm onCreated={addJob} />
+          <ScanForm sensors={sensors} onCreated={addJob} />
         ) : (
           <Card className="gap-0 py-0">
             <div className="border-b px-4 py-3">
@@ -155,7 +195,7 @@ export default function DiscoveryPage() {
               </TableHeader>
               <TableBody>
                 {(jobIds ?? []).map((id) => (
-                  <ScanJobRow key={id} job={jobs[id]} />
+                  <ScanJobRow key={id} job={jobs[id]} sensorById={sensorById} />
                 ))}
               </TableBody>
             </Table>
@@ -166,7 +206,13 @@ export default function DiscoveryPage() {
   );
 }
 
-function ScanJobRow({ job }: { job?: ScanJob }) {
+function ScanJobRow({
+  job,
+  sensorById,
+}: {
+  job?: ScanJob;
+  sensorById: Record<string, Sensor>;
+}) {
   if (!job) {
     return (
       <TableRow>
@@ -180,6 +226,7 @@ function ScanJobRow({ job }: { job?: ScanJob }) {
     job.total_endpoints > 0
       ? Math.round((job.scanned_endpoints / job.total_endpoints) * 100)
       : 0;
+  const waiting = job.status === "pending";
   return (
     <TableRow>
       <TableCell className="max-w-52 truncate font-mono text-xs">
@@ -189,12 +236,20 @@ function ScanJobRow({ job }: { job?: ScanJob }) {
         </div>
       </TableCell>
       <TableCell>
-        {job.status === "leased" ? (
+        {waiting ? (
+          // 아직 아무도 집어가지 않은 Job — 진행률 바로 그리면 "0%"가 실행 중처럼 보인다.
+          <PendingStatus job={job} sensor={sensorOf(job, sensorById)} />
+        ) : job.status === "leased" ? (
           // 센서가 수령했지만 아직 실행 보고 전 — 진행 중이다.
-          <Badge className="border border-amber-200 bg-amber-50 text-amber-700">
-            수령됨
-          </Badge>
-        ) : job.status === "pending" || job.status === "running" ? (
+          <div className="space-y-1">
+            <Badge className="border border-amber-200 bg-amber-50 text-amber-700">
+              수령됨
+            </Badge>
+            <ExecutorLine
+              text={`${executorName(job, sensorOf(job, sensorById))} 실행 준비 중`}
+            />
+          </div>
+        ) : job.status === "running" ? (
           <div className="flex items-center gap-2">
             <Progress value={pct} className="h-1.5 flex-1" />
             <span className="font-mono text-xs text-muted-foreground tabular-nums">
@@ -210,7 +265,12 @@ function ScanJobRow({ job }: { job?: ScanJob }) {
         )}
       </TableCell>
       <TableCell className="text-right font-mono text-xs tabular-nums">
-        {job.scanned_endpoints} / {job.total_endpoints}
+        {waiting && job.total_endpoints === 0 ? (
+          // 센서 위임 Job은 센서가 대상을 펼치기 전까지 개수를 모른다 — 0/0은 오해를 부른다.
+          <span className="text-muted-foreground">—</span>
+        ) : (
+          `${job.scanned_endpoints} / ${job.total_endpoints}`
+        )}
       </TableCell>
       <TableCell className="text-right font-mono text-xs tabular-nums">
         {job.certificates_found}
@@ -234,34 +294,97 @@ function ScanJobRow({ job }: { job?: ScanJob }) {
   );
 }
 
+/**
+ * 주기적으로 갱신되는 현재 시각(ms). 렌더 중 `Date.now()`를 직접 부르면
+ * 순수성 규칙(react-hooks/purity)에 걸리므로 상태로 흘려보낸다.
+ */
+function useTicker(intervalMs: number): number {
+  const [now, setNow] = React.useState(() => Date.now());
+  React.useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(timer);
+  }, [intervalMs]);
+  return now;
+}
+
+function sensorOf(job: ScanJob, sensorById: Record<string, Sensor>) {
+  return job.sensor_id ? sensorById[job.sensor_id] : undefined;
+}
+
+/** 이 Job을 집어가야 할 주체의 이름. 센서 목록을 못 받았으면 id 앞자리로 대신한다. */
+function executorName(job: ScanJob, sensor?: Sensor): string {
+  if (job.executor_type !== "sensor") return "서버";
+  if (sensor) return `센서 “${sensor.name}”`;
+  return job.sensor_id ? `센서 ${job.sensor_id.slice(0, 8)}` : "센서";
+}
+
+/** 상태 배지 아래 한 줄 — 누구를 기다리는지, 얼마나 기다렸는지. */
+function ExecutorLine({ text, tone }: { text: string; tone?: "warn" }) {
+  return (
+    <div
+      title={text}
+      className={`truncate text-[11px] ${
+        tone === "warn" ? "text-amber-700" : "text-muted-foreground"
+      }`}
+    >
+      {text}
+    </div>
+  );
+}
+
+/**
+ * 대기(pending) 상태 표시. 진행률 바 대신 배지로 "아직 시작 안 됨"을 못 박고,
+ * 누구를 기다리는지와 경과 시간을 함께 보여준다 — 센서가 죽어 Job이 멈춘 경우를
+ * 화면에서 바로 진단하기 위한 단서다 (manual/SENSOR.md 문제해결).
+ */
+function PendingStatus({ job, sensor }: { job: ScanJob; sensor?: Sensor }) {
+  const now = useTicker(1000);
+  const waitedMs = now - new Date(job.created_at).getTime();
+  const sensorBlocked =
+    job.executor_type === "sensor" && sensor != null && sensor.status !== "active";
+  const overdue = sensorBlocked || waitedMs > STALE_WAIT_MS;
+  const who = executorName(job, sensor);
+  const detail = sensorBlocked
+    ? `${who} ${sensor!.status === "disabled" ? "비활성화됨" : "등록 대기"} — 수령 불가`
+    : `${who} 수령 대기 · ${elapsedLabel(job.created_at, now)}`;
+
+  return (
+    <div className="space-y-1">
+      {overdue ? (
+        <Badge className="border border-amber-200 bg-amber-50 text-amber-700">
+          대기 중
+        </Badge>
+      ) : (
+        <Badge variant="secondary">대기 중</Badge>
+      )}
+      <ExecutorLine text={detail} tone={overdue ? "warn" : undefined} />
+    </div>
+  );
+}
+
 /** 실행기 선택에서 "서버 직접"을 뜻하는 값 — SelectItem은 빈 문자열을 못 쓴다. */
 const EXECUTOR_SERVER = "server";
 
-function ScanForm({ onCreated }: { onCreated: (jobId: string) => void }) {
+function ScanForm({
+  sensors,
+  onCreated,
+}: {
+  sensors: Sensor[];
+  onCreated: (jobId: string) => void;
+}) {
   const [targets, setTargets] = React.useState("");
   const [ports, setPorts] = React.useState("443");
   const [timeoutMs, setTimeoutMs] = React.useState("");
   const [concurrency, setConcurrency] = React.useState("");
   const [executor, setExecutor] = React.useState(EXECUTOR_SERVER);
-  const [sensors, setSensors] = React.useState<Sensor[]>([]);
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
 
   // 실행기 후보 — active 센서만 위임 대상이 된다.
-  React.useEffect(() => {
-    let cancelled = false;
-    listSensors()
-      .then((res) => {
-        if (!cancelled)
-          setSensors(res.items.filter((s) => s.status === "active"));
-      })
-      .catch(() => {
-        // 센서 목록을 못 가져와도 서버 직접 실행은 가능하다.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const activeSensors = React.useMemo(
+    () => sensors.filter((s) => s.status === "active"),
+    [sensors],
+  );
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -328,7 +451,7 @@ function ScanForm({ onCreated }: { onCreated: (jobId: string) => void }) {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value={EXECUTOR_SERVER}>서버 직접</SelectItem>
-                {sensors.map((s) => (
+                {activeSensors.map((s) => (
                   <SelectItem key={s.id} value={s.id}>
                     센서 · {s.name}
                   </SelectItem>
