@@ -25,6 +25,11 @@ const maxSensorRequestBytes = 4 << 10 // 4 KiB
 // sensorCACommonName은 서버가 부트스트랩하는 센서 mTLS 내부 CA의 CN이다.
 const sensorCACommonName = "INHERIT AutoCert Sensor CA"
 
+// defaultSensorGatewayPort는 등록 명령 예시에 넣는 센서 게이트웨이 포트다.
+// sensorgw.DefaultAddr / config의 SENSOR_LISTEN_ADDR 기본값(":8443")과 같은 값이며,
+// 운영자가 게이트웨이 포트를 바꿨다면 예시 포트도 바꿔 써야 한다.
+const defaultSensorGatewayPort = "8443"
+
 // errSensorCAKeyMissing은 센서 CA를 새로 만들어야 하는데 봉인 키가 없을 때다.
 // 운영자가 조치할 수 있도록 핸들러가 설정 방법을 응답 메시지로 안내한다.
 var errSensorCAKeyMissing = errors.New("api: sensor ca encryption key not configured")
@@ -114,10 +119,12 @@ func handleCreateSensor(st *store.Store, sensorCAKey []byte) http.HandlerFunc {
 			Sensor:          sn,
 			EnrollmentToken: token,
 			CAFingerprint:   caFingerprint,
-			// 서버 주소는 배치 세그먼트에 따라 다르므로 자리표시로 남긴다.
+			// 호스트는 배치 세그먼트에 따라 다르므로 자리표시로 남기되, 포트는 생략하면
+			// 443으로 붙으므로 센서 게이트웨이 기본 포트(SENSOR_LISTEN_ADDR 기본 ":8443")를
+			// 명시한다. 게이트웨이 포트를 바꿨다면 그 포트로 고쳐 쓴다.
 			EnrollCommandExample: fmt.Sprintf(
-				"sensor enroll --server https://<서버 주소> --token %s --ca-fingerprint %s",
-				token, caFingerprint),
+				"sensor enroll --server https://<서버 주소>:%s --token %s --ca-fingerprint %s",
+				defaultSensorGatewayPort, token, caFingerprint),
 		})
 	}
 }

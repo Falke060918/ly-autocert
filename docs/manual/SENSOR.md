@@ -191,7 +191,7 @@ schtasks /Run /TN "AutocertSensor"
 | 증상 | 원인 후보 | 조치 |
 | --- | --- | --- |
 | enroll이 `server certificate chain does not match --ca-fingerprint` | 지문 오입력, 또는 다른 서버/재구축된 서버에 접속 | 웹 콘솔에서 발급받은 CA fingerprint를 다시 확인. 서버를 재구축(DB 초기화)했다면 CA가 바뀌었으므로 센서를 새로 등록 |
-| enroll이 403 | 등록 토큰 무효·이미 사용됨·**만료(24시간)** | [센서] 화면에서 해당 대기 센서를 비활성화(토큰 회수)하고 새로 등록해 새 토큰 발급 |
+| enroll이 401 (`invalid_token`) | 등록 토큰 무효·이미 사용됨·**만료(24시간)** | [센서] 화면에서 해당 대기 센서를 비활성화(토큰 회수)하고 새로 등록해 새 토큰 발급 |
 | enroll/run 연결 거부 (connection refused) | 서버의 8443 게이트웨이가 안 열림 — `SENSOR_CA_ENC_KEY` 미설정, 또는 방화벽 차단 | 서버 `.env`의 `SENSOR_CA_ENC_KEY` 확인 후 backend 재기동 (3.1절), 센서→서버 8443 아웃바운드 방화벽 확인 (3.2절) |
 | run에서 TLS 검증 실패 (certificate is valid for … not …) | `--server` 주소가 `SENSOR_ADVERTISED_HOSTS`에 없음 | 서버 `.env`의 `SENSOR_ADVERTISED_HOSTS`에 해당 주소를 추가하고 backend 재기동 (3.1절) |
 | 인증서 유효기간 오류 (expired / not yet valid) | 센서 호스트 **시계 드리프트**, 또는 90일 이상 정지로 인증서 만료 | NTP 동기화 확인 (2장). 만료면 비활성화 후 재등록 |
