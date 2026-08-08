@@ -31,12 +31,13 @@
 7. **[MVP] 만료 대시보드** — 전체 수, 7/30/60/90일 이내 만료, 이미 만료, 자체서명, 소유자 없음
 8. **[MVP] 감사 로그** — 로그인/로그아웃/실패, 인증서 등록·발급, 설정 변경, 데이터 내보내기. 애플리케이션 로그와 분리 저장, 무결성 검증값 포함
 9. **[MVP] Docker Compose 개발환경**
+10. **[MVP] 사용자 관리 API + 화면** — 역할·표시 이름 수정, 비활성화·재활성화, 관리자 비밀번호 재설정(해당 사용자 세션 즉시 폐기), `/users` 화면 1개. 전부 System Administrator 전용이며 변경마다 감사 이벤트를 같은 트랜잭션으로 기록한다. `users.is_active`를 바꿀 API가 없으면 퇴사자 차단이 DB 직접 UPDATE로만 가능해 감사 로그를 우회한다
 
 ### Phase 2 이후 (이번 범위 밖, 설계만 고려)
 
-- **Phase 2**: CA 공통 인터페이스, ACME / Microsoft AD CS / HashiCorp Vault PKI 커넥터, 프로파일, CSR 생성, 발급
+- **Phase 2**: CA 공통 인터페이스, ACME / Microsoft AD CS / HashiCorp Vault PKI 커넥터, 프로파일, CSR 생성, 발급 + Prometheus 메트릭 최소셋(`/metrics`) + 오프라인 이미지 번들·체크섬 반입 절차(Phase 3b 이전 완료, Helm보다 선행)
 - **Phase 3**: 센서(원격 수집기) 선행 — **3a**: 격리 세그먼트 원격 스캔용 센서, 아웃바운드 전용 mTLS pull 워커 → **3b**: Linux/Windows 배포 에이전트(단일 Go 바이너리, outbound mTLS), Nginx/IIS/파일 배포, 배포 검증, 롤백
-- **Phase 4**: 갱신 정책·스케줄러·승인 워크플로·자동 배포·재시도·알림
+- **Phase 4**: 갱신 정책·스케줄러·승인 워크플로·자동 배포·재시도·알림 + OpenTelemetry 분산 트레이스 + Helm Chart / Kubernetes·비Docker 설치 경로
 - **Phase 5**: AI 운영 지원(자연어 검색, 위험 설명, 실패 로그 요약, 소유자 후보 추천)
 
 ## 비기능 요구사항
@@ -70,13 +71,19 @@
 - **Backend**: Go, REST API, OpenAPI 3, PostgreSQL, SQL migration, 비동기 작업 큐
 - **Frontend**: React + TypeScript + Next.js
 - **Agent/Sensor**: Go 단일 바이너리 (Windows/Linux) — 센서(원격 수집기)는 Phase 3a, 배포 에이전트는 Phase 3b
-- **배포**: Docker, Docker Compose, Helm Chart, Kubernetes
-- **관측성**: OpenTelemetry, Prometheus Metrics, 구조화 JSON 로그, Trace/Request ID
+- **배포**: Docker, Docker Compose (Phase 1) / Helm Chart, Kubernetes (Phase 4)
+- **관측성**: 구조화 JSON 로그, Request ID 전파 (Phase 1 구현 완료) / Prometheus Metrics (Phase 2) / OpenTelemetry·Trace ID (Phase 4)
 
 ## 이번 범위에서 제외 (명시적 제외)
 
+이 목록은 "이번 범위(Phase 1) 밖"이라는 뜻이고, 뒤에 Phase가 적힌 항목은 해당 Phase에서 구현한다. 사용자 관리는 Phase 1 범위로 편입되어 이 목록에서 빠졌다.
+
 - **Phase 2~5 전체** — CA 커넥터·발급, 원격 수집기(센서)·에이전트·배포·롤백, 자동 갱신·승인 워크플로, AI 기능
 - 정책 엔진 실행(정책 데이터 모델 자리만 확보, 평가 로직은 Phase 4)
+- Prometheus 메트릭·`/metrics` (Phase 2)
+- 오프라인 이미지 번들·체크섬 반입 절차 (Phase 2~3b, Helm보다 선행)
+- OpenTelemetry 분산 트레이스 (Phase 4)
+- Helm Chart / Kubernetes·비Docker 설치 경로 (Phase 4)
 - MFA(TOTP), LDAP/AD/OIDC/SAML 연동
 - 알림(이메일/Webhook)
 - 공개 신뢰 CA 사업, Root CA 자체 구현, 암호 알고리즘 자체 구현, HSM 펌웨어/드라이버

@@ -24,16 +24,14 @@ INHERIT_AutoCert — 폐쇄망·레거시 환경용 온프레미스 인증서 �
    - `SENSOR_LISTEN_ADDR=:8443`
    - `SENSOR_ADVERTISED_HOSTS=`
    미설정 시 첫 센서 생성에서 500 `sensor_ca_unconfigured`.
-2. **로드맵 공백 결정 필요(감사 결과)**
-   1. 제품 라이선스 관리 — 00-spec 3.2가 "오프라인 라이선스 지원"을 약속했으나 Phase 1~5 어디에도 없고 16장 제외 목록에도 없음. 구현 Phase 배정 또는 명시적 제외 선언 필요.
-   2. 관리자 화면 — 사용자 관리 UI가 스펙 14장 화면 목록에 아예 없음. users API도 생성/조회만 존재(수정·비활성화·비밀번호 재설정 없음 → 퇴사자 계정 처리 불가).
-   3. Helm/K8s·비Docker 설치 경로(00-spec 3.2 약속) 미배정.
-   4. 관측성(OpenTelemetry·Prometheus, 11장 고정 스택) 미구현·미배정.
-3. Phase 2(CA 연결과 발급) 착수 — 3a와 독립.
-4. 잔여 이식성·운영 갭: 오프라인 이미지 번들·체크섬 반입 절차 부재 / 내부 통신 평문(`sslmode=disable`·HTTP, 01-plan 비기능 요구와 불일치) / 버전 식별 수단 없음(CHANGELOG 스텁·이미지 태깅 정책 부재) / 서버 재시작 시 running Job 미회수.
+2. **사용자 관리 API + 화면 구현(Phase 1 잔여, 최우선)** — 로드맵 배정 결정 반영 완료(00-spec 14.11·15장, 01-plan). 최소 범위: `PATCH /users/{id}`(role·display_name), `POST /users/{id}/disable`·`/enable`, `POST /users/{id}/password`(관리자 재설정 시 해당 사용자 세션 즉시 폐기), 프론트 `/users` 화면 1개. 전부 system_administrator 게이트 + 감사 이벤트 동일 트랜잭션. 배경: `users.is_active`(0004)를 바꿀 API가 없어 퇴사자 차단이 DB 직접 UPDATE뿐 → 하드 규칙 5 위반.
+3. Phase 2(CA 연결과 발급) 착수 — 3a와 독립. Phase 2에 함께 배정된 항목: Prometheus 메트릭 최소셋(`/metrics`), 오프라인 이미지 번들·체크섬 반입 절차(Phase 3b 이전 완료·Helm보다 선행).
+4. 잔여 이식성·운영 갭: 내부 통신 평문(`sslmode=disable`·HTTP, 01-plan 비기능 요구와 불일치) / 버전 식별 수단 없음(CHANGELOG 스텁·이미지 태깅 정책 부재) / 서버 재시작 시 running Job 미회수.
 5. 잔여 low: enroll 엔드포인트 레이트리밋 없음(폐쇄망 전제라 위험 낮음) / 목록 "초기화" 시 검색 인풋 잔류 / HTTPS 배포 시 세션 쿠키 Secure 플래그 / 감사 정본 문자열 0x1F 경계 / Discovery Job 목록 API·감사 로그 조회 UI 부재.
 
 ## 이번 세션 특이사항
+- 로드맵 공백 5건 배정 확정·문서 반영: 사용자 관리=Phase 1 / Prometheus 메트릭·오프라인 번들=Phase 2(번들은 3b 이전, Helm 선행) / OpenTelemetry·Helm·K8s=Phase 4. 11장 관측성 4항목 중 구조화 JSON 로그·Request ID는 이미 구현 완료로 정정.
+- 오프라인 라이선스(MAC 지문 + 유효기간 방식) 설계 진행 중 — Phase 배정 미정. 제외 선언하지 않는다.
 - git author 자동 추정값(markus@jjuui-MacBookAir.local) 커밋 지속 — git config 미적용.
 - 이전 STATE의 "INSTALL.md `.env.example` 경고 문단 이미 삭제됨" 기록은 오류였고 이번 세션에 실제로 삭제(25cc399).
 - OPERATIONS.md 문서 갭(CSV 내보내기·상세 체인 카드)은 이번 세션에 해소(4603819).
