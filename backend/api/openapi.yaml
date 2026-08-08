@@ -931,13 +931,22 @@ components:
       type: object
       description: 스캔 Job 상태·진행률·결과 요약
       required:
-        [id, status, targets, ports, total_endpoints, scanned_endpoints,
+        [id, status, executor_type, targets, ports, total_endpoints, scanned_endpoints,
          reachable_endpoints, certificates_found, certificates_new, created_at]
       properties:
         id: { type: string, format: uuid }
         status:
           type: string
           enum: [pending, running, completed, failed]
+        executor_type:
+          type: string
+          enum: [server, sensor]
+          description: Job 실행 주체. server = 서버 직접 실행, sensor = 센서 위임(pull 리스).
+        sensor_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: executor_type이 sensor일 때 실행을 맡은 센서 id. 서버 실행이면 null.
         targets:
           type: array
           items: { type: string }

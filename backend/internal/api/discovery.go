@@ -122,8 +122,11 @@ func handleCreateScan(mgr *discovery.Manager, st *store.Store) http.HandlerFunc 
 }
 
 type scanJobResponse struct {
-	ID                 string     `json:"id"`
-	Status             string     `json:"status"`
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	// ExecutorType/SensorID는 Job의 실행 주체를 드러낸다 (server 직접 실행 vs 센서 위임).
+	ExecutorType       string     `json:"executor_type"`
+	SensorID           *string    `json:"sensor_id"`
 	Targets            []string   `json:"targets"`
 	Ports              []int      `json:"ports"`
 	TimeoutMs          int        `json:"timeout_ms"`
@@ -166,6 +169,8 @@ func toScanJobResponse(j *store.ScanJob) scanJobResponse {
 	return scanJobResponse{
 		ID:                 j.ID,
 		Status:             j.Status,
+		ExecutorType:       j.ExecutorType,
+		SensorID:           j.SensorID,
 		Targets:            j.Targets,
 		Ports:              j.Ports,
 		TimeoutMs:          j.TimeoutMs,
