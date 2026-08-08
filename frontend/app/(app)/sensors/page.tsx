@@ -25,7 +25,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { canManageInventory, isSystemAdministrator, useAuth } from "@/lib/auth";
+import { isSystemAdministrator, useAuth } from "@/lib/auth";
 import {
   createSensor,
   disableSensor,
@@ -58,8 +58,8 @@ function SensorStatusBadge({ status }: { status: SensorStatus }) {
 
 export default function SensorsPage() {
   const { user } = useAuth();
-  const canManage = canManageInventory(user);
-  const canDisable = isSystemAdministrator(user);
+  // 센서 등록·비활성화 모두 서버에서 System Administrator 전용이다 (manual/SENSOR.md 5.1).
+  const canManage = isSystemAdministrator(user);
 
   const [sensors, setSensors] = React.useState<Sensor[] | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -136,7 +136,7 @@ export default function SensorsPage() {
                 <TableHead className="w-28">상태</TableHead>
                 <TableHead className="w-40">마지막 통신</TableHead>
                 <TableHead className="w-40">등록일</TableHead>
-                {canDisable && <TableHead className="w-24 text-right" />}
+                {canManage && <TableHead className="w-24 text-right" />}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -152,7 +152,7 @@ export default function SensorsPage() {
                   <TableCell className="font-mono text-xs tabular-nums text-muted-foreground">
                     {formatDateTime(sensor.created_at)}
                   </TableCell>
-                  {canDisable && (
+                  {canManage && (
                     <TableCell className="text-right">
                       {sensor.status !== "disabled" && (
                         <Button
@@ -180,7 +180,7 @@ export default function SensorsPage() {
           onCreated={reload}
         />
       )}
-      {canDisable && (
+      {canManage && (
         <DisableSensorDialog
           sensor={disableTarget}
           onOpenChange={(open) => {

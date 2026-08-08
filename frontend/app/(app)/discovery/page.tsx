@@ -81,7 +81,7 @@ export default function DiscoveryPage() {
   // 진행 중인 Job 폴링.
   React.useEffect(() => {
     const active = Object.values(jobs).filter(
-      (j) => j.status === "pending" || j.status === "running",
+      (j) => j.status === "pending" || j.status === "leased" || j.status === "running",
     );
     if (active.length === 0) return;
     const timer = setInterval(() => {
@@ -189,7 +189,12 @@ function ScanJobRow({ job }: { job?: ScanJob }) {
         </div>
       </TableCell>
       <TableCell>
-        {job.status === "pending" || job.status === "running" ? (
+        {job.status === "leased" ? (
+          // 센서가 수령했지만 아직 실행 보고 전 — 진행 중이다.
+          <Badge className="border border-amber-200 bg-amber-50 text-amber-700">
+            수령됨
+          </Badge>
+        ) : job.status === "pending" || job.status === "running" ? (
           <div className="flex items-center gap-2">
             <Progress value={pct} className="h-1.5 flex-1" />
             <span className="font-mono text-xs text-muted-foreground tabular-nums">
