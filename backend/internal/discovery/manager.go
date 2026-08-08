@@ -47,6 +47,8 @@ func (m *Manager) Start(ctx context.Context, in store.ScanInput) (*StartResult, 
 
 	timeout := clampTimeout(in.TimeoutMs)
 	concurrency := clampConcurrency(in.Concurrency)
+	// 생성 응답의 total_endpoints와 저장된 Job 행이 어긋나지 않게 생성 시점에 기록한다.
+	in.TotalEndpoints = len(endpoints)
 
 	if in.SensorID != nil {
 		// 센서는 리스 응답의 timeout_ms/concurrency를 그대로 쓰므로

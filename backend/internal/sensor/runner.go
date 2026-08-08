@@ -23,6 +23,9 @@ const (
 	defaultHeartbeatInterval  = 30 * time.Second
 	defaultRenewCheckInterval = 24 * time.Hour
 	defaultRenewBefore        = 30 * 24 * time.Hour
+	// defaultFlushInterval은 관측 배치의 시간 기반 플러시 주기다. 배치 상한(100건)에
+	// 못 미치는 스캔도 이 주기마다 서버에 반영돼 진행 상황이 보인다.
+	defaultFlushInterval = 30 * time.Second
 
 	// maxSendBatch는 관측 전송 배치 상한이다. wire 상한(1000)보다 작게 유지한다.
 	maxSendBatch = 100
@@ -50,6 +53,7 @@ type Runner struct {
 	// 0이면 기본값을 쓴다. 테스트 재정의용.
 	PollInterval       time.Duration
 	HeartbeatInterval  time.Duration
+	FlushInterval      time.Duration
 	RenewCheckInterval time.Duration
 	RenewBefore        time.Duration
 }
@@ -73,6 +77,13 @@ func (r *Runner) heartbeatInterval() time.Duration {
 		return r.HeartbeatInterval
 	}
 	return defaultHeartbeatInterval
+}
+
+func (r *Runner) flushInterval() time.Duration {
+	if r.FlushInterval > 0 {
+		return r.FlushInterval
+	}
+	return defaultFlushInterval
 }
 
 func (r *Runner) renewCheckInterval() time.Duration {
@@ -178,7 +189,8 @@ func (r *Runner) runJob(ctx context.Context, job *sensorwire.LeaseResponse) {
 	prog := &progress{}
 	var uploadFailed atomic.Bool
 
-	// 수집 → 배치 전송 파이프라인. 배치 상한마다 흘려보내 메모리를 제한한다.
+	// 수집 → 배치 전송 파이프라인. 배치 상한마다, 그리고 플러시 주기마다 흘려보낸다 —
+	// 상한(100건)에 못 미치는 스캔도 주기적으로 서버 진행률에 반영된다.
 	obsCh := make(chan sensorwire.Observation, concurrency)
 	var collectorWG sync.WaitGroup
 	collectorWG.Add(1)
@@ -195,13 +207,23 @@ func (r *Runner) runJob(ctx context.Context, job *sensorwire.LeaseResponse) {
 			}
 			batch = batch[:0]
 		}
-		for obs := range obsCh {
-			batch = append(batch, obs)
-			if len(batch) >= maxSendBatch {
+		flushTick := time.NewTicker(r.flushInterval())
+		defer flushTick.Stop()
+		for {
+			select {
+			case obs, ok := <-obsCh:
+				if !ok {
+					flush() // 수집 종료 — 남은 관측을 마저 보낸다.
+					return
+				}
+				batch = append(batch, obs)
+				if len(batch) >= maxSendBatch {
+					flush()
+				}
+			case <-flushTick.C:
 				flush()
 			}
 		}
-		flush()
 	}()
 
 	// 30s 주기 하트비트 — 진행률 보고 겸 리스 연장.

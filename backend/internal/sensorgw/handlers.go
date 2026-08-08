@@ -166,8 +166,9 @@ func (g *Gateway) handleJobStart(w http.ResponseWriter, r *http.Request) {
 		g.st.MarkSensorJobRunning(r.Context(), jobID, sn.ID, req.TotalEndpoints))
 }
 
-// handleHeartbeat는 running 중 리스 연장이다. running이 아니면 409 —
+// handleHeartbeat는 running 중 리스 연장 + 진행률 반영이다. running이 아니면 409 —
 // 리스 만료로 이미 회수된 Job의 하트비트도 여기서 걸린다.
+// 보고된 진행률(스캔·도달·발견)은 리스 연장과 같은 UPDATE로 Job 행에 반영한다.
 func (g *Gateway) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	jobID, ok := jobIDFromPath(w, r)
 	if !ok {
@@ -183,7 +184,11 @@ func (g *Gateway) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	sn := sensorFrom(r.Context())
 	g.writeJobTransition(w, r, "heartbeat",
-		g.st.ExtendSensorJobLease(r.Context(), jobID, sn.ID))
+		g.st.ExtendSensorJobLease(r.Context(), jobID, sn.ID, store.SensorProgress{
+			ScannedEndpoints:   req.ScannedEndpoints,
+			ReachableEndpoints: req.ReachableEndpoints,
+			CertificatesFound:  req.CertificatesFound,
+		}))
 }
 
 // handleObservations는 관측 배치 반영이다: base64(DER) → x509 파싱 →

@@ -43,10 +43,13 @@ type ScanInput struct {
 	Ports       []int
 	TimeoutMs   int
 	Concurrency int
-	SensorID    *string // 센서 위임 실행일 때만. nil이면 서버 직접 실행
-	ActorID     *string
-	RequestID   *string
-	SourceIP    *string
+	// TotalEndpoints는 대상·포트를 전개한 엔드포인트 수다. 생성 응답이 돌려주는
+	// 값과 저장된 Job 행이 어긋나지 않도록 생성 시점에 기록한다(센서 위임 포함).
+	TotalEndpoints int
+	SensorID       *string // 센서 위임 실행일 때만. nil이면 서버 직접 실행
+	ActorID        *string
+	RequestID      *string
+	SourceIP       *string
 }
 
 // ScanJob은 스캔 Job 1건의 상태·진행률·결과 요약이다.
@@ -99,14 +102,14 @@ func (s *Store) CreateScanJob(ctx context.Context, in ScanInput) (string, error)
 
 	var id string
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO scan_jobs (targets, ports, timeout_ms, concurrency, status, executor_type, sensor_id)
+		INSERT INTO scan_jobs (targets, ports, timeout_ms, concurrency, status, executor_type, sensor_id, total_endpoints)
 		VALUES (
 			coalesce(string_to_array(nullif($1, ''), chr(31)), '{}'),
 			coalesce(string_to_array(nullif($2, ''), ','), '{}')::int[],
-			$3, $4, 'pending', $5, $6::uuid)
+			$3, $4, 'pending', $5, $6::uuid, $7)
 		RETURNING id`,
 		strings.Join(in.Targets, sansSep), joinInts(in.Ports),
-		in.TimeoutMs, in.Concurrency, string(executorType), in.SensorID,
+		in.TimeoutMs, in.Concurrency, string(executorType), in.SensorID, in.TotalEndpoints,
 	).Scan(&id)
 	if err != nil {
 		return "", fmt.Errorf("store: insert scan job: %w", err)
@@ -244,6 +247,67 @@ func (s *Store) MarkScanFinished(ctx context.Context, jobID, status string, scan
 		return fmt.Errorf("store: commit: %w", err)
 	}
 	return nil
+}
+
+// orphanedServerJobError는 서버 재시작으로 실행 주체가 사라진 Job에 남기는 오류다.
+const orphanedServerJobError = "server restarted"
+
+// ReapOrphanedServerScanJobs는 서버 직접 실행 Job 중 미종결(pending/running) 행을
+// failed로 회수하고 건당 종료 감사 이벤트를 남긴다. 회수한 Job 수를 반환한다.
+//
+// 서버 직접 실행 Job은 생성 시 띄운 인프로세스 goroutine이 유일한 실행 주체다 —
+// 프로세스가 죽으면 그 Job을 이어받을 주체가 없고, pending으로 되돌려도 이를
+// 집어가는 디스패처가 없어 영구 대기가 된다. 그래서 재큐잉이 아니라 failed 회수다
+// (센서 위임 Job의 리스 만료 회수와 같은 처리).
+//
+// 호출 시점은 서버 기동 직후다 — 단일 인스턴스 배포 전제(docker-compose)에서
+// 기동 시점에 살아 있는 서버 실행 Job은 정의상 고아다. 센서 위임 Job
+// (executor_type='sensor')은 건드리지 않는다(리스 reaper 소관).
+func (s *Store) ReapOrphanedServerScanJobs(ctx context.Context) (int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("store: begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	rows, err := tx.QueryContext(ctx, `
+		UPDATE scan_jobs
+		   SET status = 'failed', finished_at = now(), error = $1
+		 WHERE executor_type = 'server' AND status IN ('pending', 'running')
+		RETURNING id, scanned_endpoints, reachable_endpoints, certificates_found, certificates_new, total_endpoints`,
+		orphanedServerJobError)
+	if err != nil {
+		return 0, fmt.Errorf("store: reap orphaned server scan jobs: %w", err)
+	}
+	type reaped struct {
+		id                                        string
+		scanned, reachable, found, newCerts, total int
+	}
+	var jobs []reaped
+	for rows.Next() {
+		var r reaped
+		if err := rows.Scan(&r.id, &r.scanned, &r.reachable, &r.found, &r.newCerts, &r.total); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("store: scan orphaned job: %w", err)
+		}
+		jobs = append(jobs, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("store: reap orphaned server scan jobs: %w", err)
+	}
+
+	// 감사 삽입은 트랜잭션의 마지막 문장(들)이어야 한다 (docs/GOTCHAS.md).
+	for _, r := range jobs {
+		if err := auditScanFinished(ctx, tx, r.id, ScanStatusFailed, r.total, r.scanned, r.reachable, r.found, r.newCerts); err != nil {
+			return 0, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("store: commit: %w", err)
+	}
+	return len(jobs), nil
 }
 
 // auditScanFinished는 Job 종료 감사 이벤트를 남긴다(서버·센서 경로 공용).

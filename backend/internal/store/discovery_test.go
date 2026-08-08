@@ -48,6 +48,139 @@ func newTestX509Leaf(t *testing.T, cn string) *x509.Certificate {
 	return cert
 }
 
+// TestCreateScanJobRecordsTotalEndpoints는 생성 응답의 total_endpoints와 저장된
+// Job 행이 일치하는지 본다 — 예전엔 /start(서버는 running 전이) 전까지 0이었다.
+func TestCreateScanJobRecordsTotalEndpoints(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool)
+	ctx := context.Background()
+
+	const ip = "203.0.113.60" // 문서화용 예약 대역 — 실제 주소 아님
+	reqID := "test-req-scan-total"
+	t.Cleanup(func() {
+		_, _ = pool.Exec(`DELETE FROM scan_jobs WHERE targets = ARRAY[$1::text]`, ip)
+		cleanupAuditByRequestID(pool, reqID)
+	})
+
+	jobID, err := st.CreateScanJob(ctx, ScanInput{
+		Targets: []string{ip}, Ports: []int{8443, 8444}, TimeoutMs: 1000, Concurrency: 5,
+		TotalEndpoints: 2, RequestID: &reqID,
+	})
+	if err != nil {
+		t.Fatalf("create scan job: %v", err)
+	}
+	job, err := st.GetScanJob(ctx, jobID)
+	if err != nil {
+		t.Fatalf("get scan job: %v", err)
+	}
+	if job.TotalEndpoints != 2 {
+		t.Errorf("total_endpoints = %d, want 2 (생성 응답과 동일)", job.TotalEndpoints)
+	}
+}
+
+// TestReapOrphanedServerScanJobs는 서버 재시작 회수를 본다: 서버 직접 실행
+// Job의 pending/running은 failed로 회수되고, 센서 위임 Job은 손대지 않는다
+// (센서 Job은 리스 만료 reaper 소관).
+func TestReapOrphanedServerScanJobs(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool)
+	ctx := context.Background()
+
+	const ip = "203.0.113.61" // 문서화용 예약 대역 — 실제 주소 아님
+	reqID := "test-req-scan-orphan"
+	sensorID := newTestSensor(t, pool, "sensor-fixture-orphan")
+	t.Cleanup(func() {
+		_, _ = pool.Exec(`DELETE FROM scan_jobs WHERE targets = ARRAY[$1::text]`, ip)
+		cleanupAuditByRequestID(pool, reqID)
+	})
+
+	newJob := func(sensor *string) string {
+		t.Helper()
+		id, err := st.CreateScanJob(ctx, ScanInput{
+			Targets: []string{ip}, Ports: []int{8443}, TimeoutMs: 1000, Concurrency: 1,
+			TotalEndpoints: 1, SensorID: sensor, RequestID: &reqID,
+		})
+		if err != nil {
+			t.Fatalf("create scan job: %v", err)
+		}
+		t.Cleanup(func() { cleanupAuditByTargetID(pool, id) })
+		return id
+	}
+
+	serverRunning := newJob(nil)
+	if err := st.MarkScanRunning(ctx, serverRunning, 1); err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+	serverPending := newJob(nil)
+	serverDone := newJob(nil)
+	if err := st.MarkScanFinished(ctx, serverDone, ScanStatusCompleted, nil); err != nil {
+		t.Fatalf("mark finished: %v", err)
+	}
+	// 리스는 가장 오래된 pending을 집어간다 — leased 대상 Job을 먼저 만든다.
+	sensorLeased := newJob(&sensorID)
+	lease, err := st.LeaseNextSensorJob(ctx, sensorID)
+	if err != nil {
+		t.Fatalf("lease: %v", err)
+	}
+	if lease.JobID != sensorLeased {
+		t.Fatalf("leased job = %s, want %s", lease.JobID, sensorLeased)
+	}
+	sensorPending := newJob(&sensorID)
+
+	n, err := st.ReapOrphanedServerScanJobs(ctx)
+	if err != nil {
+		t.Fatalf("reap orphaned server scan jobs: %v", err)
+	}
+	if n < 2 {
+		t.Errorf("reaped = %d, want at least 2 (running + pending 서버 Job)", n)
+	}
+
+	status := func(jobID string) (string, *string) {
+		t.Helper()
+		j, err := st.GetScanJob(ctx, jobID)
+		if err != nil {
+			t.Fatalf("get scan job: %v", err)
+		}
+		return j.Status, j.Error
+	}
+
+	for _, id := range []string{serverRunning, serverPending} {
+		gotStatus, errMsg := status(id)
+		if gotStatus != ScanStatusFailed {
+			t.Errorf("orphaned server job status = %q, want failed", gotStatus)
+		}
+		if errMsg == nil || *errMsg != orphanedServerJobError {
+			t.Errorf("orphaned server job error = %v, want %q", errMsg, orphanedServerJobError)
+		}
+	}
+	if got, _ := status(serverDone); got != ScanStatusCompleted {
+		t.Errorf("completed job status = %q, want completed (재회수 금지)", got)
+	}
+	// 센서 위임 Job은 그대로다 — 리스 만료 reaper가 따로 다룬다.
+	if got, _ := status(sensorPending); got != ScanStatusPending {
+		t.Errorf("sensor pending job status = %q, want pending", got)
+	}
+	if got, _ := status(sensorLeased); got != "leased" {
+		t.Errorf("sensor leased job status = %q, want leased", got)
+	}
+
+	// 회수 건마다 종료 감사 이벤트가 남는다 (하드 규칙 5).
+	var audits int
+	if err := pool.QueryRow(
+		`SELECT count(*) FROM audit_events WHERE target_id = $1 AND event_type = $2 AND result = 'failure'`,
+		serverRunning, EventDiscoveryScan).Scan(&audits); err != nil {
+		t.Fatalf("count audit events: %v", err)
+	}
+	if audits != 1 {
+		t.Errorf("audit events for reaped job = %d, want 1", audits)
+	}
+
+	// 회수 후 재실행은 0건이다(멱등).
+	if n, err := st.ReapOrphanedServerScanJobs(ctx); err != nil || n != 0 {
+		t.Errorf("second reap = (%d, %v), want (0, nil)", n, err)
+	}
+}
+
 // TestRecordEndpointResultConcurrentSameIP는 같은 IP의 여러 포트가 서로 다른
 // 인증서를 동시에 기록해도 대상·위치가 중복 생성되지 않는지 검증한다.
 func TestRecordEndpointResultConcurrentSameIP(t *testing.T) {

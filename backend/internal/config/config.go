@@ -40,6 +40,10 @@ type Config struct {
 	// SAN에 들어간다 — 여기 없는 주소로 접속하는 센서는 TLS 검증에 실패한다.
 	SensorAdvertisedDNS []string
 	SensorAdvertisedIPs []net.IP
+	// SensorConfigError는 센서 게이트웨이 전용 설정의 오류다. 센서 설정 하나가
+	// 코어 API(8080)까지 죽이지 않도록 Load는 이 오류를 반환하지 않고 여기 담는다 —
+	// cmd/server가 경고로 남기고 게이트웨이만 비활성화한다. secret 값은 담지 않는다.
+	SensorConfigError error
 }
 
 // Load는 환경변수에서 설정을 읽는다.
@@ -60,11 +64,13 @@ func Load() (Config, error) {
 	cfg.SessionTTL = ttl
 	if raw := os.Getenv("SENSOR_CA_ENC_KEY"); raw != "" {
 		// 오류에 키 값을 싣지 않는다 — 형식 요구사항만 알린다.
+		// 형식이 틀려도 기동은 계속한다: 게이트웨이만 비활성화되고 코어 API는 뜬다.
 		key, err := hex.DecodeString(raw)
 		if err != nil || len(key) != 32 {
-			return Config{}, errors.New("config: SENSOR_CA_ENC_KEY must be 64 hex chars (32 bytes)")
+			cfg.SensorConfigError = errors.New("config: SENSOR_CA_ENC_KEY must be 64 hex chars (32 bytes)")
+		} else {
+			cfg.SensorCAEncKey = key
 		}
-		cfg.SensorCAEncKey = key
 	}
 	cfg.SensorListenAddr = getenv("SENSOR_LISTEN_ADDR", ":8443")
 	for _, h := range strings.Split(os.Getenv("SENSOR_ADVERTISED_HOSTS"), ",") {
