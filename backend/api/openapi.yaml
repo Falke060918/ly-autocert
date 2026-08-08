@@ -937,7 +937,10 @@ components:
         id: { type: string, format: uuid }
         status:
           type: string
-          enum: [pending, running, completed, failed]
+          enum: [pending, leased, running, completed, failed]
+          description: >
+            leased = 센서가 Job을 수령했고 아직 실행 보고(running 하트비트) 전인 상태 (00-spec 7.8).
+            리스 만료까지 running 전이가 없으면 서버가 failed로 회수한다.
         executor_type:
           type: string
           enum: [server, sensor]
