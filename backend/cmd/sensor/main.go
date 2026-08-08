@@ -2,8 +2,8 @@
 // 서버가 도달하지 못하는 분리망 세그먼트에 설치되어, 아웃바운드 mTLS 1경로로만
 // 서버 게이트웨이(/sensor/v1/*)에 접속한다 — 인바운드 리스너가 없다.
 //
-//	sensor enroll --server https://host:3000 --token <1회용 토큰> --ca-fingerprint <sha256 hex>
-//	sensor run    --server https://host:3000
+//	sensor enroll --server https://host:8443 --token <1회용 토큰> --ca-fingerprint <sha256 hex>
+//	sensor run    --server https://host:8443
 //
 // 개인키는 enroll 때 로컬에서 생성되어 이 호스트를 떠나지 않는다.
 package main
