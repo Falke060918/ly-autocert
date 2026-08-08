@@ -6,16 +6,12 @@ Entries are written in English; user quotes and error messages stay verbatim in 
 
 ## Environment & tools
 
-**On Windows, extracting with `python -c "print(...)" > file` corrupts Korean text**
-Cause: Windows Python stdout is `cp949`, so UTF-8 gets damaged during redirection; only the extracted copy breaks, misleading diagnosis.
-Fix: use a binary write — `open(path,'wb').write(s.encode('utf-8'))`. (Windows / last recurrence: 2026-07)
+**Korean text gets silently corrupted — Windows redirection, and AskUserQuestion escapes**
+Cause: Windows Python stdout is `cp949`, so `python -c "print(...)" > file` damages UTF-8 in the extracted copy only (misleading diagnosis); separately, hand-recalled `\uXXXX` escapes in AskUserQuestion break (observed `비밀번호`→`뱄뱈호`, ~11%) and get copied forward into later turns.
+Fix: write files binary — `open(path,'wb').write(s.encode('utf-8'))`; write Korean in tool arguments as literal UTF-8 characters, never `\uXXXX`. (last recurrence: 2026-08)
 
 **If `rg` is a shell-function shim rather than a real binary, some rtk internal filters do not work**
 Cause/Fix: the shim passes `command -v rg` but does not exist when rtk executes it as a subprocess; install real ripgrep (e.g., `apt install ripgrep`).
-
-**Korean text sent through AskUserQuestion gets corrupted**
-Cause: on long structured Korean input, hand-recalled `\uXXXX` escapes break (observed: `비밀번호`→`뱄뱈호`); 11% failure rate; corrupted strings get copied forward into later turns.
-Fix: write Korean in AskUserQuestion arguments as **literal UTF-8 characters**, never `\uXXXX` escapes. (last recurrence: 2026-08)
 
 ## Permissions & settings
 
@@ -23,13 +19,9 @@ Fix: write Korean in AskUserQuestion arguments as **literal UTF-8 characters**, 
 Cause: the matcher strips only `timeout`/`nice`/`nohup`/`env`; `rtk git push --force` matches no `git push …` pattern and passes through the `Bash(rtk:*)` allow.
 Fix: write dangerous-command patterns generalized with a leading `*` — `Bash(* git push *--force*)`; per-wrapper mirrors do not scale. (last recurrence: 2026-07)
 
-**Session-start markers: check them first; `/clear` does not reload hooks**
-Cause: markers are unenforced text signals easily eclipsed by the user's message; `.claude/settings.json` hooks load only at session start, and `/clear` does not re-read them.
-Fix: check markers in the session-start output **before** the user's request; after editing hooks, restart Claude (not `/clear`) before suspecting the hook logic. (last recurrence: 2026-07)
-
-**Hook edits blocked by the permission-mode classifier**
-Cause: edits to settings.json hooks/permissions trip the classifier regardless of allow rules
-Fix: state the user-approval basis at the very top of the delegation prompt (last recurrence: 2026-07)
+**Hook/permission edits: `/clear` does not reload them, and the classifier blocks the edit**
+Cause: `.claude/settings.json` hooks load only at session start and `/clear` does not re-read them; edits to hooks/permissions trip the permission-mode classifier regardless of allow rules; session-start markers are unenforced text easily eclipsed by the user's message.
+Fix: check markers **before** the user's request; state the user-approval basis at the very top of the delegation prompt; after editing hooks restart Claude (not `/clear`) before suspecting the hook logic. (last recurrence: 2026-07)
 
 **`.env.*` files are blocked from Read/Edit, so agents cannot add new env var placeholders**
 Cause: the permission deny rule for secret-leak prevention covers `.env.example` too, not just live `.env`.
@@ -43,13 +35,9 @@ Fix: if answer tone changes after installing a plugin, check that field first; k
 
 ## Agents & delegation
 
-**Agent spawns with a `name` param idle without doing any work**
-Cause: named spawns (background AND sync) route through the teammate mailbox and never receive their instructions — 6 no-ops across 3 sessions; unnamed spawns ran fine every time.
-Fix: spawn subagents unnamed (the `name` param alone is the trigger); distrust idle notifications — verify outputs (files/commits) before proceeding. (last recurrence: 2026-07)
-
-**Transcript JSONL misleads when measuring agents/parallelism**
-Cause: tool_result always reports `"status":"async_launched"` whatever `run_in_background` says; JSONL stores one content block per line, so "two tool_use on one line" greps return 0; `isSidechain:true` never appears.
-Fix: group tool_use by `message.id` for fan-out width; judge parallelism only by overlapping async_launched→task-notification intervals (`bash scripts/fanout.sh 99 --all`); agent-internal metrics must be self-reported. (last recurrence: 2026-08)
+**Agent spawns idle when given a `name`, and the transcript misreports parallelism**
+Cause: named spawns (background AND sync) route through the teammate mailbox and never receive their instructions — 6 no-ops across 3 sessions; separately tool_result always reports `"status":"async_launched"`, JSONL stores one content block per line, and `isSidechain:true` never appears.
+Fix: spawn subagents unnamed and verify outputs (files/commits) instead of trusting idle notifications; group tool_use by `message.id` for fan-out width and judge parallelism only by overlapping async_launched→notification intervals (`bash scripts/fanout.sh 99 --all`). (last recurrence: 2026-08)
 
 ## Template machinery
 
@@ -75,9 +63,9 @@ Fix: always `go test -p 1 ./...`, against a disposable per-worktree DB (createdb
 Cause: postgres:16-alpine defaults to C collation, so string ORDER BY is byte-order ('AutoCert' < 'app-01') — locale-aware expectations are wrong.
 Fix: write test expectations against C collation (or ORDER BY lower(col) if locale order is a product requirement). (last recurrence: 2026-08)
 
-**Appending paths after the top-level `security:` block silently corrupts backend/api/openapi.yaml**
-Cause: YAML top-level key ordering — paths inserted below `security:` fall outside the `paths:` map; the file stayed broken from the #7 merge unnoticed.
-Fix: keep `security:` outside/after `paths:`; TestOpenAPISpecMatchesRoutes now fails at parse time — update the spec in the same commit as any route change. (last recurrence: 2026-08)
+**Contract drift: openapi.yaml corrupts silently, and a new status enum freezes UI polling**
+Cause: paths appended below the top-level `security:` block fall outside the `paths:` map (the file stayed broken across a merge unnoticed); a status value missing from the frontend union type is absent from the poll-target filter and falls through to the else branch (rendered as "실패").
+Fix: keep `security:` outside/after `paths:`; change the domain enum, backend/api/openapi.yaml and frontend/lib/api.ts in the SAME commit — `TestOpenAPISpecMatchesRoutes` now fails at parse time. (last recurrence: 2026-08)
 
 **Audit insert must be the last statement in its transaction**
 Cause: implicit convention — the global advisory lock taken by the audit hash chain is held until tx end; inserting earlier widens lock contention and breaks chain-ordering assumptions.
@@ -87,10 +75,22 @@ Fix: in any new mutation path, make the AuditEvent insert the final operation in
 Cause: 0003/0005 were dropped during development; `ON CONFLICT (col) WHERE ...` infers one specific partial unique index, and 0010 swapped `uq_targets_network_ip` for `(executor_scope, ip_address)`.
 Fix: number new migrations max(existing)+1, never fill gaps; ship an index swap and every ON CONFLICT arbiter update in the SAME merge/land unit — the server auto-applies migrations at boot, so a half-landed swap breaks scanning immediately. (last recurrence: 2026-08)
 
-**Sensor gateway traps: an empty `SENSOR_ADVERTISED_HOSTS` kills the whole backend, and a leaf-only chain breaks the enroll pin**
-Cause: with `SENSOR_CA_ENC_KEY` set but `SENSOR_ADVERTISED_HOSTS` empty the server cert has no SAN and the *whole process* exits(1) (`sensorca: at least one SAN (dns name or ip) is required`) — 8080 never binds, and the message names no variable, so it reads as a DB/port failure; separately `verifyPinnedChain` looks for the pinned cert inside the *presented* chain, not the trust store.
-Fix: the two sensor vars are always a set — leave both unset to run without sensors, or fill both with real reachable addresses; present leaf+CA DER from sensorgw (mock {leaf, CA} chains pass either way, so regression-test against the real listener). (last recurrence: 2026-08)
+**A misconfigured sensor gateway now disables itself silently instead of killing the backend**
+Cause: since 2026-08 `startSensorGateway` isolates failures — any bad `SENSOR_*` combination only skips the 8443 listener while 8080 boots normally (the old whole-process `exit(1)` is gone), so sensors just fail to connect with no user-visible error; separately `verifyPinnedChain` looks for the pinned cert inside the *presented* chain, not the trust store.
+Fix: diagnose from the backend warning log — it names the variable per cause (no SAN → `SENSOR_ADVERTISED_HOSTS`, key decrypt failure → `SENSOR_CA_ENC_KEY`); present leaf+CA DER from sensorgw (mock {leaf, CA} chains pass either way, so regression-test against the real listener). (last recurrence: 2026-08)
 
-**Adding a server-side status enum value without updating the frontend union type silently freezes UI polling**
-Cause: the new value is missing from the poll-target filter and falls through to the else branch (rendered as "실패").
-Fix: update the domain enum, backend/api/openapi.yaml, and frontend/lib/api.ts in the same commit. (last recurrence: 2026-08)
+**Sensor job progress counters overshoot `total_endpoints`**
+Cause: two writers touch the same columns — the heartbeat (sensor's cumulative report) and the observation batch (server-side rows); if either uses `+=` they double-count the same endpoints.
+Fix: the heartbeat merges with GREATEST and clamps to total; the observation batch recomputes the **absolute** value from the `scan_job_endpoints` aggregate. Never increment in either path. (last recurrence: 2026-08)
+
+**Server-side session revocation traps the browser outside `/login`**
+Cause: the backend kills the session but the HttpOnly cookie remains, so `proxy.ts`'s cookie-presence check and `auth.tsx`'s 401 redirect bounce off each other; worse, `/auth/me` runs once on mount, so soft navigations never fire the 401 redirect at all.
+Fix: clear the cookie in the same commit (`/session/clear` local route) and put 401 handling in the apiFetch layer, never in a mount-time effect. (last recurrence: 2026-08)
+
+**A `*json.RawMessage` field cannot tell "key absent" from an explicit JSON `null`**
+Cause: encoding/json leaves the pointer nil in both cases, so a PATCH handler silently ignores a caller clearing a field.
+Fix: for partial-update DTOs use a non-pointer `json.RawMessage` — it stays nil only when the key is absent. (last recurrence: 2026-08)
+
+**eslint `react-hooks/purity` + `set-state-in-effect` block the usual "elapsed time" tick**
+Cause: the config rejects `Date.now()` during render AND a bare `setState` inside an effect body, so both obvious ways to keep a ticking clock fail `npm run lint`.
+Fix: `useState(() => Date.now())` lazy initializer + a `setInterval` inside the effect that updates it. (last recurrence: 2026-08)

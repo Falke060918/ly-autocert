@@ -1,5 +1,5 @@
 # MAP — 코드베이스 구조·명령 캐시
-확인일: 2026-08-08
+확인일: 2026-08-09
 
 ## 저장소 구조
 - `backend/` — Go 백엔드
@@ -39,7 +39,7 @@
   - API 경로: 브라우저는 같은 출처 `/api/*`만 호출 → next.config.ts rewrites가 백엔드로 중계(쿠키 CORS 불요). 프록시 대상은 build-arg `BACKEND_INTERNAL_URL`(compose는 http://backend:8080)로 빌드 시 고정. headers()가 전 페이지에 CSP('self' 기반, script/style만 'unsafe-inline' — Next 인라인 요구, dev만 'unsafe-eval')·nosniff·DENY·no-referrer 부착. HSTS는 HTTP 배포라 주석 처리(HTTPS 전환 시 활성화)
   - `components/ui/` — shadcn/ui (badge/button/card/input/separator/table/label/textarea/select/progress/skeleton/alert/dialog)
   - `components/` — app-sidebar(운영 메뉴 + 관리 메뉴 — `/users`는 system_administrator에게만 렌더), app-topbar(사용자·로그아웃), cert-badges(파생 상태 뱃지·D-day), secret-field(1회 노출 비밀값 + 복사 버튼 — 센서 등록 다이얼로그 전용. 비밀번호 재설정은 서버가 임시 비밀번호를 만들지 않아 쓰지 않는다)
-  - `lib/` — api.ts(타입+엔드포인트 함수+ApiError), auth.tsx(useAuth·역할 게이트 — 업로드·스캔은 3역할, `isSystemAdministrator`·`ALL_ROLES`), format.ts
+  - `lib/` — api.ts(타입+엔드포인트 함수+ApiError. **401 탈출은 apiFetch 한 곳**: 1회 빗장으로 `/session/clear` POST → `/login?reason=session_expired` 이동. login/logout은 `BOUNCE_EXEMPT`로 제외 — 마운트 시 1회뿐인 `/auth/me`에 401 처리를 두면 소프트 내비게이션에서 아예 안 걸린다), auth.tsx(useAuth·역할 게이트 — 업로드·스캔은 3역할, `isSystemAdministrator`·`ALL_ROLES`), format.ts
   - `app/fonts.css` — 폰트는 npm 패키지 셀프호스팅 `@font-face` (폐쇄망 대응, CDN 없음)
 - `docker-compose.yml` / `.env.example` — 루트. backend + postgres + frontend
   - 베이스 이미지 3종: `golang:1.25-alpine`·`gcr.io/distroless/static-debian12`(backend/Dockerfile), `node:24-alpine`(frontend/Dockerfile) — 폐쇄망 빌드 시 내부 레지스트리 미러 필요
