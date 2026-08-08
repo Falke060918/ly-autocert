@@ -27,6 +27,27 @@ export interface User {
   updated_at: string;
 }
 
+export interface UserListResponse {
+  request_id?: string;
+  items: User[];
+  total: number;
+}
+
+/** 부분 수정 — 제공한 필드만 바뀐다 (PATCH /users/{id}). */
+export interface UserUpdateRequest {
+  role?: Role;
+  display_name?: string | null;
+}
+
+/**
+ * 관리자 비밀번호 재설정 응답. 서버가 임시 비밀번호를 생성하는 경우에만
+ * temporary_password가 내려오며, 그 값은 이 응답에서 **1회만** 확인할 수 있다.
+ */
+export interface UserPasswordResetResponse {
+  request_id?: string;
+  temporary_password?: string;
+}
+
 export type CertificateStatus =
   | "active"
   | "expired"
@@ -302,6 +323,53 @@ export function logout() {
 
 export function fetchMe() {
   return apiFetch<User>("/api/v1/auth/me");
+}
+
+// ── 사용자 관리 (System Administrator 전용 — 00-spec 7.11) ────────────────
+
+export function listUsers() {
+  return apiFetch<UserListResponse>("/api/v1/users");
+}
+
+export function createUser(req: {
+  username: string;
+  password: string;
+  display_name?: string | null;
+  role: Role;
+}) {
+  return apiFetch<User>("/api/v1/users", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
+}
+
+/** 역할·표시이름 부분 수정. 서버는 user.update 감사 이벤트를 남긴다. */
+export function updateUser(id: string, patch: UserUpdateRequest) {
+  return apiFetch<User>(`/api/v1/users/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+/** 비활성화 — 이후 로그인이 거부된다. 마지막 관리자·자기 자신은 서버가 거부한다. */
+export function disableUser(id: string) {
+  return apiFetch<User>(`/api/v1/users/${encodeURIComponent(id)}/disable`, {
+    method: "POST",
+  });
+}
+
+export function enableUser(id: string) {
+  return apiFetch<User>(`/api/v1/users/${encodeURIComponent(id)}/enable`, {
+    method: "POST",
+  });
+}
+
+/** 관리자 비밀번호 재설정 — 해당 사용자의 기존 세션은 서버에서 즉시 폐기된다. */
+export function resetUserPassword(id: string, password: string) {
+  return apiFetch<UserPasswordResetResponse>(
+    `/api/v1/users/${encodeURIComponent(id)}/password`,
+    { method: "POST", body: JSON.stringify({ password }) },
+  );
 }
 
 export function listCertificates(params: URLSearchParams) {
