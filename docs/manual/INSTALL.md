@@ -140,12 +140,13 @@ cp .env.example .env
 | `BOOTSTRAP_ADMIN_USERNAME` | `admin` | 초기 관리자(System Administrator) 계정명 |
 | `BOOTSTRAP_ADMIN_PASSWORD` | (없음) | 초기 관리자 비밀번호. 최초 기동 시 사용자가 하나도 없으면 이 값으로 초기 관리자를 **1회** 생성한다. 미설정 시 계정이 생성되지 않고 경고 로그만 남는다 (6.1절) |
 | `SESSION_TTL` | `8h` | 로그인 세션 유효기간. Go duration 형식 (`8h`, `30m`, `12h30m` 등) |
-| `SENSOR_CA_ENC_KEY` | (없음) | 센서 사용 시에만. 센서 CA 개인키 암호화 키 — hex 64자, `openssl rand -hex 32`로 생성. 미설정이면 센서 게이트웨이(8443)가 열리지 않는다 (SENSOR.md 3.1절) |
-| `SENSOR_ADVERTISED_HOSTS` | (없음) | 센서 사용 시에만. 센서가 서버 접속에 쓸 DNS/IP 목록(쉼표 구분) — 게이트웨이 서버 인증서 SAN (SENSOR.md 3.1절) |
+| `SENSOR_CA_ENC_KEY` | (없음) | 센서 사용 시에만. 센서 CA 개인키 암호화 키 — hex 64자, `openssl rand -hex 32`로 생성. 미설정이면 센서 게이트웨이(8443)가 열리지 않는다. 설정하면 `SENSOR_ADVERTISED_HOSTS`도 반드시 함께 채운다 (SENSOR.md 3.1절) |
+| `SENSOR_ADVERTISED_HOSTS` | (없음) | 센서 사용 시에만. 센서가 서버 접속에 쓸 **실제** DNS/IP 목록(쉼표 구분, 예: `10.20.0.5,autocert.internal`) — 게이트웨이 서버 인증서 SAN. 위 키를 설정했는데 이 값이 비면 backend가 기동하지 못한다 (SENSOR.md 3.1절) |
 | `SENSOR_LISTEN_ADDR` | `:8443` | 센서 게이트웨이 리슨 주소. 보통 기본값 사용 |
 
 - `POSTGRES_PASSWORD`가 비어 있으면 기동이 거부된다(의도된 안전장치).
 - 센서 관련 3개 변수는 `.env.example`에 없다 — 센서를 쓸 때 `.env`에 직접 추가한다.
+- **센서 변수는 세트다.** 센서를 쓰지 않으면 `SENSOR_CA_ENC_KEY`·`SENSOR_ADVERTISED_HOSTS`를 **둘 다 넣지 않는다.** `SENSOR_CA_ENC_KEY`만 넣고 `SENSOR_ADVERTISED_HOSTS`를 빈 값으로 두면 **backend가 기동 직후 종료되어 8080 웹/API까지 접속 불가**가 된다(로그: `sensorca: at least one SAN (dns name or ip) is required`). 에러 문구에 변수명이 없어 DB·포트 문제로 오해하기 쉬우니 이 조합부터 확인한다 (SENSOR.md 9장).
 
 ### 5.3 기동
 

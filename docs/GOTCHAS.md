@@ -87,9 +87,9 @@ Fix: in any new mutation path, make the AuditEvent insert the final operation in
 Cause: 0003/0005 were dropped during development; `ON CONFLICT (col) WHERE ...` infers one specific partial unique index, and 0010 swapped `uq_targets_network_ip` for `(executor_scope, ip_address)`.
 Fix: number new migrations max(existing)+1, never fill gaps; ship an index swap and every ON CONFLICT arbiter update in the SAME merge/land unit — the server auto-applies migrations at boot, so a half-landed swap breaks scanning immediately. (last recurrence: 2026-08)
 
-**Sensor enroll CA-fingerprint pin fails when the gateway presents a leaf-only TLS chain**
-Cause: `verifyPinnedChain` looks for the pinned cert inside the *presented* chain, not the trust store; sensorgw initially set `Certificates: [][]byte{leaf}`.
-Fix: present leaf+CA DER; unit tests using a mock chain of {leaf, CA} pass either way, so add a regression test against the real listener. (last recurrence: 2026-08)
+**Sensor gateway traps: an empty `SENSOR_ADVERTISED_HOSTS` kills the whole backend, and a leaf-only chain breaks the enroll pin**
+Cause: with `SENSOR_CA_ENC_KEY` set but `SENSOR_ADVERTISED_HOSTS` empty the server cert has no SAN and the *whole process* exits(1) (`sensorca: at least one SAN (dns name or ip) is required`) — 8080 never binds, and the message names no variable, so it reads as a DB/port failure; separately `verifyPinnedChain` looks for the pinned cert inside the *presented* chain, not the trust store.
+Fix: the two sensor vars are always a set — leave both unset to run without sensors, or fill both with real reachable addresses; present leaf+CA DER from sensorgw (mock {leaf, CA} chains pass either way, so regression-test against the real listener). (last recurrence: 2026-08)
 
 **Adding a server-side status enum value without updating the frontend union type silently freezes UI polling**
 Cause: the new value is missing from the poll-target filter and falls through to the else branch (rendered as "실패").
