@@ -141,12 +141,12 @@ cp .env.example .env
 | `BOOTSTRAP_ADMIN_PASSWORD` | (없음) | 초기 관리자 비밀번호. 최초 기동 시 사용자가 하나도 없으면 이 값으로 초기 관리자를 **1회** 생성한다. 미설정 시 계정이 생성되지 않고 경고 로그만 남는다 (6.1절) |
 | `SESSION_TTL` | `8h` | 로그인 세션 유효기간. Go duration 형식 (`8h`, `30m`, `12h30m` 등) |
 | `SENSOR_CA_ENC_KEY` | (없음) | 센서 사용 시에만. 센서 CA 개인키 암호화 키 — hex 64자, `openssl rand -hex 32`로 생성. 미설정이면 센서 게이트웨이(8443)가 열리지 않는다. 설정하면 `SENSOR_ADVERTISED_HOSTS`도 반드시 함께 채운다 (SENSOR.md 3.1절) |
-| `SENSOR_ADVERTISED_HOSTS` | (없음) | 센서 사용 시에만. 센서가 서버 접속에 쓸 **실제** DNS/IP 목록(쉼표 구분, 예: `10.20.0.5,autocert.internal`) — 게이트웨이 서버 인증서 SAN. 위 키를 설정했는데 이 값이 비면 backend가 기동하지 못한다 (SENSOR.md 3.1절) |
+| `SENSOR_ADVERTISED_HOSTS` | (없음) | 센서 사용 시에만. 센서가 서버 접속에 쓸 **실제** DNS/IP 목록(쉼표 구분, 예: `10.20.0.5,autocert.internal`) — 게이트웨이 서버 인증서 SAN. 위 키를 설정했는데 이 값이 비면 센서 게이트웨이(8443)가 뜨지 않는다 — 8080 웹/API는 정상 기동한다 (SENSOR.md 3.1절) |
 | `SENSOR_LISTEN_ADDR` | `:8443` | 센서 게이트웨이 리슨 주소. 보통 기본값 사용 |
 
 - `POSTGRES_PASSWORD`가 비어 있으면 기동이 거부된다(의도된 안전장치).
 - 센서 관련 3개 변수는 `.env.example`에 없다 — 센서를 쓸 때 `.env`에 직접 추가한다.
-- **센서 변수는 세트다.** 센서를 쓰지 않으면 `SENSOR_CA_ENC_KEY`·`SENSOR_ADVERTISED_HOSTS`를 **둘 다 넣지 않는다.** `SENSOR_CA_ENC_KEY`만 넣고 `SENSOR_ADVERTISED_HOSTS`를 빈 값으로 두면 **backend가 기동 직후 종료되어 8080 웹/API까지 접속 불가**가 된다(로그: `sensorca: at least one SAN (dns name or ip) is required`). 에러 문구에 변수명이 없어 DB·포트 문제로 오해하기 쉬우니 이 조합부터 확인한다 (SENSOR.md 9장).
+- **센서 변수는 세트다.** 센서를 쓰지 않으면 `SENSOR_CA_ENC_KEY`·`SENSOR_ADVERTISED_HOSTS`를 **둘 다 넣지 않는다.** `SENSOR_CA_ENC_KEY`만 넣고 `SENSOR_ADVERTISED_HOSTS`를 빈 값으로 두면 **센서 게이트웨이(8443)가 뜨지 않아 센서 기능을 쓸 수 없다.** 이때도 코어 API(8080)와 웹 콘솔은 정상 기동하므로 증상이 조용하다 — backend 로그의 경고 한 줄(`sensor gateway disabled: startup failed — check SENSOR_ADVERTISED_HOSTS …`)로만 확인된다. 센서를 쓸 것이면 두 값을 모두 실제 값으로 채운다 (SENSOR.md 9장).
 
 ### 5.3 기동
 
@@ -210,7 +210,8 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
 | Viewer | `viewer` | 제한된 인증서 조회 |
 
 - 모든 API는 요청마다 인증 **과** 역할 검사를 거친다. 허용되지 않은 역할의 호출은 **HTTP 403**으로 거부되고, 거부 자체가 감사 이벤트(`authz.denied`)로 기록된다. 웹 콘솔도 권한 없는 역할에는 업로드·스캔 시작 기능을 숨긴다.
-- 사용자 생성/조회는 현재 API 전용이다 (웹 콘솔 사용자 관리 화면은 **(예정)**): `POST /api/v1/users` / `GET /api/v1/users` — **System Administrator 전용**.
+- 사용자 관리는 웹 콘솔 [사용자] 화면에서 한다 — 생성·수정·비활성화/활성화·비밀번호 재설정 (OPERATIONS.md 2.6절). 메뉴와 화면 모두 **System Administrator 전용**이다.
+- 같은 작업의 API도 제공한다 (전부 System Administrator 전용): `POST /api/v1/users`(생성) / `GET /api/v1/users`(목록) / `PATCH /api/v1/users/{id}`(표시이름·역할) / `POST /api/v1/users/{id}/disable`·`/enable` / `POST /api/v1/users/{id}/password`(비밀번호 재설정, 성공 204).
 
 ```sh
 curl -X POST http://localhost:8080/api/v1/users \

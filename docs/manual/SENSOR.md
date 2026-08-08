@@ -37,12 +37,13 @@ Discovery 스캔은 기본적으로 AutoCert **서버가 직접** 실행한다 (
 
 > **`SENSOR_CA_ENC_KEY`와 `SENSOR_ADVERTISED_HOSTS`는 세트다 — 하나만 넣으면 안 된다.**
 > - 센서를 **쓰지 않을 것이면 둘 다 넣지 않는다.** 그래야 서버가 센서 게이트웨이 없이 정상 기동한다.
-> - 센서를 **쓸 것이면 둘 다 실제 값으로 채운다.** `SENSOR_CA_ENC_KEY`만 넣고 `SENSOR_ADVERTISED_HOSTS`를 빈 값으로 두면 게이트웨이만 안 열리는 게 아니라 **backend 프로세스 전체가 기동에 실패해 종료된다**(로그: `sensorca: at least one SAN (dns name or ip) is required`). 8080 웹/API도 함께 죽고 컨테이너가 재시작을 반복한다. 에러 문구에 변수명이 없으므로 DB·포트 문제로 오진하지 말 것.
+> - 센서를 **쓸 것이면 둘 다 실제 값으로 채운다.** `SENSOR_CA_ENC_KEY`만 넣고 `SENSOR_ADVERTISED_HOSTS`를 빈 값으로 두면 서버 인증서에 넣을 SAN이 없어 **센서 게이트웨이(8443)가 뜨지 않고 센서 기능을 쓸 수 없다.**
+> - 이 경우에도 **코어 API(8080)와 웹 콘솔은 정상 기동한다** — 센서 설정 실패는 게이트웨이만 끄고 격리된다. 즉 증상이 화면에 드러나지 않으므로, 센서가 연결되지 않으면 backend 로그의 경고 한 줄로 확인한다: `sensor gateway disabled: startup failed — check SENSOR_ADVERTISED_HOSTS …`. `SENSOR_CA_ENC_KEY` 형식 오류(hex 64자가 아님)도 같은 방식으로 게이트웨이만 비활성화된다.
 
 | 변수 | 기본값 | 설명 |
 | --- | --- | --- |
 | `SENSOR_CA_ENC_KEY` | (없음) | 센서 mTLS 내부 CA의 개인키를 암호화(AES-256-GCM)해 보관하기 위한 키. **hex 64자(32바이트)** — `openssl rand -hex 32`로 생성. **미설정이면 8443 센서 게이트웨이가 아예 열리지 않는다**(센서를 안 쓰는 정상 상태). 설정할 때는 `SENSOR_ADVERTISED_HOSTS`도 반드시 함께 채운다. 분실하면 CA 개인키를 복호화할 수 없어 신규 센서 등록·인증서 갱신이 불가능해지므로 백업 매체에 안전하게 보관한다. CA 생성(첫 센서 등록) 이후 값을 바꾸면 안 된다 |
-| `SENSOR_ADVERTISED_HOSTS` | (없음) | 센서가 서버에 접속할 때 쓰는 **실제 주소**(DNS 이름 또는 IP, 쉼표 구분 혼용 가능 — 예: `10.20.0.5,autocert.internal`, 한 대에서 시험할 때는 `127.0.0.1,localhost`). 게이트웨이 서버 인증서의 SAN에 들어간다 — 여기 없는 주소로 접속하는 센서는 TLS 검증에 실패한다. 센서 `--server`에 쓸 주소를 반드시 포함할 것. **`SENSOR_CA_ENC_KEY`를 설정했는데 이 값이 비어 있으면 backend가 기동하지 못하고 종료된다**(위 경고). 변경 시 backend 재기동 필요(서버 인증서는 기동 시 발급) |
+| `SENSOR_ADVERTISED_HOSTS` | (없음) | 센서가 서버에 접속할 때 쓰는 **실제 주소**(DNS 이름 또는 IP, 쉼표 구분 혼용 가능 — 예: `10.20.0.5,autocert.internal`, 한 대에서 시험할 때는 `127.0.0.1,localhost`). 게이트웨이 서버 인증서의 SAN에 들어간다 — 여기 없는 주소로 접속하는 센서는 TLS 검증에 실패한다. 센서 `--server`에 쓸 주소를 반드시 포함할 것. **`SENSOR_CA_ENC_KEY`를 설정했는데 이 값이 비어 있으면 게이트웨이가 뜨지 않는다**(위 경고 — 코어 API는 정상). 변경 시 backend 재기동 필요(서버 인증서는 기동 시 발급) |
 | `SENSOR_LISTEN_ADDR` | `:8443` | 센서 게이트웨이 리슨 주소. 특별한 사유가 없으면 기본값 사용 |
 
 ```sh
@@ -203,11 +204,12 @@ schtasks /Run /TN "AutocertSensor"
 | --- | --- | --- |
 | enroll이 `server certificate chain does not match --ca-fingerprint` | 지문 오입력, 또는 다른 서버/재구축된 서버에 접속 | 웹 콘솔에서 발급받은 CA fingerprint를 다시 확인. 서버를 재구축(DB 초기화)했다면 CA가 바뀌었으므로 센서를 새로 등록 |
 | enroll이 401 (`invalid_token`) | 등록 토큰 무효·이미 사용됨·**만료(24시간)** | [센서] 화면에서 해당 대기 센서를 비활성화(토큰 회수)하고 새로 등록해 새 토큰 발급 |
-| **backend가 기동하자마자 죽고 8080 웹/API도 안 열림** (로그 `sensorca: at least one SAN (dns name or ip) is required`) | `SENSOR_CA_ENC_KEY`는 설정했는데 `SENSOR_ADVERTISED_HOSTS`가 비어 있음 — 서버 인증서에 넣을 SAN이 없어 프로세스 전체가 종료된다 | `SENSOR_ADVERTISED_HOSTS`에 센서가 접속할 실제 주소를 넣거나(3.1절), 센서를 쓰지 않는다면 `SENSOR_CA_ENC_KEY`를 지운 뒤 backend 재기동. DB·포트 문제가 아니다 |
-| enroll/run 연결 거부 (connection refused) | ① 서버 8443 게이트웨이 미개방 — `SENSOR_CA_ENC_KEY` 미설정 ② backend 자체가 죽어 있음(위 행) ③ 방화벽 차단 | `docker compose ps`·backend 로그로 프로세스 생존부터 확인(`sensor gateway listening` 로그 유무) → `.env`의 센서 변수 2종을 세트로 확인 후 재기동 (3.1절) → 센서→서버 8443 아웃바운드 방화벽 확인 (3.2절) |
+| **웹 콘솔·8080은 멀쩡한데 8443만 안 열림** (로그 `sensor gateway disabled: startup failed — check SENSOR_ADVERTISED_HOSTS …`) | `SENSOR_CA_ENC_KEY`는 설정했는데 `SENSOR_ADVERTISED_HOSTS`가 비어 있음 — 서버 인증서에 넣을 SAN이 없다. 게이트웨이만 비활성화되고 코어 API는 계속 뜨므로 화면에는 증상이 없다 | `SENSOR_ADVERTISED_HOSTS`에 센서가 접속할 실제 주소를 넣고 backend 재기동 (3.1절). 센서를 쓰지 않을 거라면 `SENSOR_CA_ENC_KEY`도 함께 지운다 |
+| 로그에 `sensor gateway disabled: invalid sensor configuration` | `SENSOR_CA_ENC_KEY` 형식 오류 — hex 64자(32바이트)가 아님 | `openssl rand -hex 32`로 다시 생성해 넣고 재기동 (3.1절). 이미 센서를 등록한 뒤라면 기존 키를 되찾아야 한다 — 값을 바꾸면 기존 CA를 복호화할 수 없다 |
+| enroll/run 연결 거부 (connection refused) | ① `SENSOR_CA_ENC_KEY` 미설정 — 8443 리스너 자체가 없음 ② 센서 설정 오류로 게이트웨이만 비활성화됨(위 두 행) ③ 방화벽 차단 | backend 로그에서 `sensor gateway listening` 유무부터 확인 — 없으면 `sensor gateway disabled …` 경고 문구로 원인을 가른다 → `.env`의 센서 변수 2종을 세트로 확인 후 재기동 (3.1절) → 센서→서버 8443 아웃바운드 방화벽 확인 (3.2절) |
 | run에서 TLS 검증 실패 (certificate is valid for … not …) | `--server` 주소가 `SENSOR_ADVERTISED_HOSTS`에 없음 | 서버 `.env`의 `SENSOR_ADVERTISED_HOSTS`에 해당 주소를 추가하고 backend 재기동 (3.1절) |
 | 인증서 유효기간 오류 (expired / not yet valid) | 센서 호스트 **시계 드리프트**, 또는 90일 이상 정지로 인증서 만료 | NTP 동기화 확인 (2장). 만료면 비활성화 후 재등록 |
 | run 중 401 반복 | 센서가 비활성화됨, 또는 인증서가 교체·만료됨 | [센서] 화면에서 상태 확인. disabled면 재등록 |
 | `state not found in … — run 'enroll' first` | 미등록 상태로 run 실행, 또는 `--state-dir` 불일치 | 5장 등록 먼저 수행. enroll과 run의 `--state-dir`가 같은지 확인 |
-| 스캔 Job이 대기(pending)에서 안 움직임 | 센서 미가동·서버 미도달 (pull 방식이라 센서가 안 가져가면 시작되지 않음) | 센서 프로세스·로그 확인, last_seen 확인 (7장) |
+| 스캔 Job이 대기(pending)에서 안 움직임 — [Discovery] 표에 **대기 중** 배지와 "…수령 대기 · N분째" | 센서 미가동·서버 미도달 (pull 방식이라 센서가 안 가져가면 시작되지 않음). 배지가 앰버색이면 대기 90초 초과이거나 대상 센서가 활성이 아니다 | 배지 옆 사유("비활성화됨"/"등록 대기")를 먼저 본다 → 센서 프로세스·로그 확인, last_seen 확인 (7장) → 게이트웨이 기동 여부 확인(위 행) |
 | 스캔 Job이 leased/실행 중 상태에서 실패로 바뀜 | 리스 만료(90초) — 센서 중단·통신 두절로 하트비트 중단 | 센서 로그에서 원인 확인 후 같은 대상으로 재실행 (중복 안전) |
