@@ -172,7 +172,13 @@ export interface ScanAccepted {
   request_id?: string;
 }
 
-export type ScanJobStatus = "pending" | "running" | "completed" | "failed";
+/** leased = 센서가 Job을 수령했고 아직 실행 보고 전인 상태 (00-spec 7.8). */
+export type ScanJobStatus =
+  | "pending"
+  | "leased"
+  | "running"
+  | "completed"
+  | "failed";
 
 export interface ScanJob {
   id: string;
