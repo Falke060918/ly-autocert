@@ -111,12 +111,6 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	srv := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewServer(pool, authSvc, rec, cfg.SensorCAEncKey),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-
 	st := store.New(pool)
 
 	// 서버 재시작으로 실행 주체가 사라진 서버 직접 실행 Job을 회수한다
@@ -130,12 +124,24 @@ func run(logger *slog.Logger) error {
 
 	// 알림 탐지 스케줄러 + 딜리버리 디스패처. 채널 미설정·오설정은 그 채널만
 	// 비활성이고 코어 API(8080)는 그대로 뜬다 (센서 게이트웨이와 같은 격리 원칙).
-	stopNotify := startNotify(ctx, logger, cfg, st)
+	// notifyChannels는 API의 채널 상태 조회·테스트 발송이 쓰는 어댑터이며,
+	// NOTIFY_ENABLED=false여도 non-nil이다 — 알림이 안 오는 사유를 화면에서 봐야 한다.
+	stopNotify, notifyChannels := startNotify(ctx, logger, cfg, st)
 	defer stopNotify()
 
 	// 대역 스윕 발주 루프. API 핸들러의 Manager와 상태를 공유하지 않으므로 별도 인스턴스다.
 	stopSweep := startSweepScheduler(ctx, logger, cfg, st)
 	defer stopSweep()
+
+	srv := &http.Server{
+		Addr: cfg.HTTPAddr,
+		// 선택 의존성 2개를 주입한다. 둘 다 없어도 코어 API는 뜨지만, 없으면
+		// 채널 상태가 "배선 없음"이고 스윕 기본값이 SCAN_SWEEP_*를 무시한다.
+		Handler: api.NewServer(pool, authSvc, rec, cfg.SensorCAEncKey,
+			api.WithNotificationChannels(notifyChannels),
+			api.WithSweepDefaults(sweepDefaults(cfg.Sweep))),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 
 	errCh := make(chan error, 1)
 
