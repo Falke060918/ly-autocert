@@ -2,8 +2,13 @@ package config
 
 import (
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/notify"
 )
 
 // setRequired는 Load가 요구하는 필수 환경변수를 채운다.
@@ -92,5 +97,379 @@ func TestLoadSensorAdvertisedHostsEmpty(t *testing.T) {
 	if len(cfg.SensorAdvertisedDNS) != 0 || len(cfg.SensorAdvertisedIPs) != 0 {
 		t.Fatalf("advertised hosts should be empty, got dns=%v ips=%v",
 			cfg.SensorAdvertisedDNS, cfg.SensorAdvertisedIPs)
+	}
+}
+
+// notifySweepEnv는 알림·스윕 환경변수 전체 목록이다. 테스트는 프로세스 환경에
+// 이미 있는 값에 영향받으면 안 되므로 매 테스트에서 전부 비운다.
+var notifySweepEnv = []string{
+	"NOTIFY_ENABLED", "NOTIFY_SCAN_INTERVAL", "NOTIFY_FIRST_RUN",
+	"NOTIFY_RETENTION_DAYS", "NOTIFY_BASE_URL",
+	"SMTP_HOST", "SMTP_PORT", "SMTP_FROM", "SMTP_USERNAME", "SMTP_PASSWORD",
+	"SMTP_PASSWORD_FILE", "SMTP_TLS_MODE", "SMTP_CA_FILE", "SMTP_TLS_INSECURE_SKIP_VERIFY",
+	"WEBHOOK_URL", "WEBHOOK_HMAC_SECRET", "WEBHOOK_AUTH_HEADER", "WEBHOOK_CA_FILE",
+	"SYSLOG_ADDR", "SYSLOG_NETWORK", "SYSLOG_FACILITY", "SYSLOG_APP_NAME",
+	"SCAN_SWEEP_ENABLED", "SCAN_SWEEP_RATE_PPS", "SCAN_SWEEP_CONCURRENCY",
+	"SCAN_SWEEP_CHUNK_ENDPOINTS", "SCAN_SWEEP_CHUNK_GAP", "SCAN_SWEEP_MAX_DAYS",
+	"SCAN_SWEEP_STALL_AFTER",
+}
+
+// setNotifyRequired는 필수 변수를 채우고 알림·스윕 변수를 모두 비운다.
+func setNotifyRequired(t *testing.T) {
+	t.Helper()
+	setRequired(t)
+	for _, k := range notifySweepEnv {
+		t.Setenv(k, "")
+	}
+}
+
+func TestLoadNotifyDefaults(t *testing.T) {
+	setNotifyRequired(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Notify.Enabled {
+		t.Error("Notify.Enabled = false, want true")
+	}
+	if cfg.Notify.ScanInterval != time.Hour {
+		t.Errorf("Notify.ScanInterval = %v, want 1h", cfg.Notify.ScanInterval)
+	}
+	if cfg.Notify.FirstRun != FirstRunSeed {
+		t.Errorf("Notify.FirstRun = %q, want %q", cfg.Notify.FirstRun, FirstRunSeed)
+	}
+	if cfg.Notify.RetentionDays != 180 {
+		t.Errorf("Notify.RetentionDays = %d, want 180", cfg.Notify.RetentionDays)
+	}
+	if cfg.Notify.BaseURL != "" {
+		t.Errorf("Notify.BaseURL = %q, want empty", cfg.Notify.BaseURL)
+	}
+	if cfg.Notify.Email.Port != 587 {
+		t.Errorf("Email.Port = %d, want 587", cfg.Notify.Email.Port)
+	}
+	if cfg.Notify.Email.TLSMode != notify.TLSModeStartTLS {
+		t.Errorf("Email.TLSMode = %q, want %q", cfg.Notify.Email.TLSMode, notify.TLSModeStartTLS)
+	}
+	if cfg.Notify.Syslog.Network != "udp" {
+		t.Errorf("Syslog.Network = %q, want udp", cfg.Notify.Syslog.Network)
+	}
+	if cfg.Notify.Syslog.Facility != "local0" {
+		t.Errorf("Syslog.Facility = %q, want local0", cfg.Notify.Syslog.Facility)
+	}
+	if cfg.Notify.Syslog.AppName != "autocert" {
+		t.Errorf("Syslog.AppName = %q, want autocert", cfg.Notify.Syslog.AppName)
+	}
+	// 미설정은 오류가 아니다 — 채널이 그냥 꺼져 있을 뿐이며 그 사유는 notify가 낸다.
+	if len(cfg.NotifyChannelErrors) != 0 {
+		t.Errorf("NotifyChannelErrors = %v, want empty", cfg.NotifyChannelErrors)
+	}
+	if len(cfg.Warnings) != 0 {
+		t.Errorf("Warnings = %v, want empty", cfg.Warnings)
+	}
+}
+
+func TestLoadSweepDefaults(t *testing.T) {
+	setNotifyRequired(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := SweepConfig{
+		Enabled:        true,
+		RatePPS:        10,
+		Concurrency:    8,
+		ChunkEndpoints: 4096,
+		ChunkGap:       5 * time.Second,
+		MaxDays:        30,
+		StallAfter:     10 * time.Minute,
+	}
+	if cfg.Sweep != want {
+		t.Errorf("Sweep = %+v, want %+v", cfg.Sweep, want)
+	}
+}
+
+func TestLoadNotifyAndSweepValuesPassThrough(t *testing.T) {
+	setNotifyRequired(t)
+	t.Setenv("NOTIFY_ENABLED", "false")
+	t.Setenv("NOTIFY_SCAN_INTERVAL", "15m")
+	t.Setenv("NOTIFY_FIRST_RUN", "send")
+	t.Setenv("NOTIFY_RETENTION_DAYS", "30")
+	t.Setenv("NOTIFY_BASE_URL", "https://autocert.internal/")
+	t.Setenv("SMTP_HOST", "smtp.internal")
+	t.Setenv("SMTP_PORT", "2525")
+	t.Setenv("SMTP_FROM", "autocert@internal")
+	t.Setenv("SMTP_USERNAME", "svc-autocert")
+	t.Setenv("SMTP_TLS_MODE", "tls")
+	t.Setenv("SMTP_CA_FILE", "/etc/ssl/corp.pem")
+	t.Setenv("WEBHOOK_URL", "https://hook.internal/autocert")
+	t.Setenv("WEBHOOK_AUTH_HEADER", "Authorization: Bearer t")
+	t.Setenv("WEBHOOK_CA_FILE", "/etc/ssl/corp.pem")
+	t.Setenv("SYSLOG_ADDR", "10.0.0.9:514")
+	t.Setenv("SYSLOG_NETWORK", "tcp")
+	t.Setenv("SYSLOG_FACILITY", "local3")
+	t.Setenv("SYSLOG_APP_NAME", "autocert-prod")
+	t.Setenv("SCAN_SWEEP_ENABLED", "false")
+	t.Setenv("SCAN_SWEEP_RATE_PPS", "25")
+	t.Setenv("SCAN_SWEEP_CONCURRENCY", "4")
+	t.Setenv("SCAN_SWEEP_CHUNK_ENDPOINTS", "1024")
+	t.Setenv("SCAN_SWEEP_CHUNK_GAP", "2s")
+	t.Setenv("SCAN_SWEEP_MAX_DAYS", "7")
+	t.Setenv("SCAN_SWEEP_STALL_AFTER", "3m")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Warnings) != 0 || len(cfg.NotifyChannelErrors) != 0 {
+		t.Fatalf("valid values must not warn: warnings=%v errors=%v", cfg.Warnings, cfg.NotifyChannelErrors)
+	}
+	if cfg.Notify.Enabled {
+		t.Error("Notify.Enabled = true, want false")
+	}
+	if cfg.Notify.ScanInterval != 15*time.Minute || cfg.Notify.FirstRun != FirstRunSend || cfg.Notify.RetentionDays != 30 {
+		t.Errorf("Notify common = %+v", cfg.Notify)
+	}
+	// 딥링크를 붙일 때 슬래시가 겹치지 않도록 끝의 "/"는 떼어낸다.
+	if cfg.Notify.BaseURL != "https://autocert.internal" {
+		t.Errorf("Notify.BaseURL = %q, want %q", cfg.Notify.BaseURL, "https://autocert.internal")
+	}
+	email := cfg.Notify.Email
+	if email.Host != "smtp.internal" || email.Port != 2525 || email.From != "autocert@internal" ||
+		email.Username != "svc-autocert" || email.TLSMode != notify.TLSModeTLS || email.CAFile != "/etc/ssl/corp.pem" {
+		t.Errorf("Email = %+v", email)
+	}
+	hook := cfg.Notify.Webhook
+	if hook.URL != "https://hook.internal/autocert" || hook.AuthHeader != "Authorization: Bearer t" ||
+		hook.CAFile != "/etc/ssl/corp.pem" {
+		t.Errorf("Webhook = %+v", hook)
+	}
+	sl := cfg.Notify.Syslog
+	if sl.Addr != "10.0.0.9:514" || sl.Network != "tcp" || sl.Facility != "local3" || sl.AppName != "autocert-prod" {
+		t.Errorf("Syslog = %+v", sl)
+	}
+	wantSweep := SweepConfig{
+		Enabled: false, RatePPS: 25, Concurrency: 4, ChunkEndpoints: 1024,
+		ChunkGap: 2 * time.Second, MaxDays: 7, StallAfter: 3 * time.Minute,
+	}
+	if cfg.Sweep != wantSweep {
+		t.Errorf("Sweep = %+v, want %+v", cfg.Sweep, wantSweep)
+	}
+}
+
+// TestLoadInvalidValuesFallBackWithWarning은 값 오류가 기동을 막지 않고
+// 기본값 폴백 + 변수명을 지목하는 경고로만 드러나는지 본다.
+func TestLoadInvalidValuesFallBackWithWarning(t *testing.T) {
+	setNotifyRequired(t)
+	t.Setenv("NOTIFY_ENABLED", "yes-please")
+	t.Setenv("NOTIFY_SCAN_INTERVAL", "soon")
+	t.Setenv("NOTIFY_FIRST_RUN", "maybe")
+	t.Setenv("NOTIFY_RETENTION_DAYS", "-5")
+	t.Setenv("NOTIFY_BASE_URL", "autocert.internal")
+	t.Setenv("SCAN_SWEEP_RATE_PPS", "fast")
+	t.Setenv("SCAN_SWEEP_CONCURRENCY", "0")
+	t.Setenv("SCAN_SWEEP_CHUNK_ENDPOINTS", "-1")
+	t.Setenv("SCAN_SWEEP_CHUNK_GAP", "later")
+	t.Setenv("SCAN_SWEEP_MAX_DAYS", "0")
+	t.Setenv("SCAN_SWEEP_STALL_AFTER", "-1m")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load must not fail on bad notify/sweep values: %v", err)
+	}
+	if !cfg.Notify.Enabled || cfg.Notify.ScanInterval != time.Hour ||
+		cfg.Notify.FirstRun != FirstRunSeed || cfg.Notify.RetentionDays != 180 {
+		t.Errorf("Notify did not fall back to defaults: %+v", cfg.Notify)
+	}
+	if cfg.Notify.BaseURL != "" {
+		t.Errorf("Notify.BaseURL = %q, want empty (link omitted)", cfg.Notify.BaseURL)
+	}
+	want := SweepConfig{
+		Enabled: true, RatePPS: 10, Concurrency: 8, ChunkEndpoints: 4096,
+		ChunkGap: 5 * time.Second, MaxDays: 30, StallAfter: 10 * time.Minute,
+	}
+	if cfg.Sweep != want {
+		t.Errorf("Sweep did not fall back to defaults: %+v", cfg.Sweep)
+	}
+	joined := strings.Join(cfg.Warnings, "\n")
+	for _, name := range []string{
+		"NOTIFY_ENABLED", "NOTIFY_SCAN_INTERVAL", "NOTIFY_FIRST_RUN", "NOTIFY_RETENTION_DAYS",
+		"NOTIFY_BASE_URL", "SCAN_SWEEP_RATE_PPS", "SCAN_SWEEP_CONCURRENCY",
+		"SCAN_SWEEP_CHUNK_ENDPOINTS", "SCAN_SWEEP_CHUNK_GAP", "SCAN_SWEEP_MAX_DAYS",
+		"SCAN_SWEEP_STALL_AFTER",
+	} {
+		if !strings.Contains(joined, name) {
+			t.Errorf("warnings do not name %s: %v", name, cfg.Warnings)
+		}
+	}
+}
+
+func TestLoadSweepRateIsClamped(t *testing.T) {
+	setNotifyRequired(t)
+	t.Setenv("SCAN_SWEEP_RATE_PPS", "5000")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Sweep.RatePPS != 1000 {
+		t.Errorf("Sweep.RatePPS = %d, want the 1000 clamp", cfg.Sweep.RatePPS)
+	}
+	if !strings.Contains(strings.Join(cfg.Warnings, "\n"), "SCAN_SWEEP_RATE_PPS") {
+		t.Errorf("clamping must warn, got %v", cfg.Warnings)
+	}
+}
+
+// TestLoadInvalidSMTPPortDisablesEmailOnly는 채널 하나의 설정 오류가
+// 코어 API도, 다른 채널도 죽이지 않는지 본다 (센서 게이트웨이 선례).
+func TestLoadInvalidSMTPPortDisablesEmailOnly(t *testing.T) {
+	setNotifyRequired(t)
+	t.Setenv("SMTP_HOST", "smtp.internal")
+	t.Setenv("SMTP_FROM", "autocert@internal")
+	t.Setenv("SMTP_PORT", "not-a-number")
+	t.Setenv("SYSLOG_ADDR", "10.0.0.9:514")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load must not fail on a bad SMTP_PORT: %v", err)
+	}
+	reason := cfg.NotifyChannelErrors[notify.ChannelEmail]
+	if reason == "" {
+		t.Fatal("NotifyChannelErrors[email] is empty, want the SMTP_PORT cause")
+	}
+	if !strings.Contains(reason, "SMTP_PORT") {
+		t.Errorf("reason = %q, want it to name SMTP_PORT", reason)
+	}
+	if _, ok := cfg.NotifyChannelErrors[notify.ChannelSyslog]; ok {
+		t.Error("a bad SMTP_PORT must not disable the syslog channel")
+	}
+	if _, ok := cfg.NotifyChannelErrors[notify.ChannelWebhook]; ok {
+		t.Error("a bad SMTP_PORT must not disable the webhook channel")
+	}
+}
+
+func TestLoadInvalidSyslogNetworkDisablesSyslogOnly(t *testing.T) {
+	setNotifyRequired(t)
+	t.Setenv("SYSLOG_ADDR", "10.0.0.9:514")
+	t.Setenv("SYSLOG_NETWORK", "sctp")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load must not fail on a bad SYSLOG_NETWORK: %v", err)
+	}
+	reason := cfg.NotifyChannelErrors[notify.ChannelSyslog]
+	if !strings.Contains(reason, "SYSLOG_NETWORK") {
+		t.Errorf("NotifyChannelErrors[syslog] = %q, want it to name SYSLOG_NETWORK", reason)
+	}
+	if _, ok := cfg.NotifyChannelErrors[notify.ChannelEmail]; ok {
+		t.Error("a bad SYSLOG_NETWORK must not disable the email channel")
+	}
+}
+
+func TestLoadSMTPPasswordFileWins(t *testing.T) {
+	setNotifyRequired(t)
+	path := filepath.Join(t.TempDir(), "smtp-password")
+	// Docker secret 파일은 끝에 개행이 붙는 일이 흔하다 — 잘라내야 인증이 된다.
+	if err := os.WriteFile(path, []byte("from-file-secret\n"), 0o600); err != nil {
+		t.Fatalf("write password file: %v", err)
+	}
+	t.Setenv("SMTP_HOST", "smtp.internal")
+	t.Setenv("SMTP_FROM", "autocert@internal")
+	t.Setenv("SMTP_PASSWORD", "from-env-secret")
+	t.Setenv("SMTP_PASSWORD_FILE", path)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Notify.Email.Password != "from-file-secret" {
+		t.Errorf("Email.Password did not come from SMTP_PASSWORD_FILE")
+	}
+	if len(cfg.NotifyChannelErrors) != 0 {
+		t.Errorf("NotifyChannelErrors = %v, want empty", cfg.NotifyChannelErrors)
+	}
+}
+
+func TestLoadSMTPPasswordFileUnreadableDisablesEmail(t *testing.T) {
+	setNotifyRequired(t)
+	path := filepath.Join(t.TempDir(), "missing-secret")
+	t.Setenv("SMTP_HOST", "smtp.internal")
+	t.Setenv("SMTP_FROM", "autocert@internal")
+	t.Setenv("SMTP_PASSWORD", "from-env-secret")
+	t.Setenv("SMTP_PASSWORD_FILE", path)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load must not fail on an unreadable password file: %v", err)
+	}
+	reason := cfg.NotifyChannelErrors[notify.ChannelEmail]
+	if !strings.Contains(reason, "SMTP_PASSWORD_FILE") {
+		t.Errorf("NotifyChannelErrors[email] = %q, want it to name SMTP_PASSWORD_FILE", reason)
+	}
+	if cfg.Notify.Email.Password != "" {
+		t.Error("Email.Password must stay empty when the password file is unreadable")
+	}
+}
+
+func TestLoadInsecureSkipVerifyWarns(t *testing.T) {
+	setNotifyRequired(t)
+	t.Setenv("SMTP_HOST", "smtp.internal")
+	t.Setenv("SMTP_FROM", "autocert@internal")
+	t.Setenv("SMTP_TLS_INSECURE_SKIP_VERIFY", "true")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Notify.Email.InsecureSkipVerify {
+		t.Fatal("Email.InsecureSkipVerify = false, want true")
+	}
+	if !strings.Contains(strings.Join(cfg.Warnings, "\n"), "SMTP_TLS_INSECURE_SKIP_VERIFY") {
+		t.Errorf("turning off certificate verification must warn, got %v", cfg.Warnings)
+	}
+	// 검증을 끈 것은 채널을 끄는 사유는 아니다.
+	if len(cfg.NotifyChannelErrors) != 0 {
+		t.Errorf("NotifyChannelErrors = %v, want empty", cfg.NotifyChannelErrors)
+	}
+}
+
+// TestLoadWarningsNeverContainSecrets는 경고·채널 사유 문자열에 비밀값이
+// 섞이지 않는지 본다. 이 문자열들은 로그와 API 응답으로 나간다 (하드 규칙 3).
+func TestLoadWarningsNeverContainSecrets(t *testing.T) {
+	setNotifyRequired(t)
+	const (
+		envPassword  = "env-password-9f3a"
+		filePassword = "file-password-7c1b"
+		hmacSecret   = "hmac-secret-4d2e"
+		authToken    = "auth-token-8b5c"
+	)
+	path := filepath.Join(t.TempDir(), "smtp-password")
+	if err := os.WriteFile(path, []byte(filePassword), 0o600); err != nil {
+		t.Fatalf("write password file: %v", err)
+	}
+	t.Setenv("SMTP_HOST", "smtp.internal")
+	t.Setenv("SMTP_FROM", "autocert@internal")
+	t.Setenv("SMTP_PASSWORD", envPassword)
+	t.Setenv("SMTP_PASSWORD_FILE", path)
+	t.Setenv("SMTP_PORT", "not-a-number") // 경고를 강제로 만든다
+	t.Setenv("SMTP_TLS_MODE", "quantum")
+	t.Setenv("WEBHOOK_URL", "ftp://hook.internal")
+	t.Setenv("WEBHOOK_HMAC_SECRET", hmacSecret)
+	t.Setenv("WEBHOOK_AUTH_HEADER", "Authorization: Bearer "+authToken)
+	t.Setenv("SYSLOG_NETWORK", "sctp")
+	t.Setenv("SCAN_SWEEP_RATE_PPS", "fast")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	msgs := append([]string{}, cfg.Warnings...)
+	for _, reason := range cfg.NotifyChannelErrors {
+		msgs = append(msgs, reason)
+	}
+	if len(msgs) == 0 {
+		t.Fatal("expected warnings for this configuration")
+	}
+	joined := strings.Join(msgs, "\n")
+	for _, secret := range []string{envPassword, filePassword, hmacSecret, authToken} {
+		if strings.Contains(joined, secret) {
+			t.Errorf("a warning leaked a secret value: %s", joined)
+		}
 	}
 }

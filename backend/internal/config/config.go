@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/notify"
 )
 
 // Config는 서버 기동에 필요한 설정값이다.
@@ -44,7 +47,73 @@ type Config struct {
 	// 코어 API(8080)까지 죽이지 않도록 Load는 이 오류를 반환하지 않고 여기 담는다 —
 	// cmd/server가 경고로 남기고 게이트웨이만 비활성화한다. secret 값은 담지 않는다.
 	SensorConfigError error
+	// Notify는 알림 기능 설정이다 (NOTIFY_*/SMTP_*/WEBHOOK_*/SYSLOG_*).
+	Notify NotifyConfig
+	// NotifyChannelErrors는 채널별 설정 오류다 (키: notify.ChannelEmail 등).
+	// 항목이 있으면 그 채널만 비활성이고 코어 API·다른 채널은 정상 동작한다 —
+	// 센서 게이트웨이와 같은 실패 격리 원칙이다.
+	// 값 문자열은 기동 경고 로그와 채널 상태 API의 사유로 그대로 나가므로
+	// 비밀번호·시크릿·토큰 값을 절대 담지 않는다 — 변수 이름만 지목한다.
+	// "미설정"은 오류가 아니다 — 그 사유는 notify 채널 생성자가 낸다.
+	NotifyChannelErrors map[string]string
+	// Sweep은 대역 스윕 설정이다 (SCAN_SWEEP_*).
+	Sweep SweepConfig
+	// Warnings는 값 오류로 기본값에 폴백했거나 위험한 값을 켠 항목의 경고다.
+	// cmd/server가 기동 시 경고 로그로 남긴다. secret 값은 담지 않는다.
+	// 채널을 비활성화하는 사유는 여기가 아니라 NotifyChannelErrors에 담긴다.
+	Warnings []string
 }
+
+// NOTIFY_FIRST_RUN 값. seed는 첫 tick에서 이미 지난 임계값을 발송하지 않고
+// 기준선으로만 적재한다 (설치 당일 폭주 방지). send는 전부 발송한다.
+const (
+	FirstRunSeed = "seed"
+	FirstRunSend = "send"
+)
+
+// NotifyConfig는 알림 기능 설정이다. 채널 설정은 notify 패키지 타입을 그대로 담는다 —
+// notify는 환경변수를 직접 읽지 않고 이 구조체를 인자로 받는다(의존 방향: config → notify).
+// Logger·Timeout은 여기서 채우지 않는다 — 호출부(cmd/server)가 채운다.
+type NotifyConfig struct {
+	// Enabled는 알림 기능 전체 on/off다 (NOTIFY_ENABLED, 기본 true).
+	Enabled bool
+	// ScanInterval은 스케줄러 tick 주기다 (NOTIFY_SCAN_INTERVAL, 기본 1h).
+	ScanInterval time.Duration
+	// FirstRun은 FirstRunSeed(기본) 또는 FirstRunSend다 (NOTIFY_FIRST_RUN).
+	FirstRun string
+	// RetentionDays는 종료 상태 딜리버리 보존 일수다 (NOTIFY_RETENTION_DAYS, 기본 180).
+	RetentionDays int
+	// BaseURL은 알림 본문 딥링크의 기준 URL이다 (NOTIFY_BASE_URL).
+	// 비면 링크를 생략한다 — 오류가 아니다. 끝의 "/"는 제거된 상태다.
+	BaseURL string
+
+	Email   notify.EmailConfig
+	Webhook notify.WebhookConfig
+	Syslog  notify.SyslogConfig
+}
+
+// SweepConfig는 대역 스윕 설정이다 (SCAN_SWEEP_*).
+type SweepConfig struct {
+	// Enabled는 스윕 기능 자체의 on/off다 (기본 true).
+	Enabled bool
+	// RatePPS는 스윕 기본 레이트다 (기본 10, 상한 sweepMaxRatePPS).
+	RatePPS int
+	// Concurrency는 스윕 워커 동시성이다 (기본 8).
+	Concurrency int
+	// ChunkEndpoints는 청크 하나의 최대 엔드포인트 수다 (기본 4096).
+	ChunkEndpoints int
+	// ChunkGap은 청크 발주 간 공백이다 (기본 5s). 0도 유효한 값이다.
+	ChunkGap time.Duration
+	// MaxDays는 ETA가 이 일수를 넘으면 스윕 생성을 거부하는 임계값이다 (기본 30).
+	MaxDays int
+	// StallAfter는 자식 Job이 이만큼 대기 상태에 머무르면 "대기 중"으로 표시하는
+	// 기준 시간이다 (기본 10m).
+	StallAfter time.Duration
+}
+
+// sweepMaxRatePPS는 레이트 상한이다. 더 큰 값을 받아도 여기로 깎고 경고를 남긴다
+// (IPS 오탐 억제).
+const sweepMaxRatePPS = 1000
 
 // Load는 환경변수에서 설정을 읽는다.
 func Load() (Config, error) {
@@ -84,6 +153,13 @@ func Load() (Config, error) {
 			cfg.SensorAdvertisedDNS = append(cfg.SensorAdvertisedDNS, h)
 		}
 	}
+	// 알림·스윕 설정은 값이 잘못돼도 기동을 막지 않는다: 경고 후 기본값 폴백이거나
+	// 해당 채널만 비활성이다 (센서 게이트웨이 선례).
+	l := &envLoader{channelErrors: map[string]string{}}
+	cfg.Notify = l.notify()
+	cfg.Sweep = l.sweep()
+	cfg.NotifyChannelErrors = l.channelErrors
+	cfg.Warnings = l.warnings
 	return cfg, nil
 }
 
@@ -92,4 +168,205 @@ func getenv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// envLoader는 값 오류를 경고로 모으며 환경변수를 읽는 파서다.
+// 모든 파서는 오류를 반환하지 않고 기본값으로 폴백한다 — 설정 오타 하나가
+// 인벤토리 조회까지 막는 것은 과한 대가다.
+type envLoader struct {
+	warnings      []string
+	channelErrors map[string]string
+}
+
+func (l *envLoader) warnf(format string, a ...any) {
+	l.warnings = append(l.warnings, fmt.Sprintf(format, a...))
+}
+
+// disableChannel은 채널 하나를 비활성화하는 사유를 기록한다.
+// 먼저 기록된 사유가 이긴다 — 운영자가 고칠 첫 항목을 가리키기 위해서다.
+// reason에 secret 값을 넣지 않는다.
+func (l *envLoader) disableChannel(channel, reason string) {
+	if _, ok := l.channelErrors[channel]; ok {
+		return
+	}
+	l.channelErrors[channel] = reason
+}
+
+// boolVal은 bool 환경변수를 읽는다. 이 헬퍼들은 경고에 값을 그대로 싣으므로
+// secret이 담기는 변수에는 절대 쓰지 않는다.
+func (l *envLoader) boolVal(key string, fallback bool) bool {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		l.warnf("%s=%q is not a boolean; falling back to %v", key, raw, fallback)
+		return fallback
+	}
+	return v
+}
+
+// intVal은 정수 환경변수를 읽고 [min, max] 범위로 강제한다.
+// 범위를 벗어나면 상·하한으로 깎고(clamp) 경고한다.
+func (l *envLoader) intVal(key string, fallback, minValue, maxValue int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		l.warnf("%s=%q is not an integer; falling back to %d", key, raw, fallback)
+		return fallback
+	}
+	switch {
+	case v < minValue:
+		l.warnf("%s=%d is below the minimum %d; falling back to %d", key, v, minValue, fallback)
+		return fallback
+	case v > maxValue:
+		l.warnf("%s=%d exceeds the maximum %d; clamping to %d", key, v, maxValue, maxValue)
+		return maxValue
+	}
+	return v
+}
+
+// durationVal은 Go duration 환경변수를 읽는다. allowZero면 0도 유효한 값이다.
+func (l *envLoader) durationVal(key string, fallback time.Duration, allowZero bool) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	v, err := time.ParseDuration(raw)
+	if err != nil {
+		l.warnf("%s=%q is not a Go duration; falling back to %s", key, raw, fallback)
+		return fallback
+	}
+	if v < 0 || (v == 0 && !allowZero) {
+		l.warnf("%s=%s must be positive; falling back to %s", key, raw, fallback)
+		return fallback
+	}
+	return v
+}
+
+// notify는 NOTIFY_*/SMTP_*/WEBHOOK_*/SYSLOG_*를 읽는다.
+// 여기서는 타입 변환·필수 형식만 검증하고, "값이 비어 채널이 꺼진다"는 판단은
+// notify 채널 생성자에 맡긴다 (사유 문자열 출처를 한 곳으로 모으기 위해서다).
+func (l *envLoader) notify() NotifyConfig {
+	cfg := NotifyConfig{
+		Enabled:       l.boolVal("NOTIFY_ENABLED", true),
+		ScanInterval:  l.durationVal("NOTIFY_SCAN_INTERVAL", time.Hour, false),
+		FirstRun:      FirstRunSeed,
+		RetentionDays: l.intVal("NOTIFY_RETENTION_DAYS", 180, 1, 36500),
+		BaseURL:       l.baseURL(),
+	}
+	if raw := strings.ToLower(strings.TrimSpace(os.Getenv("NOTIFY_FIRST_RUN"))); raw != "" {
+		switch raw {
+		case FirstRunSeed, FirstRunSend:
+			cfg.FirstRun = raw
+		default:
+			l.warnf("NOTIFY_FIRST_RUN=%q must be %s or %s; falling back to %s",
+				raw, FirstRunSeed, FirstRunSend, FirstRunSeed)
+		}
+	}
+	cfg.Email = l.email()
+	cfg.Webhook = notify.WebhookConfig{
+		URL: strings.TrimSpace(os.Getenv("WEBHOOK_URL")),
+		// secret 3종은 값 검증 없이 그대로 전달한다 — 경고 문자열에 실릴 여지를 만들지 않는다.
+		Secret:     os.Getenv("WEBHOOK_HMAC_SECRET"),
+		AuthHeader: os.Getenv("WEBHOOK_AUTH_HEADER"),
+		CAFile:     strings.TrimSpace(os.Getenv("WEBHOOK_CA_FILE")),
+	}
+	cfg.Syslog = l.syslog()
+	return cfg
+}
+
+// baseURL은 NOTIFY_BASE_URL을 읽는다. 비면 딥링크를 생략할 뿐 오류가 아니다.
+func (l *envLoader) baseURL() string {
+	raw := strings.TrimSpace(os.Getenv("NOTIFY_BASE_URL"))
+	if raw == "" {
+		return ""
+	}
+	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
+		l.warnf("NOTIFY_BASE_URL=%q must start with http:// or https://; notification deep links are omitted", raw)
+		return ""
+	}
+	return strings.TrimRight(raw, "/")
+}
+
+// email은 SMTP_*를 읽는다. 값 오류는 email 채널만 비활성화한다.
+func (l *envLoader) email() notify.EmailConfig {
+	cfg := notify.EmailConfig{
+		Host:     strings.TrimSpace(os.Getenv("SMTP_HOST")),
+		From:     strings.TrimSpace(os.Getenv("SMTP_FROM")),
+		Username: strings.TrimSpace(os.Getenv("SMTP_USERNAME")),
+		Password: os.Getenv("SMTP_PASSWORD"),
+		TLSMode:  strings.ToLower(getenv("SMTP_TLS_MODE", notify.TLSModeStartTLS)),
+		CAFile:   strings.TrimSpace(os.Getenv("SMTP_CA_FILE")),
+	}
+	// 포트는 기본값 폴백이 아니라 채널 비활성이다 — 오타 난 포트로 조용히
+	// 587에 붙는 것보다 "왜 안 가는지" 사유가 남는 편이 낫다.
+	cfg.Port = 587
+	if raw := strings.TrimSpace(os.Getenv("SMTP_PORT")); raw != "" {
+		port, err := strconv.Atoi(raw)
+		if err != nil || port < 1 || port > 65535 {
+			l.disableChannel(notify.ChannelEmail, "SMTP_PORT must be an integer between 1 and 65535")
+			cfg.Port = 0
+		} else {
+			cfg.Port = port
+		}
+	}
+	switch cfg.TLSMode {
+	case notify.TLSModeStartTLS, notify.TLSModeTLS, notify.TLSModeNone:
+	default:
+		l.disableChannel(notify.ChannelEmail, "SMTP_TLS_MODE must be one of starttls|tls|none")
+	}
+	// 파일이 지정되면 파일 내용이 SMTP_PASSWORD보다 우선한다 (Docker secret 경로).
+	// 경로는 로그에 남겨도 되지만 내용은 어디에도 남기지 않는다.
+	if path := strings.TrimSpace(os.Getenv("SMTP_PASSWORD_FILE")); path != "" {
+		b, err := os.ReadFile(path)
+		switch {
+		case err != nil:
+			l.disableChannel(notify.ChannelEmail, fmt.Sprintf("SMTP_PASSWORD_FILE %q is not readable", path))
+			cfg.Password = ""
+		case len(strings.TrimSpace(string(b))) == 0:
+			l.disableChannel(notify.ChannelEmail, fmt.Sprintf("SMTP_PASSWORD_FILE %q is empty", path))
+			cfg.Password = ""
+		default:
+			// secret 파일은 끝에 개행이 붙는 일이 흔하다.
+			cfg.Password = strings.TrimSpace(string(b))
+		}
+	}
+	cfg.InsecureSkipVerify = l.boolVal("SMTP_TLS_INSECURE_SKIP_VERIFY", false)
+	if cfg.InsecureSkipVerify {
+		// 인증서 제품이 스스로 검증을 끄는 설정이다 — 채널은 살리되 반드시 알린다.
+		l.warnf("SMTP_TLS_INSECURE_SKIP_VERIFY=true disables SMTP server certificate verification")
+	}
+	return cfg
+}
+
+// syslog는 SYSLOG_*를 읽는다. 네트워크가 udp/tcp가 아니면 syslog 채널만 비활성이다.
+func (l *envLoader) syslog() notify.SyslogConfig {
+	cfg := notify.SyslogConfig{
+		Addr:     strings.TrimSpace(os.Getenv("SYSLOG_ADDR")),
+		Network:  strings.ToLower(getenv("SYSLOG_NETWORK", "udp")),
+		Facility: strings.ToLower(getenv("SYSLOG_FACILITY", "local0")),
+		AppName:  getenv("SYSLOG_APP_NAME", "autocert"),
+	}
+	if cfg.Network != "udp" && cfg.Network != "tcp" {
+		l.disableChannel(notify.ChannelSyslog, "SYSLOG_NETWORK must be udp or tcp")
+	}
+	return cfg
+}
+
+// sweep은 SCAN_SWEEP_*를 읽는다. 값 오류는 전부 경고 + 기본값 폴백이다.
+func (l *envLoader) sweep() SweepConfig {
+	return SweepConfig{
+		Enabled:        l.boolVal("SCAN_SWEEP_ENABLED", true),
+		RatePPS:        l.intVal("SCAN_SWEEP_RATE_PPS", 10, 1, sweepMaxRatePPS),
+		Concurrency:    l.intVal("SCAN_SWEEP_CONCURRENCY", 8, 1, 1000),
+		ChunkEndpoints: l.intVal("SCAN_SWEEP_CHUNK_ENDPOINTS", 4096, 1, 1_000_000),
+		ChunkGap:       l.durationVal("SCAN_SWEEP_CHUNK_GAP", 5*time.Second, true),
+		MaxDays:        l.intVal("SCAN_SWEEP_MAX_DAYS", 30, 1, 3650),
+		StallAfter:     l.durationVal("SCAN_SWEEP_STALL_AFTER", 10*time.Minute, false),
+	}
 }
