@@ -1,0 +1,134 @@
+package notify
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+)
+
+func testFacts() CertExpiryFacts {
+	return CertExpiryFacts{
+		CertificateID: "11111111-2222-3333-4444-555555555555",
+		CommonName:    "app.example.test",
+		NotAfter:      time.Date(2026, 9, 1, 3, 4, 5, 0, time.UTC),
+		DaysRemaining: 23,
+		Environment:   "prod",
+		OwnerDisplay:  "인프라팀",
+		LocationCount: 3,
+		DeepLink:      "https://autocert.example.test/certificates/11111111-2222-3333-4444-555555555555",
+	}
+}
+
+func TestBuildCertExpiryMessage(t *testing.T) {
+	m := BuildCertExpiryMessage(testFacts())
+
+	if !strings.Contains(m.Title, "D-23") || !strings.Contains(m.Title, "app.example.test") {
+		t.Errorf("title mismatch: %q", m.Title)
+	}
+	if m.Severity != SeverityWarning {
+		t.Errorf("severity = %q, want %q", m.Severity, SeverityWarning)
+	}
+	if m.EventID != EventCertExpiring {
+		t.Errorf("event id = %q, want %q", m.EventID, EventCertExpiring)
+	}
+	if m.Recipient != "" {
+		t.Error("builder must not decide the recipient")
+	}
+	for _, want := range []string{"app.example.test", "2026-09-01T03:04:05Z", "23일", "prod", "인프라팀", "https://autocert.example.test/"} {
+		if !strings.Contains(m.TextBody, want) {
+			t.Errorf("text body missing %q:\n%s", want, m.TextBody)
+		}
+	}
+	if m.Data["days_remaining"] != 23 || m.Data["common_name"] != "app.example.test" {
+		t.Errorf("data mismatch: %#v", m.Data)
+	}
+	if m.Data["not_after"] != "2026-09-01T03:04:05Z" {
+		t.Errorf("not_after must be RFC3339 UTC: %#v", m.Data["not_after"])
+	}
+}
+
+func TestBuildCertExpiryMessageOmitsEmptyOptionalFields(t *testing.T) {
+	f := testFacts()
+	f.Environment = ""
+	f.OwnerDisplay = ""
+	f.DeepLink = "" // NOTIFY_BASE_URL 미설정
+	m := BuildCertExpiryMessage(f)
+
+	for _, unwanted := range []string{"환경:", "담당자:", "상세 보기:"} {
+		if strings.Contains(m.TextBody, unwanted) {
+			t.Errorf("text body must omit %q when the value is empty:\n%s", unwanted, m.TextBody)
+		}
+	}
+	for _, key := range []string{"environment", "owner", "deep_link"} {
+		if _, ok := m.Data[key]; ok {
+			t.Errorf("data must omit key %q when the value is empty", key)
+		}
+	}
+}
+
+func TestBuildCertExpiryMessageSeverity(t *testing.T) {
+	cases := []struct {
+		days int
+		want string
+	}{
+		{60, SeverityInfo},
+		{30, SeverityWarning},
+		{7, SeverityError},
+		{0, SeverityCritical},
+		{-5, SeverityCritical},
+	}
+	for _, tc := range cases {
+		f := testFacts()
+		f.DaysRemaining = tc.days
+		m := BuildCertExpiryMessage(f)
+		if m.Severity != tc.want {
+			t.Errorf("days=%d severity = %q, want %q", tc.days, m.Severity, tc.want)
+		}
+		if tc.days <= 0 {
+			if m.EventID != EventCertExpired || strings.Contains(m.Title, "D-") {
+				t.Errorf("days=%d must render as an expired event: %q / %q", tc.days, m.EventID, m.Title)
+			}
+		}
+	}
+}
+
+// 보안 하드 규칙 3 회귀 방지: 어떤 경로로도 인증서 원문이 알림에 실리지 않는다.
+// CertExpiryFacts가 고정 스칼라 필드만 받는 것이 1차 방어이고, 아래는 상위 계층이
+// 실수로 문자열 필드에 PEM을 밀어 넣은 경우까지 막는 2차 방어를 고정한다.
+func TestBuildCertExpiryMessageNeverCarriesPEM(t *testing.T) {
+	// 테스트 전용 더미 블록이다 — 실제 인증서·키가 아니다 (하드 규칙 4).
+	const dummyPEM = "-----BEGIN CERTIFICATE-----\n" +
+		"QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2\n" +
+		"-----END CERTIFICATE-----"
+
+	f := testFacts()
+	f.CommonName = "app.example.test\n" + dummyPEM
+	f.OwnerDisplay = dummyPEM
+	f.Environment = "-----BEGIN PRIVATE KEY-----"
+	m := BuildCertExpiryMessage(f)
+
+	encoded, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal message: %v", err)
+	}
+	rendered := string(encoded)
+	for _, forbidden := range []string{
+		"BEGIN CERTIFICATE", "END CERTIFICATE", "BEGIN PRIVATE KEY",
+		"QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2",
+	} {
+		if strings.Contains(rendered, forbidden) {
+			t.Errorf("rendered message must not contain %q:\n%s", forbidden, rendered)
+		}
+	}
+	if !strings.Contains(m.Title, "app.example.test") {
+		t.Errorf("scrubbing must keep the non-sensitive part: %q", m.Title)
+	}
+}
+
+func TestScrubSensitiveLeavesPlainTextUntouched(t *testing.T) {
+	in := "app.example.test — 정상 문자열"
+	if got := scrubSensitive(in); got != in {
+		t.Errorf("scrubSensitive(%q) = %q, want unchanged", in, got)
+	}
+}
