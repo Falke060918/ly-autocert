@@ -10,9 +10,6 @@ Entries are written in English; user quotes and error messages stay verbatim in 
 Cause: Windows Python stdout is `cp949`, so `python -c "print(...)" > file` damages UTF-8 in the extracted copy only (misleading diagnosis); separately, hand-recalled `\uXXXX` escapes in AskUserQuestion break (observed `비밀번호`→`뱄뱈호`, ~11%) and get copied forward into later turns.
 Fix: write files binary — `open(path,'wb').write(s.encode('utf-8'))`; write Korean in tool arguments as literal UTF-8 characters, never `\uXXXX`. (last recurrence: 2026-08)
 
-**If `rg` is a shell-function shim rather than a real binary, some rtk internal filters do not work**
-Cause/Fix: the shim passes `command -v rg` but does not exist when rtk executes it as a subprocess; install real ripgrep (e.g., `apt install ripgrep`).
-
 ## Permissions & settings
 
 **A wrapper prefix bypasses permission patterns entirely**
@@ -27,12 +24,6 @@ Fix: check markers **before** the user's request; state the user-approval basis 
 Cause: the permission deny rule for secret-leak prevention covers `.env.example` too, not just live `.env`.
 Fix: document new variables in docs/manual/INSTALL.md·SENSOR.md and have the user add them to `.env.example` by hand. (last recurrence: 2026-08)
 
-## Output style & plugins
-
-**Output-style footguns: plugin override and brief style**
-Cause: a plugin carrying `force-for-plugin` replaces the configured output style without notice; in brief style, removing `keep-coding-instructions: true` silently drops the built-in engineering instructions (editors flag `outputStyle` as "Property not allowed" though it works).
-Fix: if answer tone changes after installing a plugin, check that field first; keep the key and ignore the schema warning. (last recurrence: 2026-07)
-
 ## Agents & delegation
 
 **Agent spawns idle when given a `name`, and the transcript misreports parallelism**
@@ -45,19 +36,11 @@ Fix: spawn subagents unnamed and verify outputs (files/commits) instead of trust
 Cause: run 1 executes the project's old script copy — it checks out scripts/ (bringing the new array) but still iterates the old in-memory array; removal lag means a removed path (e.g. ci.yml) still gets synced/clobbered one last time on run 1.
 Fix: skills are immune (`.claude/skills` syncs wholesale, a4bc58e); expect the lag when changing the array — check `git diff` after run 1 (restore clobbers from it); safe from run 2. (last recurrence: 2026-07)
 
-**Concurrent sessions on one repo silently author conflicting edits to the same rule file**
-Cause: two sessions processed the same user feedback in parallel; both rewrote the same orchestrator.md bullet — push was rejected and the rebase needed a semantic (not textual) merge.
-Fix: `git fetch` and check ahead/behind before authoring template-rule commits; on conflict, merge both rule sets' obligations instead of picking a side. (last recurrence: 2026-08)
-
 ## Project stack
 
-**Stack setup version traps: shadcn CLI v3 flags, and pgx/v5 vs the go.mod toolchain**
-Cause: shadcn CLI v3 dropped `--base-color` (non-interactive init fails); pgx/v5 v5.10+ requires Go >=1.25 while go.mod was pinned at 1.23, so `go mod tidy` errors.
-Fix: `npx shadcn init -b radix -p nova --yes` (-b base, -p preset); set `go 1.25` in go.mod. (last recurrence: 2026-08)
-
-**`go test ./...` in parallel wipes the test schema out from under sibling packages / other worktrees**
-Cause: the db package runs up/down/up against TEST_DATABASE_URL; package-level parallelism lets its down step drop tables mid-run, and a worktree on a newer migration leaves the shared DB at a version other branches lack ("no migration found for version N").
-Fix: always `go test -p 1 ./...`, against a disposable per-worktree DB (createdb/dropdb) — never the shared autocert_test. (last recurrence: 2026-08)
+**Backend verification may have no local Go toolchain, and `go test ./...` in parallel wipes the test schema**
+Cause: `go`/`gofmt` are not guaranteed to exist on a dev machine (this one has none — see docs/MACHINE.md); separately the db package runs up/down/up against TEST_DATABASE_URL, so package-level parallelism lets its down step drop tables mid-run and a worktree on a newer migration leaves the shared DB at a version other branches lack ("no migration found for version N").
+Fix: run builds/tests in `golang:1.25-alpine` mounted at the backend dir (`-race` additionally needs `CGO_ENABLED=1` + `apk add gcc musl-dev`, and DB tests need the compose network); always `go test -p 1 ./...` against a disposable per-worktree DB (createdb/dropdb) — never the shared autocert_test. (last recurrence: 2026-08)
 
 **List sort tests fail: uppercase sorts before lowercase**
 Cause: postgres:16-alpine defaults to C collation, so string ORDER BY is byte-order ('AutoCert' < 'app-01') — locale-aware expectations are wrong.
@@ -94,3 +77,19 @@ Fix: for partial-update DTOs use a non-pointer `json.RawMessage` — it stays ni
 **eslint `react-hooks/purity` + `set-state-in-effect` block the usual "elapsed time" tick**
 Cause: the config rejects `Date.now()` during render AND a bare `setState` inside an effect body, so both obvious ways to keep a ticking clock fail `npm run lint`.
 Fix: `useState(() => Date.now())` lazy initializer + a `setInterval` inside the effect that updates it. (last recurrence: 2026-08)
+
+**Next 16 writes its own `frontend/AGENTS.md` and `frontend/CLAUDE.md` on every dev/build**
+Cause: the agent-rules feature regenerates both files unprompted, and `frontend/CLAUDE.md` collides by name with a project instruction file — it silently lands in `git status` after any verification run.
+Fix: already double-guarded — `agentRules: false` in `next.config.ts` plus both paths in `.gitignore`; if they reappear, check that config key before assuming someone authored them. (last recurrence: 2026-08)
+
+**Frontend e2e must run the production server, and its `/api/*` target is frozen at build time**
+Cause: with `output: "standalone"`, `next start` bakes the rewrite target from the build-time `BACKEND_INTERNAL_URL`, so a backend on another port makes every `/api/*` a 500 (ECONNREFUSED); and running `next dev` in a tree that already holds a production build serves `_next/static/chunks/*` as 403, killing hydration so the login button just does nothing.
+Fix: rebuild after changing `BACKEND_INTERNAL_URL`, and never mix `next dev` into a tree used for a production build — do frontend e2e against the production server only. (last recurrence: 2026-08)
+
+**A request DTO without `DisallowUnknownFields` turns a new column into a silently unfillable one**
+Cause: encoding/json drops unknown keys, so the API answers 201 while discarding the field — `users.email` had a column, a CHECK and recipient-resolution logic, yet no way to set it, and every mail recipient resolved to zero users.
+Fix: when adding a field, start at the decoder (`decodeUserRequest` is the single entry point for users) and keep `DisallowUnknownFields` on it; verify a round-trip read, not just the 2xx. (last recurrence: 2026-08)
+
+**Notification store tests: the seeded policy matches every certificate**
+Cause: migration 0012 seeds `기본 만료 알림` (inbox, all certs), so any detection assertion also picks up events from that policy.
+Fix: disable every enabled policy at test setup and restore it afterwards before asserting on detection output. (last recurrence: 2026-08)
