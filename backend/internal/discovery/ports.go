@@ -113,6 +113,13 @@ func PortPresets() []PortPreset {
 // 각 토큰은 단일 포트("443"), 범위("8000-9000"), 프리셋명("web"/"common"/"all") 중 하나다.
 // 서로 다른 토큰이 겹치면 합집합을 취하고, 결과는 중복 제거 후 오름차순 정렬한다.
 // 잘못된 입력은 ErrInvalidScanInput으로 감싸 반환한다(핸들러가 400 매핑).
+//
+// 빈 토큰("443,,8443", "443,")은 **에러다**(설계 04-port-autoscan 2.1).
+// 조용히 건너뛰지 않는 이유: 이 값은 사용자가 손으로 치는 자유 텍스트이고
+// 겹친 쉼표는 대개 토큰 하나를 지우다 남긴 흔적이다. 무시하면 사용자가
+// 요청했다고 믿는 것보다 좁은 범위가 돌고, 그 결과가 "인증서가 없다"로
+// 인벤토리에 남는다 — 이 기능이 막으려던 바로 그 누락이다.
+// 검증은 서버 파서 한 곳뿐이므로(설계 9.3) 관대해질 자리가 아니다.
 func ParsePortSpec(spec string) ([]int, error) {
 	if strings.TrimSpace(spec) == "" {
 		return nil, fmt.Errorf("%w: 포트 사양이 비었습니다 (예: %q, %q, %q)",
@@ -123,7 +130,8 @@ func ParsePortSpec(spec string) ([]int, error) {
 	for _, raw := range strings.Split(spec, ",") {
 		token := strings.TrimSpace(raw)
 		if token == "" {
-			continue // "443,,8443"처럼 빈 토큰은 건너뛴다.
+			return nil, fmt.Errorf("%w: 포트 사양 %q에 빈 토큰이 있습니다 (쉼표가 겹쳤거나 맨 앞·뒤에 남았습니다)",
+				ErrInvalidScanInput, spec)
 		}
 		ports, err := parsePortToken(token)
 		if err != nil {
@@ -133,10 +141,8 @@ func ParsePortSpec(spec string) ([]int, error) {
 			seen[p] = true
 		}
 	}
-
-	if len(seen) == 0 {
-		return nil, fmt.Errorf("%w: 포트 사양 %q에 유효한 토큰이 없습니다", ErrInvalidScanInput, spec)
-	}
+	// 여기까지 왔으면 토큰이 최소 1개 있고 모두 포트를 1개 이상 만들었으므로
+	// seen은 비어 있을 수 없다(빈 토큰은 위에서 이미 거부했다).
 
 	out := make([]int, 0, len(seen))
 	for p := range seen {

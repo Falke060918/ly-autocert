@@ -12,3 +12,8 @@ __pycache__/
 .claude/worktrees/
 docs/MACHINE.md
 CLAUDE.local.md
+# Next 16이 dev/build 때 자동 생성하는 에이전트 규칙 파일.
+# frontend/CLAUDE.md는 프로젝트 지시 파일과 이름이 겹쳐 특히 위험하다.
+# 근본 차단은 frontend/next.config.ts의 agentRules: false이고, 이건 이중 방어다.
+frontend/AGENTS.md
+frontend/CLAUDE.md

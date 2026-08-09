@@ -64,6 +64,29 @@ func hasAllPreset(spec string) bool {
 	return false
 }
 
+// invalidScanInputPrefix는 파서가 오류를 감쌀 때 붙는 내부 센티널 접두사다
+// ("discovery: invalid scan input: "). 응답에서 이걸 떼어낸다.
+var invalidScanInputPrefix = discovery.ErrInvalidScanInput.Error() + ": "
+
+// scanInputMessage는 400 응답에 실을 사용자 문구를 만든다.
+// 파서 오류는 "<센티널>: <한국어 사유>" 형식이므로 접두사를 떼고 사유만 남긴다 —
+// 프론트가 서버 메시지를 그대로 띄우므로 내부 패키지명이 UI에 노출되면 안 된다.
+// 예상 형식이 아닌 오류는 원문을 흘리지 않고 일반 문구로 대체한다(원문은 로그에만).
+func scanInputMessage(err error) string {
+	if reason, ok := strings.CutPrefix(err.Error(), invalidScanInputPrefix); ok && reason != "" {
+		return reason
+	}
+	return "스캔 입력이 올바르지 않습니다."
+}
+
+// writeScanInputError는 스캔·스윕 입력 오류를 400으로 돌려준다.
+// 응답에는 한국어 사유만 싣고 접두사가 붙은 원문은 서버 로그에만 남긴다.
+func writeScanInputError(w http.ResponseWriter, r *http.Request, err error) {
+	slog.Warn("discovery: invalid scan input", "error", err.Error(),
+		"request_id", deref(requestIDFrom(r.Context())))
+	writeError(w, r, http.StatusBadRequest, "invalid_scan_request", scanInputMessage(err))
+}
+
 type createScanResponse struct {
 	JobID          string `json:"job_id"`
 	Status         string `json:"status"`
@@ -92,8 +115,8 @@ func handleCreateScan(mgr *discovery.Manager, st *store.Store) http.HandlerFunc 
 		}
 		ports, err := resolveScanPorts(req.PortSpec, req.Ports)
 		if err != nil {
-			// 파서의 한국어 메시지를 그대로 전달한다(입력 형식 사유만 담는다).
-			writeError(w, r, http.StatusBadRequest, "invalid_scan_request", err.Error())
+			// 파서의 한국어 사유만 전달한다(내부 접두사는 로그행).
+			writeScanInputError(w, r, err)
 			return
 		}
 		req.Ports = ports
@@ -125,7 +148,7 @@ func handleCreateScan(mgr *discovery.Manager, st *store.Store) http.HandlerFunc 
 		if err != nil {
 			if errors.Is(err, discovery.ErrInvalidScanInput) {
 				// 오류 메시지는 입력 형식 사유만 담는다(인증서 정보 없음).
-				writeError(w, r, http.StatusBadRequest, "invalid_scan_request", err.Error())
+				writeScanInputError(w, r, err)
 				return
 			}
 			slog.Error("discovery: start scan failed", "error", err.Error(), "request_id", reqIDStr)
@@ -313,12 +336,12 @@ func (s *Server) handleCreateSweep(w http.ResponseWriter, r *http.Request) {
 	}
 	ports, err := discovery.ParsePortSpec(spec)
 	if err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_scan_request", err.Error())
+		writeScanInputError(w, r, err)
 		return
 	}
 	ips, err := expandSweepIPs(req.Targets)
 	if err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_scan_request", err.Error())
+		writeScanInputError(w, r, err)
 		return
 	}
 

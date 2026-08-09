@@ -29,6 +29,10 @@ const csp = [
 const nextConfig: NextConfig = {
   // Docker 배포용 — .next/standalone에 자기완결 서버를 생성한다.
   output: "standalone",
+  // Next 16은 기본적으로 dev/build 때 프로젝트 루트에 AGENTS.md·CLAUDE.md를
+  // 자동 생성한다. frontend/CLAUDE.md는 이 저장소의 프로젝트 지시 파일과
+  // 이름이 겹쳐 혼동을 부르므로 생성 자체를 끈다(.gitignore는 이중 방어).
+  agentRules: false,
   async rewrites() {
     return [{ source: "/api/:path*", destination: `${backendUrl}/api/:path*` }];
   },

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -28,8 +29,6 @@ func TestParsePortSpec(t *testing.T) {
 		{name: "union of overlapping ranges", spec: "8000-8003,8002-8005", want: []int{8000, 8001, 8002, 8003, 8004, 8005}},
 		{name: "union of overlapping preset and single", spec: "web,443", want: presetWeb},
 		{name: "union of overlapping preset and range", spec: "web,8443-8445", want: append(copyInts(presetWeb), 8444, 8445)},
-		{name: "empty tokens are skipped", spec: "443,,8443", want: []int{443, 8443}},
-		{name: "trailing comma", spec: "443,", want: []int{443}},
 		{name: "boundary low", spec: "1", want: []int{1}},
 		{name: "boundary high", spec: "65535", want: []int{65535}},
 		{name: "boundary range ends", spec: "1,65535", want: []int{1, 65535}},
@@ -75,6 +74,12 @@ func TestParsePortSpecErrors(t *testing.T) {
 		{name: "empty string", spec: ""},
 		{name: "whitespace only", spec: "   "},
 		{name: "only commas", spec: ",,,"},
+		// 빈 토큰은 조용히 건너뛰지 않는다 (설계 2.1) — 지운 토큰이 남긴 쉼표를
+		// 무시하면 사용자가 요청한 것보다 좁은 범위가 스캔되고 인증서가 누락된다.
+		{name: "double comma", spec: "443,,8443"},
+		{name: "trailing comma", spec: "443,"},
+		{name: "leading comma", spec: ",443"},
+		{name: "whitespace only token", spec: "443, ,8443"},
 		{name: "zero", spec: "0"},
 		{name: "above max", spec: "65536"},
 		{name: "way above max", spec: "70000"},
@@ -99,6 +104,18 @@ func TestParsePortSpecErrors(t *testing.T) {
 				t.Errorf("error = %v, want wrapped ErrInvalidScanInput", err)
 			}
 		})
+	}
+}
+
+// 빈 토큰 오류는 어느 입력이 문제인지 지목해야 한다(설계 2.1). 사용자가 손으로
+// 친 자유 텍스트라 "어디가 틀렸는지"가 메시지에 없으면 고칠 수 없다.
+func TestParsePortSpecEmptyTokenErrorNamesSpec(t *testing.T) {
+	_, err := ParsePortSpec("443,,8443")
+	if err == nil {
+		t.Fatal("ParsePortSpec(\"443,,8443\") = nil error, want error")
+	}
+	if !strings.Contains(err.Error(), "443,,8443") {
+		t.Errorf("error = %q, 입력 원문을 지목하지 않습니다", err.Error())
 	}
 }
 

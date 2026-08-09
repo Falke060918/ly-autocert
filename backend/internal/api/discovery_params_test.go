@@ -1,7 +1,11 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/discovery"
@@ -63,6 +67,55 @@ func TestResolveScanPortsPriority(t *testing.T) {
 			t.Errorf("error = %v, want ErrInvalidScanInput", err)
 		}
 	})
+}
+
+// 400 본문에는 파서가 만든 한국어 사유만 실린다. 내부 센티널 접두사
+// ("discovery: invalid scan input: ")는 프론트가 서버 메시지를 그대로 띄우므로
+// 사용자 눈에 그대로 노출된다 — 로그에만 남기고 응답에서는 뺀다.
+func TestWriteScanInputErrorHidesInternalPrefix(t *testing.T) {
+	_, err := resolveScanPorts("abc", nil)
+	if err == nil {
+		t.Fatal("resolveScanPorts(\"abc\") = nil error, want error")
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/discovery/scans", nil)
+	writeScanInputError(rec, req, err)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+	var body struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if derr := json.NewDecoder(rec.Body).Decode(&body); derr != nil {
+		t.Fatalf("decode body: %v", derr)
+	}
+	if body.Error.Code != "invalid_scan_request" {
+		t.Errorf("code = %q, want invalid_scan_request", body.Error.Code)
+	}
+	for _, leak := range []string{"discovery:", "invalid scan input"} {
+		if strings.Contains(body.Error.Message, leak) {
+			t.Errorf("message = %q, 내부 접두사 %q가 노출됩니다", body.Error.Message, leak)
+		}
+	}
+	if !strings.Contains(body.Error.Message, "포트") {
+		t.Errorf("message = %q, 파서의 한국어 사유가 남아 있지 않습니다", body.Error.Message)
+	}
+}
+
+// 감싸지 않은 오류가 400 경로로 들어와도 원문을 그대로 흘리지 않는다.
+func TestScanInputMessageFallsBackForUnwrappedError(t *testing.T) {
+	got := scanInputMessage(errors.New("store: pq: relation \"scan_jobs\" does not exist"))
+	if strings.Contains(got, "store:") || strings.Contains(got, "scan_jobs") {
+		t.Errorf("message = %q, 내부 오류 원문이 노출됩니다", got)
+	}
+	if got == "" {
+		t.Error("message = \"\", 사용자에게 보일 문구가 필요합니다")
+	}
 }
 
 func TestExpandSweepIPs(t *testing.T) {
