@@ -34,6 +34,48 @@ services:
       # 센서 게이트웨이 리슨 주소와, 센서가 접속할 DNS/IP(콤마 구분 — 서버 인증서 SAN).
       SENSOR_LISTEN_ADDR: ${SENSOR_LISTEN_ADDR:-:8443}
       SENSOR_ADVERTISED_HOSTS: ${SENSOR_ADVERTISED_HOSTS:-}
+      # --- 만료 알림 (INSTALL.md 5.2.1) ---
+      # 전부 비어 있어도 정상이다. 채널 설정이 비면 그 채널만 비활성화되고 코어 API는 뜬다.
+      # 알림함(inbox)은 외부 설정 없이 기본 활성이라 아무것도 안 채워도 UI 알림은 동작한다.
+      NOTIFY_ENABLED: ${NOTIFY_ENABLED:-true}
+      NOTIFY_SCAN_INTERVAL: ${NOTIFY_SCAN_INTERVAL:-1h}
+      # seed = 첫 판정에서 이미 지난 임계값을 발송하지 않고 침묵 처리(설치 당일 폭주 방지).
+      NOTIFY_FIRST_RUN: ${NOTIFY_FIRST_RUN:-seed}
+      NOTIFY_RETENTION_DAYS: ${NOTIFY_RETENTION_DAYS:-180}
+      # 알림 본문 딥링크의 기준 URL (예: http://10.20.0.5:3000). 비우면 링크만 생략된다.
+      NOTIFY_BASE_URL: ${NOTIFY_BASE_URL:-}
+      # SMTP — SMTP_HOST가 비면 메일 채널만 비활성.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      # 비밀값은 기본값을 두지 않는다 — .env에 없으면 빈 문자열로 들어간다.
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      # 파일이 있으면 SMTP_PASSWORD보다 우선한다(Docker secret 경로). 파일 자체는 별도 마운트 필요.
+      SMTP_PASSWORD_FILE: ${SMTP_PASSWORD_FILE:-}
+      SMTP_TLS_MODE: ${SMTP_TLS_MODE:-starttls}
+      # 사내 사설 CA 경로(컨테이너 내부 경로 — 볼륨 마운트 필요). INSECURE_SKIP_VERIFY 대신 이걸 쓴다.
+      SMTP_CA_FILE: ${SMTP_CA_FILE:-}
+      SMTP_TLS_INSECURE_SKIP_VERIFY: ${SMTP_TLS_INSECURE_SKIP_VERIFY:-false}
+      # 웹훅 — WEBHOOK_URL이 비면 웹훅 채널만 비활성.
+      WEBHOOK_URL: ${WEBHOOK_URL:-}
+      WEBHOOK_HMAC_SECRET: ${WEBHOOK_HMAC_SECRET:-}
+      WEBHOOK_AUTH_HEADER: ${WEBHOOK_AUTH_HEADER:-}
+      WEBHOOK_CA_FILE: ${WEBHOOK_CA_FILE:-}
+      # Syslog — SYSLOG_ADDR이 비면 Syslog 채널만 비활성. udp는 fire-and-forget(수신 보장 없음).
+      SYSLOG_ADDR: ${SYSLOG_ADDR:-}
+      SYSLOG_NETWORK: ${SYSLOG_NETWORK:-udp}
+      SYSLOG_FACILITY: ${SYSLOG_FACILITY:-local0}
+      SYSLOG_APP_NAME: ${SYSLOG_APP_NAME:-autocert}
+      # --- 전 포트 백그라운드 스윕 (INSTALL.md 5.2.2) ---
+      # RATE_PPS를 올리면 빨라지지만 방화벽·IPS가 포트스캔으로 탐지·차단할 수 있다.
+      SCAN_SWEEP_ENABLED: ${SCAN_SWEEP_ENABLED:-true}
+      SCAN_SWEEP_RATE_PPS: ${SCAN_SWEEP_RATE_PPS:-10}
+      SCAN_SWEEP_CONCURRENCY: ${SCAN_SWEEP_CONCURRENCY:-8}
+      SCAN_SWEEP_CHUNK_ENDPOINTS: ${SCAN_SWEEP_CHUNK_ENDPOINTS:-4096}
+      SCAN_SWEEP_CHUNK_GAP: ${SCAN_SWEEP_CHUNK_GAP:-5s}
+      SCAN_SWEEP_MAX_DAYS: ${SCAN_SWEEP_MAX_DAYS:-30}
+      SCAN_SWEEP_STALL_AFTER: ${SCAN_SWEEP_STALL_AFTER:-10m}
     depends_on:
       db:
         condition: service_healthy
