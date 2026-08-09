@@ -122,6 +122,43 @@ func TestInboxDatabaseErrorIsTemporary(t *testing.T) {
 	}
 }
 
+// 테스트 발송에는 수신자 사용자 id도, 저장된 이벤트 UUID도 없다. 예전에는 그래서
+// 항상 "no recipient user id" 실패로 끝나 운영자에게 알림함이 고장난 것처럼 보였다.
+// 지금은 삽입 없이 성공으로 끝낸다 — 알림함은 확인할 설정 자체가 없는 채널이다.
+func TestInboxTestSendSucceedsWithoutInserting(t *testing.T) {
+	st := &fakeInboxStore{created: true}
+	n := NewInbox(InboxConfig{Store: st})
+
+	m := Message{
+		Title:    "[AutoCert] 알림 채널 테스트",
+		TextBody: "본문",
+		Severity: SeverityInfo,
+		EventID:  "notification.test",
+		Data:     map[string]any{"event": "notification.test", DataKeyTestSend: true},
+	}
+	if err := n.Send(context.Background(), m); err != nil {
+		t.Fatalf("Send() = %v, want nil — a test send must not look like a failure", err)
+	}
+	if len(st.entries) != 0 {
+		t.Errorf("test send must not insert a row, got %d", len(st.entries))
+	}
+}
+
+// 표식이 없는 평소 메시지는 예전 그대로 검증을 거친다.
+func TestInboxTestSendMarkerDoesNotWeakenNormalMessages(t *testing.T) {
+	st := &fakeInboxStore{created: true}
+	n := NewInbox(InboxConfig{Store: st})
+
+	m := inboxMessage()
+	m.Data[DataKeyTestSend] = false
+	if err := n.Send(context.Background(), m); err != nil {
+		t.Fatalf("Send() = %v, want nil", err)
+	}
+	if len(st.entries) != 1 {
+		t.Fatalf("insert count = %d, want 1", len(st.entries))
+	}
+}
+
 func TestInboxInvalidMessageIsPermanent(t *testing.T) {
 	cases := []struct {
 		name  string

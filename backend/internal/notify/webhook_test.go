@@ -161,6 +161,57 @@ func TestWebhookUnreachableEndpointIsTemporary(t *testing.T) {
 	}
 }
 
+// assertNoConfigValues는 에러 문자열에 설정값이 남지 않았는지 본다.
+// 값(URL·호스트·포트·주소)은 API 응답과 감사 로그로 그대로 나가므로 발생 지점에서
+// 넣지 않는 것이 규칙이고, cmd/server의 경계 redaction은 이중 안전망일 뿐이다.
+func assertNoConfigValues(t *testing.T, what, s string, values ...string) {
+	t.Helper()
+	for _, v := range values {
+		if v == "" {
+			continue
+		}
+		if strings.Contains(s, v) {
+			t.Errorf("%s leaked a configuration value %q: %q", what, v, s)
+		}
+	}
+}
+
+// 실패한 웹훅 요청의 에러에 URL이 실리면 경로에 박힌 토큰이 그대로 유출된다.
+func TestWebhookErrorHasNoURL(t *testing.T) {
+	srv, _ := newWebhookServer(t, http.StatusInternalServerError)
+	host := strings.TrimPrefix(srv.URL, "http://")
+	path := "/hooks/" + fakeToken
+	cfg := WebhookConfig{
+		URL:        srv.URL + path,
+		Secret:     fakeSecret,
+		AuthHeader: "Authorization: Bearer " + fakeToken,
+		Timeout:    2 * time.Second,
+	}
+
+	n := NewWebhook(cfg)
+	err := n.Send(context.Background(), Message{Title: "제목"})
+	if err == nil {
+		t.Fatal("expected an error for status 500")
+	}
+	assertNoSecrets(t, "webhook status error", err.Error())
+	assertNoConfigValues(t, "webhook status error", err.Error(), cfg.URL, host, path)
+	// 진단 가능성: 상태 코드와 확인할 변수 이름은 남아야 한다.
+	if !strings.Contains(err.Error(), "500") || !strings.Contains(err.Error(), "WEBHOOK_URL") {
+		t.Errorf("error must keep the status code and name the variable to check: %q", err)
+	}
+
+	srv.Close() // 리슨 종료 — 연결 실패를 만든다
+	err = NewWebhook(cfg).Send(context.Background(), Message{Title: "제목"})
+	if err == nil {
+		t.Fatal("expected an error for a closed endpoint")
+	}
+	assertNoSecrets(t, "webhook network error", err.Error())
+	assertNoConfigValues(t, "webhook network error", err.Error(), cfg.URL, host, path)
+	if !strings.Contains(err.Error(), "WEBHOOK_URL") || !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("error must name the variable and the failure kind: %q", err)
+	}
+}
+
 func TestWebhookHonorsCanceledContext(t *testing.T) {
 	srv, _ := newWebhookServer(t, http.StatusOK)
 	n := NewWebhook(WebhookConfig{URL: srv.URL})

@@ -88,8 +88,9 @@ func (n *EmailNotifier) dial(ctx context.Context) (*smtp.Client, error) {
 		conn, err = dialer.DialContext(ctx, "tcp", addr)
 	}
 	if err != nil {
-		// 네트워크 계층 실패는 재시도 대상이다.
-		return nil, Temporaryf("notify/email: connect to %s failed: %s", addr, smtpErrText(err))
+		// 네트워크 계층 실패는 재시도 대상이다. dial 오류 문자열에는 host:port가
+		// 그대로 실려 오므로 값 대신 어떤 변수를 확인해야 하는지만 남긴다.
+		return nil, Temporaryf("notify/email: connect to SMTP_HOST:SMTP_PORT failed (%s)", netErrKind(err))
 	}
 	_ = conn.SetDeadline(deadline)
 
@@ -156,13 +157,18 @@ func classifySMTPError(what string, err error) error {
 	return Temporaryf("notify/email: %s: %s", what, smtpErrText(err))
 }
 
-// smtpErrText는 에러 문자열에서 메일 주소를 지운다. SMTP 서버 응답과 dial 오류에는
-// 수신자 주소가 그대로 섞여 오는데, 이 에러는 로그로 나가므로 그대로 두면 안 된다.
+// smtpErrText는 진단 문자열을 만든다. SMTP 서버 응답(textproto.Error)은 응답 코드와
+// 문구를 남기되 섞여 오는 메일 주소를 지우고, 그 밖의 네트워크 계층 오류는 종류만
+// 남긴다 — net 계층 오류 문자열에는 SMTP_HOST:SMTP_PORT 값이 그대로 실려 오기 때문이다.
 func smtpErrText(err error) string {
 	if err == nil {
 		return ""
 	}
-	return redactAddresses(err.Error())
+	var te *textproto.Error
+	if errors.As(err, &te) {
+		return fmt.Sprintf("%d %s", te.Code, redactAddresses(te.Msg))
+	}
+	return netErrKind(err)
 }
 
 var emailAddrRe = regexp.MustCompile(`[^\s<>",;:]+@[^\s<>",;:]+`)

@@ -339,6 +339,56 @@ func TestEmailConnectionFailureIsTemporary(t *testing.T) {
 	}
 }
 
+// 접속 실패 에러에 host:port가 실리면 릴레이 주소가 API 응답·감사로 나간다.
+func TestEmailErrorHasNoHostOrPort(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	_, portStr, _ := net.SplitHostPort(ln.Addr().String())
+	var port int
+	_, _ = fmt.Sscanf(portStr, "%d", &port)
+	_ = ln.Close() // 아무도 듣지 않는 주소를 만든다
+
+	n := NewEmail(EmailConfig{
+		Host: "127.0.0.1", Port: port, Username: "autocert", Password: fakePassword,
+		From: "autocert@example.test", Timeout: 2 * time.Second,
+	})
+	sendErr := n.Send(context.Background(), Message{Title: "t", Recipient: "ops@example.test"})
+	if sendErr == nil {
+		t.Fatal("expected an error for a closed port")
+	}
+	assertNoSecrets(t, "email connect error", sendErr.Error())
+	assertNoConfigValues(t, "email connect error", sendErr.Error(),
+		"127.0.0.1", portStr, net.JoinHostPort("127.0.0.1", portStr))
+	// 진단 가능성: 확인할 변수 이름과 실패 종류는 남아야 한다.
+	if !strings.Contains(sendErr.Error(), "SMTP_HOST") || !strings.Contains(sendErr.Error(), "connection refused") {
+		t.Errorf("error must name the variables and the failure kind: %q", sendErr)
+	}
+}
+
+// SMTP 응답 코드는 진단에 필요하므로 남기되 호스트·주소는 남기지 않는다.
+func TestEmailSMTPErrorKeepsCodeWithoutHost(t *testing.T) {
+	cert, caPath := testServerCert(t)
+	srv := newFakeSMTPWithCert(t, cert)
+	srv.rcptReply = "550 5.1.1 <ops@example.test>: Recipient address rejected"
+	port := srv.port(t)
+
+	n := NewEmail(EmailConfig{
+		Host: "127.0.0.1", Port: port, Password: fakePassword, From: "autocert@example.test",
+		TLSMode: TLSModeStartTLS, CAFile: caPath, Timeout: 5 * time.Second,
+	})
+	err := n.Send(context.Background(), Message{Title: "t", Recipient: "ops@example.test"})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	assertNoSecrets(t, "email smtp error", err.Error())
+	assertNoConfigValues(t, "email smtp error", err.Error(), fmt.Sprintf("%d", port), caPath)
+	if !strings.Contains(err.Error(), "550") {
+		t.Errorf("the smtp response code must survive: %q", err)
+	}
+}
+
 func TestEmailBuildMIMEBlocksHeaderInjection(t *testing.T) {
 	n := NewEmail(EmailConfig{Host: "smtp.example.test", From: "autocert@example.test"})
 	raw := string(n.buildMIME(Message{

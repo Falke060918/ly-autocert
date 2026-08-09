@@ -179,6 +179,29 @@ func TestSyslogUnreachableCollectorIsTemporary(t *testing.T) {
 	}
 }
 
+// 발송 실패 에러에 수집기 주소가 실리면 내부망 주소가 API 응답·감사로 나간다.
+func TestSyslogErrorHasNoAddress(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close() // 아무도 듣지 않는 주소를 만든다
+
+	n := NewSyslog(SyslogConfig{Network: "tcp", Addr: addr, Timeout: time.Second})
+	t.Cleanup(func() { _ = n.Close() })
+	sendErr := n.Send(context.Background(), testMessage())
+	if sendErr == nil {
+		t.Fatal("expected an error for an unreachable collector")
+	}
+	host, port, _ := net.SplitHostPort(addr)
+	assertNoConfigValues(t, "syslog send error", sendErr.Error(), addr, host, port)
+	// 진단 가능성: 확인할 변수 이름과 실패 종류는 남아야 한다.
+	if !strings.Contains(sendErr.Error(), "SYSLOG_ADDR") || !strings.Contains(sendErr.Error(), "connection refused") {
+		t.Errorf("error must name the variable and the failure kind: %q", sendErr)
+	}
+}
+
 // 수집기가 재시작해 연결이 끊겨도 다음 Send가 1회 재연결로 복구되는지 고정한다.
 func TestSyslogReconnectsAfterBrokenConnection(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

@@ -84,7 +84,12 @@ func (n *SyslogNotifier) Send(ctx context.Context, m Message) error {
 	// 끊긴 연결은 흔하다(수집기 재시작 등). 1회 재연결 후 다시 시도한다.
 	n.closeLocked()
 	if retryErr := n.writeLocked(frame, deadline); retryErr != nil {
-		return Temporaryf("notify/syslog: send to %s/%s failed: %v", n.network, n.addr, retryErr)
+		// net 계층 오류 문자열에는 수집기 주소가 그대로 실려 온다. 이 에러는 테스트
+		// 발송 응답·감사로 나가므로 값 대신 확인할 변수와 오류 종류만 남긴다.
+		// 프로토콜(udp/tcp)까지 포함한 자세한 내용은 서버 로그에만 남긴다.
+		n.logger().Debug("notify: syslog send failed after one reconnect",
+			"channel", ChannelSyslog, "network", n.network, "error_kind", netErrKind(retryErr))
+		return Temporaryf("notify/syslog: send to SYSLOG_ADDR failed (%s)", netErrKind(retryErr))
 	}
 	return nil
 }

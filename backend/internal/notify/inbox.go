@@ -41,6 +41,11 @@ type InboxStore interface {
 	InsertInboxItem(ctx context.Context, in InboxEntry) (created bool, err error)
 }
 
+// DataKeyTestSend는 테스트 발송 표식이다 (Message.Data[DataKeyTestSend] == true).
+// 운영자가 채널 설정을 확인하려고 손으로 보낸 1건이라는 뜻이며, 실제 알림 사건이 아니다.
+// 테스트 메시지를 만드는 쪽(cmd/server의 notifyTestMessage)이 채운다.
+const DataKeyTestSend = "test"
+
 // InboxConfig는 알림함 채널 설정이다. 환경변수로 조절할 것이 없다.
 type InboxConfig struct {
 	Store  InboxStore
@@ -74,6 +79,17 @@ func (n *InboxNotifier) Enabled() (bool, string) { return true, "" }
 func (n *InboxNotifier) Send(ctx context.Context, m Message) error {
 	if n.store == nil {
 		return Permanent(errors.New("notify/inbox: store is not wired"))
+	}
+	// 테스트 발송은 행을 만들지 않고 성공으로 끝낸다.
+	// 알림함은 채울 설정이 없어 항상 활성인 채널이라 테스트 발송으로 확인할 외부
+	// 설정 자체가 없고, 실제 삽입에는 notification_events 행(FK)이 필요해 저장 계층이
+	// 테스트 전용 이벤트를 만들어 줘야 한다 — 가짜 알림 행이 남는 부작용이 진단
+	// 가치보다 크다. 예전에는 이 경로가 "message has no recipient user id"로 끝나
+	// 운영자에게 알림함이 고장난 것처럼 보였다.
+	if isTestSend(m) {
+		n.logger().Debug("notify: inbox test send needs no configuration — nothing was inserted",
+			"channel", ChannelInbox)
+		return nil
 	}
 	userID := strings.TrimSpace(m.Recipient)
 	if userID == "" {
@@ -110,4 +126,10 @@ func (n *InboxNotifier) Send(ctx context.Context, m Message) error {
 			"channel", ChannelInbox, "event_id", eventID)
 	}
 	return nil
+}
+
+// isTestSend는 테스트 발송 메시지인지 판정한다.
+func isTestSend(m Message) bool {
+	v, ok := m.Data[DataKeyTestSend].(bool)
+	return ok && v
 }
