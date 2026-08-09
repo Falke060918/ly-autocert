@@ -18,15 +18,29 @@ const (
 	maxConcurrency     = 256
 )
 
+// scanEndpoint는 실제 스캔 함수다. 테스트에서 대체한다(실행 경로를 그대로 타면서
+// dial만 걷어내기 위함 — scanner.go의 lookupAddr와 같은 방식이다).
+var scanEndpoint = ScanEndpoint
+
 // Manager는 스캔 Job의 생성·백그라운드 실행을 조율한다.
 // 실제 인증서 작업(발견)은 AI가 아닌 명시적 상태 머신으로 실행한다 (CLAUDE.md 결정론적 자동화).
 type Manager struct {
 	store *store.Store
+	// sweep은 대역 스윕 스케줄러 설정이다 (sweep.go). 기본값은 NewManager가 채운다.
+	sweep SweepOptions
 }
 
 // NewManager는 Manager를 만든다.
 func NewManager(st *store.Store) *Manager {
-	return &Manager{store: st}
+	return &Manager{store: st, sweep: DefaultSweepOptions()}
+}
+
+// UseSweepOptions는 스윕 스케줄러 설정을 주입한 Manager를 돌려준다(자기 자신).
+// cmd/server가 config.SweepConfig 값을 넘기는 자리다 — 값 오류는 config가 이미
+// 경고 + 기본값 폴백으로 처리하므로 여기서는 0/음수만 기본값으로 되돌린다.
+func (m *Manager) UseSweepOptions(opts SweepOptions) *Manager {
+	m.sweep = opts.normalized()
+	return m
 }
 
 // StartResult는 스캔 생성 결과다(즉시 반환값).
@@ -68,13 +82,16 @@ func (m *Manager) Start(ctx context.Context, in store.ScanInput) (*StartResult, 
 	}
 
 	// 백그라운드 실행은 요청 컨텍스트와 무관하게 살아야 하므로 Background를 쓴다.
-	go m.run(context.Background(), jobID, endpoints, concurrency, timeout)
+	// 단발 스캔은 기존 기본값(50pps/동시성 20)으로 돈다 — 스윕은 이보다 더 느리다(설계 7.3).
+	go m.run(context.Background(), jobID, endpoints, concurrency, timeout, NewRateLimiter(DefaultScanRatePPS))
 
 	return &StartResult{JobID: jobID, TotalEndpoints: len(endpoints)}, nil
 }
 
 // run은 Job의 상태 머신을 진행한다: running → 엔드포인트 스캔 → completed/failed.
-func (m *Manager) run(ctx context.Context, jobID string, endpoints []Endpoint, concurrency int, timeout time.Duration) {
+// lim은 dial 속도 제한이다(nil이면 무제한). 스윕 자식 Job은 자기 행의 rate_pps로,
+// 단발 스캔은 DefaultScanRatePPS로 돈다.
+func (m *Manager) run(ctx context.Context, jobID string, endpoints []Endpoint, concurrency int, timeout time.Duration, lim *RateLimiter) {
 	if err := m.store.MarkScanRunning(ctx, jobID, len(endpoints)); err != nil {
 		slog.Error("discovery: mark running failed", "error", err.Error(), "job_id", jobID)
 		reason := "failed to start scan"
@@ -84,28 +101,48 @@ func (m *Manager) run(ctx context.Context, jobID string, endpoints []Endpoint, c
 		return
 	}
 
+	scanAll(ctx, endpoints, concurrency, timeout, lim, func(obs Observation) {
+		// 개별 DB 오류는 로그만 남기고 계속한다 — 한 엔드포인트가 전체 Job을 멈추지 않는다.
+		// 로그에는 job_id와 오류 문자열만 남긴다(인증서 본문 금지, 보안 하드 규칙 3).
+		if err := m.store.RecordEndpointResult(ctx, jobID, toStoreObs(obs)); err != nil {
+			slog.Error("discovery: record endpoint result failed", "error", err.Error(), "job_id", jobID)
+		}
+	})
+
+	if err := ctx.Err(); err != nil {
+		// 중단(서버 종료 등)에는 종료 상태를 찍지 않는다 — 스캔이 끝나지 않았기 때문이다.
+		// 남은 행은 다음 기동의 ReapOrphanedServerScanJobs가 failed로 회수하고,
+		// 스윕 자식 Job이면 그 seq가 재발주된다(store의 부분 유니크가 failed를 비켜간다).
+		slog.Warn("discovery: scan interrupted", "job_id", jobID, "reason", err.Error())
+		return
+	}
+
+	if err := m.store.MarkScanFinished(ctx, jobID, store.ScanStatusCompleted, nil); err != nil {
+		slog.Error("discovery: mark completed failed", "error", err.Error(), "job_id", jobID)
+	}
+}
+
+// scanAll은 엔드포인트 목록을 워커풀로 훑고 결과를 sink에 넘긴다.
+// 순서는 호스트 라운드로빈(InterleaveByHost)이고, 속도는 dial 직전 lim.Wait으로 맞춘다 —
+// IPS가 보는 것은 SYN 비율이므로 핸드셰이크 뒤가 아니라 앞에서 눌러야 한다 (설계 7.1·7.2).
+// sink는 여러 goroutine에서 동시에 호출된다.
+func scanAll(ctx context.Context, endpoints []Endpoint, concurrency int, timeout time.Duration, lim *RateLimiter, sink func(Observation)) {
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
-	for _, ep := range endpoints {
+	for _, ep := range InterleaveByHost(endpoints) {
 		sem <- struct{}{}
 		wg.Add(1)
 		go func(ep Endpoint) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			obs := ScanEndpoint(ctx, ep, timeout)
-			// 개별 DB 오류는 로그만 남기고 계속한다 — 한 엔드포인트가 전체 Job을 멈추지 않는다.
-			// 로그에는 job_id와 오류 문자열만 남긴다(인증서 본문 금지, 보안 하드 규칙 3).
-			if err := m.store.RecordEndpointResult(ctx, jobID, toStoreObs(obs)); err != nil {
-				slog.Error("discovery: record endpoint result failed", "error", err.Error(), "job_id", jobID)
+			if err := lim.Wait(ctx); err != nil {
+				return // ctx 취소 — 남은 프로브를 보내지 않는다.
 			}
+			sink(scanEndpoint(ctx, ep, timeout))
 		}(ep)
 	}
 	wg.Wait()
-
-	if err := m.store.MarkScanFinished(ctx, jobID, store.ScanStatusCompleted, nil); err != nil {
-		slog.Error("discovery: mark completed failed", "error", err.Error(), "job_id", jobID)
-	}
 }
 
 // toStoreObs는 스캔 결과를 store 계층 타입으로 변환한다(순환 import 방지).
