@@ -27,8 +27,18 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { canManageInventory, useAuth } from "@/lib/auth";
-import { createScan, getScan, listSensors, type ScanJob, type Sensor } from "@/lib/api";
+import { getScan, listSensors, type ScanJob, type Sensor } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
+import {
+  createScanWithPortSpec,
+  elapsedLabel,
+  listPortPresets,
+  type PortPreset,
+} from "@/lib/sweeps";
+
+// 포트 입력·경과 시각 헬퍼는 스캔 폼과 스윕 폼이 함께 쓴다. 이 페이지가 패널을
+// import하므로 공용 조각은 반대 방향(패널 → 페이지)이 아니라 패널 쪽에 둔다.
+import { PortSpecField, SweepPanel, useTicker } from "./sweep-panel";
 
 /** 이 브라우저에서 시작한 스캔 Job id 목록 (서버에는 목록 API가 없다 — Phase 1 범위). */
 const STORAGE_KEY = "autocert.scan_job_ids";
@@ -40,15 +50,6 @@ const POLL_MS = 2000;
  * 정상이라면 90초 안에는 수령된다 — 넘으면 센서 미가동을 의심할 구간이다.
  */
 const STALE_WAIT_MS = 90_000;
-
-/** "3분째" / "12초째" — 대기가 얼마나 길어졌는지 알려주는 경과 표기. */
-function elapsedLabel(fromISO: string, now: number): string {
-  const sec = Math.max(0, Math.floor((now - new Date(fromISO).getTime()) / 1000));
-  if (sec < 60) return `${sec}초째`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}분째`;
-  return `${Math.floor(min / 60)}시간 ${min % 60}분째`;
-}
 
 function loadJobIds(): string[] {
   try {
@@ -71,6 +72,23 @@ export default function DiscoveryPage() {
   const [jobIds, setJobIds] = React.useState<string[] | null>(null);
   const [jobs, setJobs] = React.useState<Record<string, ScanJob>>({});
   const [sensors, setSensors] = React.useState<Sensor[]>([]);
+  const [presets, setPresets] = React.useState<PortPreset[]>([]);
+
+  // 포트 프리셋의 단일 진실원천은 서버다 — 이름·개수를 화면에 하드코딩하지 않는다.
+  // 스캔 폼과 스윕 폼이 같은 목록을 쓰므로 페이지가 한 번만 조회해 내려준다.
+  React.useEffect(() => {
+    let cancelled = false;
+    listPortPresets()
+      .then((res) => {
+        if (!cancelled) setPresets(res.items);
+      })
+      .catch(() => {
+        // 프리셋을 못 받으면 칩만 사라지고 자유 텍스트 입력은 그대로 쓸 수 있다.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // 센서 목록은 실행기 선택과 대기 Job의 "누구를 기다리는가" 표시에 모두 쓴다.
   // 비활성 센서도 담아둔다 — 대기가 안 풀리는 원인이 바로 그것일 수 있다.
@@ -156,7 +174,7 @@ export default function DiscoveryPage() {
 
       <div className="grid items-start gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
         {canManage ? (
-          <ScanForm sensors={sensors} onCreated={addJob} />
+          <ScanForm sensors={sensors} presets={presets} onCreated={addJob} />
         ) : (
           <Card className="gap-0 py-0">
             <div className="border-b px-4 py-3">
@@ -202,6 +220,8 @@ export default function DiscoveryPage() {
           )}
         </Card>
       </div>
+
+      <SweepPanel sensors={sensors} presets={presets} canManage={canManage} />
     </div>
   );
 }
@@ -294,19 +314,6 @@ function ScanJobRow({
   );
 }
 
-/**
- * 주기적으로 갱신되는 현재 시각(ms). 렌더 중 `Date.now()`를 직접 부르면
- * 순수성 규칙(react-hooks/purity)에 걸리므로 상태로 흘려보낸다.
- */
-function useTicker(intervalMs: number): number {
-  const [now, setNow] = React.useState(() => Date.now());
-  React.useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(timer);
-  }, [intervalMs]);
-  return now;
-}
-
 function sensorOf(job: ScanJob, sensorById: Record<string, Sensor>) {
   return job.sensor_id ? sensorById[job.sensor_id] : undefined;
 }
@@ -367,13 +374,16 @@ const EXECUTOR_SERVER = "server";
 
 function ScanForm({
   sensors,
+  presets,
   onCreated,
 }: {
   sensors: Sensor[];
+  presets: PortPreset[];
   onCreated: (jobId: string) => void;
 }) {
   const [targets, setTargets] = React.useState("");
-  const [ports, setPorts] = React.useState("443");
+  /** 기본값은 common 프리셋이다(443 단일에서 바뀌었다 — 설계 3.3). */
+  const [portSpec, setPortSpec] = React.useState("common");
   const [timeoutMs, setTimeoutMs] = React.useState("");
   const [concurrency, setConcurrency] = React.useState("");
   const [executor, setExecutor] = React.useState(EXECUTOR_SERVER);
@@ -398,19 +408,17 @@ function ScanForm({
       setError("스캔 대상(IP 또는 CIDR)을 한 줄에 하나씩 입력하십시오.");
       return;
     }
-    const portList = ports
-      .split(",")
-      .map((s) => Number.parseInt(s.trim(), 10))
-      .filter((n) => Number.isFinite(n));
 
     setBusy(true);
     try {
-      const req: Parameters<typeof createScan>[0] = { targets: targetList };
-      if (portList.length > 0) req.ports = portList;
+      // 포트는 원문 그대로 보낸다. 클라이언트에서 파싱하면 "8443-9443"이 조용히
+      // 8443 하나로 잘려 사용자가 요청하지 않은 스캔이 돈다(설계 9.3의 버그).
+      const req: Parameters<typeof createScanWithPortSpec>[0] = { targets: targetList };
+      if (portSpec.trim()) req.port_spec = portSpec.trim();
       if (timeoutMs.trim()) req.timeout_ms = Number.parseInt(timeoutMs, 10);
       if (concurrency.trim()) req.concurrency = Number.parseInt(concurrency, 10);
       if (executor !== EXECUTOR_SERVER) req.sensor_id = executor;
-      const accepted = await createScan(req);
+      const accepted = await createScanWithPortSpec(req);
       onCreated(accepted.job_id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "스캔 생성에 실패했습니다.");
@@ -462,17 +470,13 @@ function ScanForm({
               서버가 도달할 수 없는 세그먼트는 그곳에 배치한 센서를 선택하십시오.
             </p>
           </div>
-          <div className="space-y-2">
-            <Label htmlFor="scan-ports">포트 목록</Label>
-            <Input
-              id="scan-ports"
-              className="font-mono text-xs"
-              placeholder="443, 8443"
-              value={ports}
-              onChange={(e) => setPorts(e.target.value)}
-            />
-            <p className="text-xs text-muted-foreground">쉼표로 구분 · 비우면 443</p>
-          </div>
+          <PortSpecField
+            id="scan-ports"
+            value={portSpec}
+            onChange={setPortSpec}
+            presets={presets}
+            singleScan
+          />
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-2">
               <Label htmlFor="scan-timeout">타임아웃 (ms)</Label>
