@@ -622,6 +622,21 @@ type DetectedEvent struct {
 // dedup_key에 정책 id를 넣지 않는다 — 두 정책이 겹쳐도 이벤트는 1건이고 수신자만
 // 합집합이 된다 (설계 4.1). policy_id는 "최초로 이 이벤트를 만든 정책" 참고값이라
 // DISTINCT ON으로 가장 오래된 정책을 고정 선택한다.
+//
+// 임계값 선택 규칙(설계 7.3.1) — **인증서·정책당 임계값 1개만 발화한다.**
+// 정책 thresholds 중 이미 도달한 것(`th.days >= days_remaining`)들의 **최솟값** 하나만
+// 이벤트가 된다. `unnest`를 그대로 조인해 "도달한 임계값 전부"를 매칭하면 다음 두 경로로
+// 소급 폭주가 난다(둘 다 실측된 결함이다):
+//   - 정책에 임계값을 나중에 추가하면, 이미 지나간 임계값이 그 자리에서 새로 발화한다.
+//   - 스캔이 D-3짜리 인증서를 새로 발견하면 90/60/30/7이 동시에 터져 제목이 전부
+//     "D-3"인 알림이 채널×수신자만큼 나간다(인증서 200건이면 메일 수백 통).
+//
+// 인증서 단위 기준선은 dedup_key가 대신한다 — 임계값이 작아질 때마다 키가 바뀌므로
+// D-90 → D-60 → D-30 → D-7의 정상 케이던스는 그대로 유지되고, 한 번 지나간(=더 큰)
+// 임계값은 애초에 생성되지 않는다.
+//
+// 비교 기준은 `not_after <= now() + t.days`가 아니라 `days_remaining`이다 —
+// 알림 제목·payload가 쓰는 D-day와 같은 값이라야 "D-7 알림인데 제목은 D-6"이 안 난다.
 const detectExpiryEventsSQL = `
 INSERT INTO notification_events (
 	dedup_key, event_type, certificate_id, threshold_days, policy_id, severity, payload, status)
@@ -649,17 +664,19 @@ FROM (
 	           'location_count', (SELECT count(*) FROM certificate_locations cl
 	                               WHERE cl.certificate_id = c.id))     AS payload
 	  FROM notification_policies p
-	  CROSS JOIN LATERAL unnest(p.thresholds) AS t(days)
 	  CROSS JOIN certificates c
 	  LEFT JOIN users u ON u.id = c.owner_id
 	  CROSS JOIN LATERAL (
 	      SELECT floor(extract(epoch FROM (c.not_after - now())) / 86400)::int AS days_remaining) dr
+	  CROSS JOIN LATERAL (
+	      SELECT min(th.days) AS days
+	        FROM unnest(p.thresholds) AS th(days)
+	       WHERE th.days > 0 AND th.days >= dr.days_remaining) t
 	 WHERE p.enabled
 	   AND 'certificate.expiring' = ANY(p.event_types)
-	   AND t.days > 0
+	   AND t.days IS NOT NULL
 	   AND c.status NOT IN ('revoked', 'replaced')
 	   AND c.not_after >= now()
-	   AND c.not_after <= now() + make_interval(days => t.days)
 	   AND (p.filter_environments IS NULL OR cardinality(p.filter_environments) = 0
 	        OR c.environment = ANY(p.filter_environments))
 	   AND (p.filter_department_ids IS NULL OR cardinality(p.filter_department_ids) = 0
@@ -1145,10 +1162,15 @@ func truncateError(s string) string {
 // MarkDeliverySent는 발송 성공을 기록한다.
 // pending도 허용한다 — 리스가 만료돼 리퍼가 되돌린 직후 발송이 성공한 경우
 // (at-least-once, 설계 13) 그 사실을 잃지 않기 위해서다.
+//
+// attempt_count는 성공에서도 올린다 — 이 컬럼은 "실패 횟수"가 아니라 "시도 횟수"이며
+// MarkDeliveryFailed와 규약이 같아야 한다. 올리지 않으면 발송 이력 화면의 sent 행이
+// 전부 "시도 0"으로 보이는 반면 디스패처 로그는 같은 건을 attempt: 1로 남긴다.
 func (s *Store) MarkDeliverySent(ctx context.Context, deliveryID string) error {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE notification_deliveries
 		   SET status = 'sent', sent_at = now(), last_error = NULL,
+		       attempt_count = attempt_count + 1,
 		       leased_at = NULL, lease_expires_at = NULL, updated_at = now()
 		 WHERE id = $1::uuid AND status IN ('sending', 'pending')`, deliveryID)
 	if err != nil {
@@ -1558,6 +1580,15 @@ type PurgeResult struct {
 // 순서가 load-bearing이다: 이벤트를 먼저 지우면 FK CASCADE가 아직 읽지 않은
 // 알림함 행까지 함께 지운다. 그래서 종료 딜리버리·보관된 알림함을 먼저 지우고,
 // 남은 참조가 없는 이벤트만 마지막에 지운다.
+//
+// 예외 하나가 더 있다: **아직 재탐지되는 이벤트는 나이와 무관하게 남긴다.**
+// `certificate.expired`의 탐지 조건 `c.not_after < now()`에는 상한이 없어서, 인벤토리에
+// 남아 있는 만료 인증서는 영원히 탐지 대상이다. 이 이벤트를 지우면 dedup_key가 풀려
+// 다음 tick에 같은 인증서가 다시 발송된다 — 보존 주기(기본 180일)마다 만료 알림이
+// 되살아난다. suppressed(seed) 이벤트는 딜리버리·알림함 참조가 아예 없어 위 두 NOT
+// EXISTS를 그냥 통과하므로 특히 위험하다.
+// `certificate.expiring`은 이 예외가 필요 없다 — 임계값을 넘긴 인증서는 보존 기간이
+// 지나기 전에 만료되어 `not_after >= now()` 조건에서 빠지므로 재탐지되지 않는다.
 func (s *Store) PurgeNotifications(ctx context.Context, retentionDays int) (*PurgeResult, error) {
 	if retentionDays < 1 {
 		return nil, fmt.Errorf("store: retention days must be positive, got %d", retentionDays)
@@ -1591,7 +1622,12 @@ func (s *Store) PurgeNotifications(ctx context.Context, retentionDays int) (*Pur
 		DELETE FROM notification_events e
 		 WHERE e.created_at < now() - make_interval(days => $1)
 		   AND NOT EXISTS (SELECT 1 FROM notification_deliveries d WHERE d.event_id = e.id)
-		   AND NOT EXISTS (SELECT 1 FROM notification_inbox i WHERE i.event_id = e.id)`, retentionDays)
+		   AND NOT EXISTS (SELECT 1 FROM notification_inbox i WHERE i.event_id = e.id)
+		   AND NOT (e.event_type = 'certificate.expired'
+		            AND EXISTS (SELECT 1 FROM certificates c
+		                         WHERE c.id = e.certificate_id
+		                           AND c.status NOT IN ('revoked', 'replaced')
+		                           AND c.not_after < now()))`, retentionDays)
 	if err != nil {
 		return nil, fmt.Errorf("store: purge notification events: %w", err)
 	}

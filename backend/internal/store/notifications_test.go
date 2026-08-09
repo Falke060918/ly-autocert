@@ -369,8 +369,12 @@ func TestDetectSeedModeSuppresses(t *testing.T) {
 	if !locked {
 		t.Fatal("seed tick did not take the advisory lock")
 	}
-	if len(res.Events) < 2 {
-		t.Fatalf("seed tick created %d events, want >= 2 (D-7, D-30)", len(res.Events))
+	// D-5 인증서는 도달한 임계값 중 최솟값 7 하나만 적재한다(30은 이미 지났다).
+	if e := findEvent(res.Events, fmt.Sprintf("certificate.expiring:%s:7", certID)); e == nil {
+		t.Fatalf("seed tick did not seed the reached threshold 7")
+	}
+	if e := findEvent(res.Events, fmt.Sprintf("certificate.expiring:%s:30", certID)); e != nil {
+		t.Error("seed tick seeded threshold 30, which the certificate already passed")
 	}
 	if res.Deliveries != 0 {
 		t.Errorf("seed tick created %d deliveries, want 0", res.Deliveries)
@@ -402,6 +406,130 @@ func TestDetectSeedModeSuppresses(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("seeded events produced %d deliveries, want 0", n)
+	}
+}
+
+// countCertEvents는 한 인증서에 적재된 만료 예정 이벤트 수와 그 임계값 목록이다.
+func countCertEvents(t *testing.T, pool *sql.DB, certID string) (int, []int) {
+	t.Helper()
+	rows, err := pool.Query(`
+		SELECT threshold_days FROM notification_events
+		 WHERE certificate_id = $1::uuid AND event_type = 'certificate.expiring'
+		 ORDER BY threshold_days`, certID)
+	if err != nil {
+		t.Fatalf("list cert events: %v", err)
+	}
+	defer rows.Close()
+	var days []int
+	for rows.Next() {
+		var d int
+		if err := rows.Scan(&d); err != nil {
+			t.Fatalf("scan threshold: %v", err)
+		}
+		days = append(days, d)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("list cert events: %v", err)
+	}
+	return len(days), days
+}
+
+// TestDetectFiresOnlySmallestReachedThreshold는 설계 7.3.1을 고정한다:
+// 인증서 1건에 대해 이미 도달한 임계값들 중 **최솟값 1개만** 발화한다.
+//
+// 회귀 시 사고: 포트 자동 탐지 스윕이 D-3짜리 인증서를 새로 발견하면 90/60/30/7이
+// 동시에 터져 제목이 전부 "D-3"인 알림이 채널×수신자만큼 나간다. 실측으로 인증서
+// 1건에 메일 8통이었고, 근접 만료 인증서 200건이면 800통이다.
+func TestDetectFiresOnlySmallestReachedThreshold(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool)
+	ctx := context.Background()
+	isolateNotificationPolicies(t, pool)
+
+	// 재현 B: 스캔이 방금 발견한 D-3 인증서.
+	freshID := newNotifyCert(t, pool, "notify-fresh-d3.example.test", notifyCertOpts{
+		NotAfter: time.Now().Add(3*24*time.Hour + time.Hour),
+	})
+	// 아직 어떤 임계값에도 도달하지 않은 인증서(D-120)는 이벤트가 없어야 한다.
+	farID := newNotifyCert(t, pool, "notify-far.example.test", notifyCertOpts{
+		NotAfter: time.Now().Add(120 * 24 * time.Hour),
+	})
+	// D-45는 60만 도달했다.
+	midID := newNotifyCert(t, pool, "notify-mid-d45.example.test", notifyCertOpts{
+		NotAfter: time.Now().Add(45*24*time.Hour + time.Hour),
+	})
+	newNotifyPolicy(t, st, pool, NotificationPolicyInput{
+		Enabled:    true,
+		EventTypes: []string{NotifyEventCertExpiring},
+		Thresholds: []int{90, 60, 30, 7, 1},
+		Channels:   []string{NotifyChannelInbox},
+		Recipients: []NotificationRecipient{{Kind: RecipientRole, Role: "system_administrator"}},
+	})
+
+	if _, err := st.DetectExpiryEvents(ctx, DetectModeSend); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+
+	if n, days := countCertEvents(t, pool, freshID); n != 1 || days[0] != 7 {
+		t.Errorf("D-3 certificate produced %d events %v, want exactly 1 with threshold 7", n, days)
+	}
+	if n, days := countCertEvents(t, pool, midID); n != 1 || days[0] != 60 {
+		t.Errorf("D-45 certificate produced %d events %v, want exactly 1 with threshold 60", n, days)
+	}
+	if n, days := countCertEvents(t, pool, farID); n != 0 {
+		t.Errorf("D-120 certificate produced %d events %v, want 0 (no threshold reached)", n, days)
+	}
+}
+
+// TestDetectDoesNotBackfillThresholdsAddedLater는 설계 4.1의 단언을 고정한다:
+// 이미 지나간 임계값은 정책에 나중에 추가해도 소급 발송되지 않는다.
+//
+// 재현 A: thresholds [7] 정책 + D-5 인증서로 1건 발송 → thresholds를 [7,30,60,90]으로
+// 수정 → 다음 tick에 30·60·90이 새로 생기면 회귀다(정책 편집이 곧 스팸 폭발이 된다).
+func TestDetectDoesNotBackfillThresholdsAddedLater(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool)
+	ctx := context.Background()
+	isolateNotificationPolicies(t, pool)
+
+	certID := newNotifyCert(t, pool, "notify-backfill.example.test", notifyCertOpts{
+		NotAfter: time.Now().Add(5*24*time.Hour + time.Hour),
+	})
+	p := newNotifyPolicy(t, st, pool, NotificationPolicyInput{
+		Enabled:    true,
+		EventTypes: []string{NotifyEventCertExpiring},
+		Thresholds: []int{7},
+		Channels:   []string{NotifyChannelInbox},
+		Recipients: []NotificationRecipient{{Kind: RecipientRole, Role: "system_administrator"}},
+	})
+
+	if _, err := st.DetectExpiryEvents(ctx, DetectModeSend); err != nil {
+		t.Fatalf("first detect: %v", err)
+	}
+	if n, days := countCertEvents(t, pool, certID); n != 1 || days[0] != 7 {
+		t.Fatalf("first detect produced %d events %v, want exactly 1 with threshold 7", n, days)
+	}
+
+	thresholds := []int{7, 30, 60, 90}
+	reqID := "test-req-notify-patch-" + randomHex(t, 6)
+	t.Cleanup(func() { cleanupAuditByRequestID(pool, reqID) })
+	if _, err := st.UpdateNotificationPolicy(ctx, p.ID, NotificationPolicyPatch{
+		Thresholds: &thresholds, RequestID: &reqID,
+	}); err != nil {
+		t.Fatalf("patch policy thresholds: %v", err)
+	}
+
+	next, err := st.DetectExpiryEvents(ctx, DetectModeSend)
+	if err != nil {
+		t.Fatalf("second detect: %v", err)
+	}
+	for _, e := range next {
+		if e.CertificateID != nil && *e.CertificateID == certID {
+			t.Errorf("event %s was back-filled after the policy edit", e.DedupKey)
+		}
+	}
+	if n, days := countCertEvents(t, pool, certID); n != 1 || days[0] != 7 {
+		t.Errorf("after the policy edit the certificate has %d events %v, want exactly 1 (threshold 7)", n, days)
 	}
 }
 
@@ -813,12 +941,19 @@ func TestMarkDeliverySent(t *testing.T) {
 	}
 	var status string
 	var sentAt sql.NullTime
-	if err := pool.QueryRow(`SELECT status, sent_at FROM notification_deliveries WHERE id = $1::uuid`,
-		id).Scan(&status, &sentAt); err != nil {
+	var attempts int
+	if err := pool.QueryRow(
+		`SELECT status, sent_at, attempt_count FROM notification_deliveries WHERE id = $1::uuid`,
+		id).Scan(&status, &sentAt, &attempts); err != nil {
 		t.Fatalf("read delivery: %v", err)
 	}
 	if status != DeliveryStatusSent || !sentAt.Valid {
 		t.Errorf("(status, sent_at) = (%q, %v), want (sent, set)", status, sentAt.Valid)
+	}
+	// attempt_count는 "시도 횟수"이므로 성공에서도 오른다 — 0으로 남으면 발송 이력
+	// 화면이 "시도 0"을 보여주는데 디스패처 로그는 같은 건을 attempt: 1로 남긴다.
+	if attempts != 1 {
+		t.Errorf("attempt_count after a first-try success = %d, want 1", attempts)
 	}
 	if err := st.MarkDeliverySent(ctx, id); !errors.Is(err, ErrDeliveryState) {
 		t.Errorf("re-mark sent error = %v, want ErrDeliveryState", err)
@@ -1126,6 +1261,80 @@ func TestPurgeNotificationsKeepsLiveRows(t *testing.T) {
 	}
 	if n != 0 {
 		t.Error("purge kept an old event with no remaining references")
+	}
+}
+
+// TestPurgeKeepsStillDetectableExpiredEvents는 보존 정리가 만료 알림을 되살리지
+// 않는지 검증한다: `certificate.expired`의 탐지 조건에는 상한이 없어서 인벤토리에 남은
+// 만료 인증서는 영원히 탐지 대상이다. 그 이벤트를 지우면 dedup_key가 풀려 보존
+// 주기(기본 180일)마다 같은 인증서가 다시 발송된다.
+func TestPurgeKeepsStillDetectableExpiredEvents(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool)
+	ctx := context.Background()
+	isolateNotificationPolicies(t, pool)
+
+	// 인벤토리에 남아 있는 만료 인증서 — 다음 tick에도 탐지된다.
+	liveCertID := newNotifyCert(t, pool, "notify-purge-expired.example.test", notifyCertOpts{
+		NotAfter: time.Now().Add(-30 * 24 * time.Hour),
+	})
+	// 폐기된 인증서 — 탐지 대상이 아니므로 이벤트를 남길 이유가 없다.
+	revokedCertID := newNotifyCert(t, pool, "notify-purge-revoked.example.test", notifyCertOpts{
+		NotAfter: time.Now().Add(-30 * 24 * time.Hour), Status: "revoked",
+	})
+
+	newExpiredEvent := func(certID, status string) string {
+		t.Helper()
+		var id string
+		if err := pool.QueryRow(`
+			INSERT INTO notification_events (dedup_key, event_type, certificate_id, severity, payload, status, created_at)
+			VALUES ('certificate.expired:' || $1::text, 'certificate.expired', $1::uuid, 'critical',
+			        jsonb_build_object('certificate_id', $1, 'common_name', 'fixture',
+			                           'not_after', '2020-01-01T00:00:00Z', 'days_remaining', -30,
+			                           'environment', '', 'owner', '', 'location_count', 0),
+			        $2, now() - interval '400 days')
+			RETURNING id`, certID, status).Scan(&id); err != nil {
+			t.Fatalf("insert expired event: %v", err)
+		}
+		return id
+	}
+	// 딜리버리도 알림함도 없는 상태(seed로 suppressed 적재된 이벤트가 정확히 이 모양이다).
+	liveEventID := newExpiredEvent(liveCertID, NotifyEventSuppressed)
+	revokedEventID := newExpiredEvent(revokedCertID, NotifyEventPending)
+
+	if _, err := st.PurgeNotifications(ctx, 180); err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+
+	count := func(id string) int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(`SELECT count(*) FROM notification_events WHERE id = $1::uuid`,
+			id).Scan(&n); err != nil {
+			t.Fatalf("count event: %v", err)
+		}
+		return n
+	}
+	if count(liveEventID) != 1 {
+		t.Error("purge deleted an expired event whose certificate is still detectable — the alert will fire again")
+	}
+	if count(revokedEventID) != 0 {
+		t.Error("purge kept an expired event for a revoked certificate (no longer detectable)")
+	}
+
+	// 되살아나지 않는지 실제 탐지로 확인한다.
+	newNotifyPolicy(t, st, pool, NotificationPolicyInput{
+		Enabled:    true,
+		EventTypes: []string{NotifyEventCertExpired},
+		Channels:   []string{NotifyChannelInbox},
+		Recipients: []NotificationRecipient{{Kind: RecipientRole, Role: "system_administrator"}},
+	})
+	events, err := st.DetectExpiryEvents(ctx, DetectModeSend)
+	if err != nil {
+		t.Fatalf("detect after purge: %v", err)
+	}
+	if e := findEvent(events, "certificate.expired:"+liveCertID); e != nil {
+		t.Error("an expired certificate was re-notified after the retention purge")
 	}
 }
 

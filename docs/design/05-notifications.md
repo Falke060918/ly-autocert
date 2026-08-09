@@ -179,7 +179,9 @@ Postgres의 UNIQUE 제약은 NULL을 서로 다른 값으로 취급한다. `(eve
 
 두 정책이 같은 인증서·같은 임계값을 커버해도 **이벤트는 1건**이고, 수신자는 두 정책의 **합집합**이 된다. 정책을 겹쳐 만들었다는 이유로 담당자에게 같은 메일이 두 통 가지 않는다.
 
-부수 효과 하나를 명시한다: **임계값을 나중에 늘려도 이미 지난 임계값은 재발송되지 않는다.** 예를 들어 D-30이 이미 나간 뒤 정책에 60을 추가하면, D-60은 이미 지났으므로 발송되지 않는다(dedup_key가 없으니 새 이벤트가 생기긴 하지만 대상 조건 `not_after >= now()`와 임계 조건에서 걸러진다). 이것이 의도된 동작이다 — 과거를 소급 발송하면 정책 편집이 곧 스팸 폭발이 된다.
+부수 효과 하나를 명시한다: **임계값을 나중에 늘려도 이미 지난 임계값은 재발송되지 않는다.** 예를 들어 D-30이 이미 나간 뒤 정책에 60을 추가하면 D-60은 발송되지 않는다. 근거는 대상 조건이 아니라 **7.3.1의 임계값 선택 규칙**이다 — 이미 지난 임계값은 애초에 이벤트로 만들어지지 않는다. 이것이 의도된 동작이다 — 과거를 소급 발송하면 정책 편집이 곧 스팸 폭발이 된다.
+
+> 2026-08 정정: 이 절은 원래 "대상 조건 `not_after >= now()`와 임계 조건에서 걸러진다"고 적혀 있었으나 **사실이 아니었다.** 초기 구현은 `unnest(thresholds)`를 그대로 조인해 도달한 임계값 전부를 매칭했고, 정책에 임계값을 추가하면 그 자리에서 소급 발송됐다. 7.3.1이 그 결함의 수정본이다.
 
 ### 4.2 `not_after`를 키에서 뺀다
 
@@ -270,6 +272,8 @@ next_attempt_at = now() + 1분 × 2^(attempt_count - 1)
 
 → **5회째 실패에서 종결**되므로 실제 대기는 **1m · 2m · 4m · 8m 네 번**이다(1회차 실패 후 1m, …, 4회차 실패 후 8m). 5회차 실패 시점에는 다음 대기를 잡지 않고 곧바로 `failed` + `last_error`(500자 절단)를 기록한다. 상한 1시간은 최대 시도 5회에서는 도달하지 않으며, 시도 횟수를 늘릴 때를 위한 가드다.
 
+`attempt_count`는 "실패 횟수"가 아니라 **시도 횟수**다. 성공(`sent`)에서도 1 올린다 — 올리지 않으면 발송 이력의 `sent` 행이 전부 "시도 0"으로 보이는데 디스패처 로그는 같은 건을 `attempt: 1`로 남겨 두 기록이 어긋난다. 첫 시도에 성공한 건은 `attempt_count = 1`이다.
+
 ### 6.2 자연 throttle
 
 디스패처는 **15초 주기**로 돌며 한 번에 **최대 20건**을 리스한다.
@@ -298,23 +302,43 @@ func StartScheduler(ctx context.Context) (stop func())
 
 ### 7.3 탐지 쿼리 — 세트 기반 단일 문장
 
-행을 하나씩 돌지 않는다. 정책의 `unnest(thresholds)` × `certificates` 조인으로 한 번에 만든다.
+행을 하나씩 돌지 않는다. 정책 × `certificates` 조인으로 한 번에 만든다.
 
 ```sql
 INSERT INTO notification_events (dedup_key, event_type, certificate_id, threshold_days, ...)
 SELECT ...
 FROM notification_policies p
-CROSS JOIN LATERAL unnest(p.thresholds) AS t(days)
-JOIN certificates c ON <필터 조건>
+CROSS JOIN certificates c
+CROSS JOIN LATERAL (SELECT floor(extract(epoch FROM (c.not_after - now())) / 86400)::int
+                      AS days_remaining) dr
+CROSS JOIN LATERAL (SELECT min(th.days) AS days          -- 7.3.1: 도달한 것 중 최솟값 1개
+                      FROM unnest(p.thresholds) AS th(days)
+                     WHERE th.days > 0 AND th.days >= dr.days_remaining) t
 WHERE p.enabled
+  AND t.days IS NOT NULL
   AND c.not_after >= now()
-  AND c.not_after <= now() + (t.days || ' days')::interval
   AND c.status NOT IN ('revoked', 'replaced')
 ON CONFLICT (dedup_key) DO NOTHING
 RETURNING id;
 ```
 
 `RETURNING id`로 **새로 생긴 이벤트만** 받아 딜리버리를 만든다. 이미 있던 것은 반환되지 않으므로 중복 발송이 구조적으로 불가능하다.
+
+### 7.3.1 임계값 선택 — 인증서·정책당 1개만 발화한다
+
+**정책 thresholds 중 이미 도달한 것(`th.days >= days_remaining`)들의 최솟값 하나만** 이벤트가 된다. D-3 인증서 + thresholds `{90,60,30,7,1}` → 이벤트는 `threshold_days = 7` **1건**이다.
+
+`unnest`를 그대로 조인해 "도달한 임계값 전부"를 매칭하면 두 경로로 소급 폭주가 난다. 둘 다 e2e에서 실측된 결함이다.
+
+| 경로 | 증상 |
+| --- | --- |
+| 정책 편집 | thresholds `[7]`로 D-5를 발송한 뒤 `[7,30,60,90]`으로 고치면 다음 tick에 30·60·90이 새로 발화한다 |
+| 신규 발견 | 스캔이 D-3짜리 인증서를 발견하면 90/60/30/7이 동시에 터져 제목이 전부 "D-3"인 알림이 채널×수신자만큼 나간다(인증서 1건에 메일 8통 실측, 200건이면 800통) |
+
+- **인증서 단위 기준선은 `dedup_key`가 대신한다.** 임계값이 작아질 때마다 키가 바뀌므로 D-90 → D-60 → D-30 → D-7의 정상 케이던스는 그대로 유지되고, 한 번 지나간(= 더 큰) 임계값은 애초에 생성되지 않는다. `seed`(7.7)는 "프로세스 생애 최초 tick 1회"에만 걸리는 전역 스위치라 이 역할을 대신할 수 없다.
+- **비교 기준은 `not_after <= now() + t.days`가 아니라 `days_remaining`이다.** 알림 제목·payload가 쓰는 D-day와 같은 값이라야 "D-7 알림인데 제목은 D-6"이 안 난다.
+- **아직 어떤 임계값에도 도달하지 않은 인증서는 이벤트가 없다**(D-120 + 최대 임계값 90 → 0건).
+- 정책이 여럿이면 정책마다 최솟값을 고르므로, 서로 다른 임계값을 가진 두 정책은 서로 다른 이벤트를 만들 수 있다. 이는 4.1의 "정책이 겹쳐도 1건"과 모순되지 않는다 — 같은 임계값을 고른 경우에만 겹치고, 그때는 `dedup_key`가 합쳐 준다.
 
 ### 7.4 대상 조건
 
@@ -329,6 +353,12 @@ RETURNING id;
 ### 7.6 보존
 
 `NOTIFY_RETENTION_DAYS`(기본 180) 초과한 **종료 상태**(`sent` / `failed` / `skipped`) 행을 삭제한다. 진행 중 행은 나이와 무관하게 남긴다.
+
+삭제 순서가 load-bearing이다: 이벤트를 먼저 지우면 FK CASCADE가 아직 읽지 않은 알림함 행까지 함께 지운다. 그래서 종료 딜리버리 → 보관된 알림함 → 남은 참조가 없는 이벤트 순으로 지운다.
+
+**예외: 아직 재탐지되는 이벤트는 나이와 무관하게 남긴다.** `certificate.expired`의 탐지 조건 `c.not_after < now()`에는 상한이 없어서 인벤토리에 남아 있는 만료 인증서는 영원히 탐지 대상이다. 그 이벤트를 지우면 `dedup_key`가 풀려 다음 tick에 같은 인증서가 다시 발송된다 — **보존 주기마다 만료 알림이 되살아난다.** `seed`로 `suppressed` 적재된 이벤트는 딜리버리·알림함 참조가 아예 없어 위 두 참조 검사를 그냥 통과하므로 특히 위험하다(침묵 처리해 둔 건이 180일 뒤 진짜 발송이 된다).
+
+`certificate.expiring`은 이 예외가 필요 없다 — 임계값을 넘긴 인증서는 보존 기간이 지나기 전에 만료되어 `not_after >= now()` 조건에서 빠지므로 재탐지되지 않는다. 남기는 행 수는 "인벤토리에 남아 있는 만료 인증서 수"로 묶여 있어 무한 증가하지 않는다.
 
 ### 7.7 첫 실행 — `NOTIFY_FIRST_RUN=seed`
 
