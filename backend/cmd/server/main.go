@@ -85,6 +85,10 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	// 값 오류로 기본값에 폴백했거나 채널을 비활성화한 항목을 먼저 알린다.
+	// 어느 것도 기동을 막지 않는다 — 사유가 보이지 않으면 진단이 불가능할 뿐이다.
+	logStartupWarnings(logger, cfg)
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -113,14 +117,25 @@ func run(logger *slog.Logger) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	st := store.New(pool)
+
 	// 서버 재시작으로 실행 주체가 사라진 서버 직접 실행 Job을 회수한다
 	// (센서 위임 Job은 리스 만료 reaper가 따로 회수한다).
-	if n, err := store.New(pool).ReapOrphanedServerScanJobs(ctx); err != nil {
+	if n, err := st.ReapOrphanedServerScanJobs(ctx); err != nil {
 		// 회수 실패가 기동을 막지는 않는다 — 코어 API는 계속 뜬다.
 		logger.Error("reap orphaned server scan jobs failed", "error", err.Error())
 	} else if n > 0 {
 		logger.Info("reaped orphaned server scan jobs", "count", n)
 	}
+
+	// 알림 탐지 스케줄러 + 딜리버리 디스패처. 채널 미설정·오설정은 그 채널만
+	// 비활성이고 코어 API(8080)는 그대로 뜬다 (센서 게이트웨이와 같은 격리 원칙).
+	stopNotify := startNotify(ctx, logger, cfg, st)
+	defer stopNotify()
+
+	// 대역 스윕 발주 루프. API 핸들러의 Manager와 상태를 공유하지 않으므로 별도 인스턴스다.
+	stopSweep := startSweepScheduler(ctx, logger, cfg, st)
+	defer stopSweep()
 
 	errCh := make(chan error, 1)
 
@@ -130,7 +145,7 @@ func run(logger *slog.Logger) error {
 	if cfg.SensorCAEncKey != nil {
 		var stopGateway func()
 		sensorSrv, stopGateway = startSensorGateway(logger, func() (*http.Server, func(), error) {
-			gw, err := sensorgw.New(ctx, store.New(pool), rec, cfg.SensorCAEncKey)
+			gw, err := sensorgw.New(ctx, st, rec, cfg.SensorCAEncKey)
 			if err != nil {
 				return nil, nil, err
 			}
