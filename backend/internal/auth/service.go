@@ -51,12 +51,12 @@ func NewServiceForTest(pool *sql.DB, sessionTTL time.Duration, rec *audit.Record
 }
 
 const userColumns = `id, username, display_name, password_hash, role, auth_provider,
-	is_active, department_id, created_at, updated_at`
+	is_active, department_id, created_at, updated_at, email`
 
 func scanUser(row interface{ Scan(...any) error }) (*domain.User, error) {
 	var u domain.User
 	err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.Role,
-		&u.AuthProvider, &u.IsActive, &u.DepartmentID, &u.CreatedAt, &u.UpdatedAt)
+		&u.AuthProvider, &u.IsActive, &u.DepartmentID, &u.CreatedAt, &u.UpdatedAt, &u.Email)
 	if err != nil {
 		return nil, err
 	}
@@ -171,10 +171,18 @@ func (s *Service) Logout(ctx context.Context, token, actorID string, meta AuditM
 	return nil
 }
 
-// CreateUser는 정책 검사·해시 후 사용자를 만들고 user.created 감사 이벤트를 남긴다 —
-// 단일 트랜잭션(감사 실패 시 사용자 생성도 롤백). 평문 비밀번호는 저장·로그하지 않는다.
-// actorID는 생성 주체(부트스트랩은 nil)다.
+// CreateUser는 메일 주소 없이 사용자를 만든다 (부트스트랩·테스트 경로).
+// 알림 메일 수신 주소까지 지정하려면 CreateUserWithEmail을 쓴다.
 func (s *Service) CreateUser(ctx context.Context, username, password string, displayName *string, role domain.Role, actorID *string, meta AuditMeta) (*domain.User, error) {
+	return s.CreateUserWithEmail(ctx, username, password, displayName, nil, role, actorID, meta)
+}
+
+// CreateUserWithEmail은 정책 검사·해시 후 사용자를 만들고 user.created 감사 이벤트를
+// 남긴다 — 단일 트랜잭션(감사 실패 시 사용자 생성도 롤백). 평문 비밀번호는 저장·로그하지
+// 않는다. actorID는 생성 주체(부트스트랩은 nil)다.
+// email이 nil이면 NULL로 남는다(= 알림 메일 수신 불가). 빈 문자열은 호출 전에 nil로
+// 정규화해야 한다 — 0012의 users_email_shape CHECK가 거부한다.
+func (s *Service) CreateUserWithEmail(ctx context.Context, username, password string, displayName, email *string, role domain.Role, actorID *string, meta AuditMeta) (*domain.User, error) {
 	if err := ValidatePassword(password, username); err != nil {
 		return nil, err
 	}
@@ -191,9 +199,9 @@ func (s *Service) CreateUser(ctx context.Context, username, password string, dis
 	}
 	defer tx.Rollback() //nolint:errcheck
 	row := tx.QueryRowContext(ctx,
-		`INSERT INTO users (username, display_name, password_hash, role)
-		 VALUES ($1, $2, $3, $4)
-		 RETURNING `+userColumns, username, displayName, hash, role)
+		`INSERT INTO users (username, display_name, password_hash, role, email)
+		 VALUES ($1, $2, $3, $4, $5)
+		 RETURNING `+userColumns, username, displayName, hash, role, email)
 	u, err := scanUser(row)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -208,7 +216,8 @@ func (s *Service) CreateUser(ctx context.Context, username, password string, dis
 		TargetType: "user",
 		TargetID:   &u.ID,
 		RequestID:  meta.RequestID,
-		After:      map[string]any{"username": u.Username, "role": u.Role, "is_active": u.IsActive},
+		After: map[string]any{"username": u.Username, "role": u.Role,
+			"is_active": u.IsActive, "email": u.Email},
 		Result:     domain.AuditSuccess,
 		SourceIP:   meta.SourceIP,
 	}); err != nil {

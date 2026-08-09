@@ -25,6 +25,11 @@ export interface User {
   department_id: string | null;
   created_at: string;
   updated_at: string;
+  /**
+   * 알림 메일 수신 주소. null이면 이 계정은 owner/role/user 수신자로 지정돼도
+   * 메일 채널에서 수신자로 해석되지 않는다 (알림이 조용히 사라진다).
+   */
+  email: string | null;
 }
 
 export interface UserListResponse {
@@ -37,6 +42,8 @@ export interface UserListResponse {
 export interface UserUpdateRequest {
   role?: Role;
   display_name?: string | null;
+  /** null(또는 빈 문자열)을 보내면 주소를 지운다 = 메일 수신 불가. */
+  email?: string | null;
 }
 
 export type CertificateStatus =
@@ -524,10 +531,15 @@ export function listUsers() {
   return apiFetch<UserListResponse>("/api/v1/users");
 }
 
+/**
+ * 사용자 생성. 서버는 모르는 필드를 400(invalid_body)으로 거부하므로
+ * 여기 정의에 없는 키를 넣지 않는다.
+ */
 export function createUser(req: {
   username: string;
   password: string;
   display_name?: string | null;
+  email?: string | null;
   role: Role;
 }) {
   return apiFetch<User>("/api/v1/users", {
@@ -536,7 +548,7 @@ export function createUser(req: {
   });
 }
 
-/** 역할·표시이름 부분 수정. 서버는 user.update 감사 이벤트를 남긴다. */
+/** 역할·표시이름·메일 주소 부분 수정. 서버는 user.update 감사 이벤트를 남긴다. */
 export function updateUser(id: string, patch: UserUpdateRequest) {
   return apiFetch<User>(`/api/v1/users/${encodeURIComponent(id)}`, {
     method: "PATCH",

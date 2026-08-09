@@ -3,8 +3,11 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
+	"unicode"
 
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/auth"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/domain"
@@ -13,11 +16,46 @@ import (
 // maxUserRequestBytes는 사용자 API 요청 본문 상한이다.
 const maxUserRequestBytes = 1 << 20 // 1 MiB
 
+// maxEmailLen은 메일 주소 상한이다 (RFC 5321 forward-path 상한).
+const maxEmailLen = 254
+
 type createUserRequest struct {
 	Username    string      `json:"username"`
 	Password    string      `json:"password"`
 	DisplayName *string     `json:"display_name"`
+	Email       *string     `json:"email"`
 	Role        domain.Role `json:"role"`
+}
+
+// decodeUserRequest는 사용자 API 본문을 디코드한다. 모르는 필드는 거부한다 —
+// 조용히 버리면 "201을 받았는데 값이 안 들어갔다"는 오진을 부른다 (email 결함의 원인).
+func decodeUserRequest(w http.ResponseWriter, r *http.Request, dst any) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxUserRequestBytes))
+	dec.DisallowUnknownFields()
+	return dec.Decode(dst)
+}
+
+// normalizeEmail은 메일 주소를 정규화·검증한다.
+// 빈 문자열(공백만인 경우 포함)은 nil로 낮춘다 — 0012의 users_email_shape CHECK가
+// 빈 문자열을 거부하므로 "지움"과 같게 취급한다.
+// 검증 기준은 그 CHECK(로컬부가 있는 '@' 포함)와 일관되게 두되, DB 제약이 잡지 못하는
+// 공백·중복 '@'·빈 도메인부·길이는 API 계층에서 미리 거른다.
+func normalizeEmail(raw string) (*string, error) {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return nil, nil
+	}
+	if len(v) > maxEmailLen {
+		return nil, fmt.Errorf("email must be at most %d characters", maxEmailLen)
+	}
+	if strings.ContainsFunc(v, unicode.IsSpace) {
+		return nil, errors.New("email must not contain spaces")
+	}
+	at := strings.IndexByte(v, '@')
+	if at < 1 || at != strings.LastIndexByte(v, '@') || at == len(v)-1 {
+		return nil, errors.New("email must look like local@domain")
+	}
+	return &v, nil
 }
 
 // handleCreateUser는 POST /api/v1/users다 (System Administrator 전용 — 00-spec 7.11 사용자 관리).
@@ -25,7 +63,7 @@ type createUserRequest struct {
 // 생성+감사 기록은 서비스가 단일 트랜잭션으로 처리한다 — 감사 실패 시 생성도 롤백 (이슈 #7).
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	var req createUserRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+	if err := decodeUserRequest(w, r, &req); err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_body", "invalid JSON body")
 		return
 	}
@@ -37,8 +75,16 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_role", "role must be one of the 6 defined roles")
 		return
 	}
+	var email *string
+	if req.Email != nil {
+		var err error
+		if email, err = normalizeEmail(*req.Email); err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_email", err.Error())
+			return
+		}
+	}
 	actor := userFrom(r.Context())
-	created, err := s.auth.CreateUser(r.Context(), req.Username, req.Password, req.DisplayName, req.Role,
+	created, err := s.auth.CreateUserWithEmail(r.Context(), req.Username, req.Password, req.DisplayName, email, req.Role,
 		&actor.ID, auth.AuditMeta{RequestID: requestIDFrom(r.Context()), SourceIP: clientIP(r)})
 	switch {
 	case errors.Is(err, auth.ErrPasswordTooShort),
@@ -72,16 +118,17 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 // updateUserRequest는 PATCH 부분 수정 본문이다. 필드가 없으면 그 값은 바뀌지 않는다.
-// display_name은 null을 명시해 지울 수 있어야 하므로 "키 없음"과 "값 null"을
+// display_name·email은 null을 명시해 지울 수 있어야 하므로 "키 없음"과 "값 null"을
 // 구분해야 한다 — json.RawMessage(포인터가 아님)로 받는다. 포인터 필드는
 // 명시적 null에도 nil이 되어 두 경우를 구분할 수 없다.
 type updateUserRequest struct {
 	Role        *domain.Role    `json:"role"`
 	DisplayName json.RawMessage `json:"display_name"`
+	Email       json.RawMessage `json:"email"`
 }
 
 // handleUpdateUser는 PATCH /api/v1/users/{id}다 (System Administrator 전용).
-// role·display_name 부분 수정. user.update 감사 이벤트를 같은 트랜잭션으로 남긴다.
+// role·display_name·email 부분 수정. user.update 감사 이벤트를 같은 트랜잭션으로 남긴다.
 // 자기 역할 변경과 마지막 활성 관리자 강등은 409로 거부한다 (락아웃 방지).
 func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -90,7 +137,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req updateUserRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxUserRequestBytes)).Decode(&req); err != nil {
+	if err := decodeUserRequest(w, r, &req); err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_body", "invalid JSON body")
 		return
 	}
@@ -110,6 +157,22 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		}
 		upd.DisplayNameSet = true
 		upd.DisplayName = name
+	}
+	if len(req.Email) > 0 {
+		var raw *string
+		if err := json.Unmarshal(req.Email, &raw); err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_body", "email must be a string or null")
+			return
+		}
+		upd.EmailSet = true
+		if raw != nil {
+			email, err := normalizeEmail(*raw)
+			if err != nil {
+				writeError(w, r, http.StatusBadRequest, "invalid_email", err.Error())
+				return
+			}
+			upd.Email = email
+		}
 	}
 
 	actor := userFrom(r.Context())
@@ -161,7 +224,7 @@ func (s *Server) handleResetUserPassword(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var req resetPasswordRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxUserRequestBytes)).Decode(&req); err != nil {
+	if err := decodeUserRequest(w, r, &req); err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_body", "invalid JSON body")
 		return
 	}
@@ -185,7 +248,7 @@ func writeUserMutationError(w http.ResponseWriter, r *http.Request, err error, l
 		writeError(w, r, http.StatusNotFound, "not_found", "user not found")
 	case errors.Is(err, auth.ErrNoUserChanges):
 		writeError(w, r, http.StatusBadRequest, "no_fields",
-			"at least one of role, display_name is required")
+			"at least one of role, display_name, email is required")
 	case errors.Is(err, auth.ErrPasswordTooShort),
 		errors.Is(err, auth.ErrPasswordTooLong),
 		errors.Is(err, auth.ErrPasswordEqidentifier):

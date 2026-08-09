@@ -47,4 +47,7 @@ type User struct {
 	DepartmentID *string   `json:"department_id"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+	// Email은 알림 메일 수신 주소다 (마이그레이션 0012). nil이면 이 계정은
+	// owner/role/user 수신자로 지정돼도 메일 채널에서 해석되지 않는다.
+	Email *string `json:"email"`
 }

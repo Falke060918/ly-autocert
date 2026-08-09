@@ -40,12 +40,17 @@ type UserUpdate struct {
 	// 이때 DisplayName이 nil이면 NULL로 지운다.
 	DisplayNameSet bool
 	DisplayName    *string
+	// EmailSet이 true일 때만 email을 쓴다. 이때 Email이 nil이면 NULL로 지운다
+	// (= 알림 메일 수신 불가). 빈 문자열은 호출 전에 nil로 정규화해야 한다 —
+	// 0012의 users_email_shape CHECK가 거부한다.
+	EmailSet bool
+	Email    *string
 }
 
-// UpdateUser는 역할·표시 이름을 부분 수정하고 user.update 감사 이벤트를 남긴다.
-// 자기 역할 변경과 마지막 활성 관리자 강등은 거부한다 (락아웃 방지).
+// UpdateUser는 역할·표시 이름·메일 주소를 부분 수정하고 user.update 감사 이벤트를
+// 남긴다. 자기 역할 변경과 마지막 활성 관리자 강등은 거부한다 (락아웃 방지).
 func (s *Service) UpdateUser(ctx context.Context, targetID string, upd UserUpdate, actorID string, meta AuditMeta) (*domain.User, error) {
-	if upd.Role == nil && !upd.DisplayNameSet {
+	if upd.Role == nil && !upd.DisplayNameSet && !upd.EmailSet {
 		return nil, ErrNoUserChanges
 	}
 	if upd.Role != nil && !upd.Role.Valid() {
@@ -81,10 +86,14 @@ func (s *Service) UpdateUser(ctx context.Context, targetID string, upd UserUpdat
 	if upd.DisplayNameSet {
 		displayName = upd.DisplayName
 	}
+	email := before.Email
+	if upd.EmailSet {
+		email = upd.Email
+	}
 
 	row := tx.QueryRowContext(ctx,
-		`UPDATE users SET role = $2, display_name = $3, updated_at = now()
-		 WHERE id = $1::uuid RETURNING `+userColumns, targetID, role, displayName)
+		`UPDATE users SET role = $2, display_name = $3, email = $4, updated_at = now()
+		 WHERE id = $1::uuid RETURNING `+userColumns, targetID, role, displayName, email)
 	after, err := scanUser(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrUserNotFound
@@ -309,5 +318,6 @@ func userAuditValue(u *domain.User) map[string]any {
 		"role":         u.Role,
 		"display_name": u.DisplayName,
 		"is_active":    u.IsActive,
+		"email":        u.Email,
 	}
 }

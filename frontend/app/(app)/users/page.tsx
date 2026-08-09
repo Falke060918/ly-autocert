@@ -46,6 +46,7 @@ import {
   updateUser,
   type Role,
   type User,
+  type UserUpdateRequest,
 } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -64,7 +65,9 @@ const ERROR_MESSAGES: Record<string, string> = {
   self_disable_forbidden: "자기 자신의 계정은 비활성화할 수 없습니다.",
   self_role_change_forbidden: "자기 자신의 역할은 변경할 수 없습니다.",
   weak_password: `비밀번호가 정책에 미달합니다. ${MIN_PASSWORD_LENGTH}자 이상, 사용자 이름과 다른 값으로 설정하십시오.`,
-  no_fields: "변경할 항목이 없습니다. 역할이나 표시 이름을 바꾸십시오.",
+  no_fields: "변경할 항목이 없습니다. 역할·표시 이름·메일 주소 중 하나를 바꾸십시오.",
+  invalid_email:
+    "메일 주소 형식이 올바르지 않습니다. name@example.com 형태로 입력하십시오.",
   invalid_body: "요청 형식이 올바르지 않습니다. 입력값을 확인하십시오.",
   username_taken: "이미 사용 중인 사용자 이름입니다.",
   invalid_role: "선택한 역할이 올바르지 않습니다.",
@@ -160,10 +163,17 @@ function UsersBody() {
       if (needle === "") return true;
       return (
         u.username.toLowerCase().includes(needle) ||
-        (u.display_name ?? "").toLowerCase().includes(needle)
+        (u.display_name ?? "").toLowerCase().includes(needle) ||
+        (u.email ?? "").toLowerCase().includes(needle)
       );
     });
   }, [users, q, roleFilter, activeFilter]);
+
+  /** 메일 주소가 없는 활성 계정 수 — 알림 수신자 해석에서 빠지는 계정이다. */
+  const noEmailCount = React.useMemo(
+    () => (users ?? []).filter((u) => u.is_active && !u.email).length,
+    [users],
+  );
 
   if (loading) {
     return <Skeleton className="h-96 rounded-lg" />;
@@ -264,6 +274,14 @@ function UsersBody() {
                 ? ` (전체 ${users.length}명)`
                 : ""}
             </span>
+            {/* 메일 주소가 없는 계정은 만료 알림의 수신자로 해석되지 않는다 —
+                왜 메일이 안 오는지 이 화면에서 바로 보이게 한다. */}
+            {noEmailCount > 0 && (
+              <span className="ml-auto text-xs text-amber-700">
+                메일 주소가 없는 활성 계정 {noEmailCount}명 — 이 계정들은 알림
+                메일을 받지 못합니다.
+              </span>
+            )}
           </div>
           {visible.length === 0 ? (
             <p className="px-4 py-12 text-center text-sm text-muted-foreground">
@@ -276,6 +294,7 @@ function UsersBody() {
               <TableHeader>
                 <TableRow>
                   <TableHead>사용자</TableHead>
+                  <TableHead className="w-64">메일</TableHead>
                   <TableHead className="w-40">역할</TableHead>
                   <TableHead className="w-28">상태</TableHead>
                   <TableHead className="w-32">인증</TableHead>
@@ -309,6 +328,20 @@ function UsersBody() {
                             </Badge>
                           )}
                         </div>
+                      </TableCell>
+                      <TableCell>
+                        {u.email ? (
+                          <span className="font-mono text-xs break-all">
+                            {u.email}
+                          </span>
+                        ) : (
+                          <Badge
+                            className="border border-amber-200 bg-amber-50 text-amber-700"
+                            title="메일 주소가 없어 만료 알림 메일의 수신자로 해석되지 않습니다."
+                          >
+                            메일 수신 불가
+                          </Badge>
+                        )}
                       </TableCell>
                       <TableCell className="text-[13px]">
                         {roleLabel(u.role)}
@@ -426,7 +459,7 @@ function SearchField({
       <Search className="pointer-events-none absolute top-2 left-2.5 size-3.5 text-muted-foreground/70" />
       <Input
         className="pl-8"
-        placeholder="사용자 이름 / 표시이름 검색"
+        placeholder="사용자 이름 / 표시이름 / 메일 검색"
         value={value}
         onChange={(e) => schedule(e.target.value)}
         onKeyDown={(e) => {
@@ -513,6 +546,7 @@ function CreateUserDialog({
 }) {
   const [username, setUsername] = React.useState("");
   const [displayName, setDisplayName] = React.useState("");
+  const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [role, setRole] = React.useState<Role>("viewer");
   const [busy, setBusy] = React.useState(false);
@@ -523,6 +557,7 @@ function CreateUserDialog({
     if (!next) {
       setUsername("");
       setDisplayName("");
+      setEmail("");
       setPassword("");
       setRole("viewer");
       setError(null);
@@ -548,6 +583,8 @@ function CreateUserDialog({
         username: id,
         password,
         display_name: displayName.trim() || null,
+        // 빈 값은 null로 보낸다 — 서버도 빈 문자열을 "주소 없음"으로 정규화한다.
+        email: email.trim() || null,
         role,
       });
       onCreated();
@@ -593,6 +630,22 @@ function CreateUserDialog({
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
             />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="new-email">메일 주소</Label>
+            <Input
+              id="new-email"
+              type="email"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="hong.gildong@example.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              만료 알림 메일을 받을 주소입니다. 비워 두면 이 계정은 알림 정책의
+              수신자로 지정돼도 메일을 받지 못합니다.
+            </p>
           </div>
           <div className="space-y-2">
             <Label htmlFor="new-role">역할</Label>
@@ -678,6 +731,7 @@ function EditUserForm({
   onSaved: () => void;
 }) {
   const [displayName, setDisplayName] = React.useState(user.display_name ?? "");
+  const [email, setEmail] = React.useState(user.email ?? "");
   const [role, setRole] = React.useState<Role>(user.role);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -685,9 +739,12 @@ function EditUserForm({
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     const nextName = displayName.trim() || null;
-    const patch: { role?: Role; display_name?: string | null } = {};
+    const nextEmail = email.trim() || null;
+    const patch: UserUpdateRequest = {};
     if (role !== user.role) patch.role = role;
     if (nextName !== (user.display_name ?? null)) patch.display_name = nextName;
+    // null을 명시해 보내면 서버가 주소를 지운다 (= 메일 수신 불가).
+    if (nextEmail !== (user.email ?? null)) patch.email = nextEmail;
     if (Object.keys(patch).length === 0) {
       onClose();
       return;
@@ -710,7 +767,8 @@ function EditUserForm({
         <DialogTitle>사용자 수정</DialogTitle>
         <DialogDescription>
           <span className="font-mono text-xs">{user.username}</span> 계정의
-          표시이름과 역할을 바꿉니다. 역할 변경은 다음 요청부터 적용됩니다.
+          표시이름·메일 주소·역할을 바꿉니다. 역할 변경은 다음 요청부터
+          적용됩니다.
         </DialogDescription>
       </DialogHeader>
       <div className="space-y-2">
@@ -722,6 +780,28 @@ function EditUserForm({
           value={displayName}
           onChange={(e) => setDisplayName(e.target.value)}
         />
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="edit-email">메일 주소</Label>
+        <Input
+          id="edit-email"
+          type="email"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="hong.gildong@example.com"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+        />
+        <p
+          className={cn(
+            "text-xs",
+            email.trim() ? "text-muted-foreground" : "text-amber-700",
+          )}
+        >
+          {email.trim()
+            ? "만료 알림 메일을 받을 주소입니다."
+            : "주소가 없으면 알림 정책의 수신자로 지정돼도 메일을 받지 못합니다."}
+        </p>
       </div>
       <div className="space-y-2">
         <Label htmlFor="edit-role">역할</Label>

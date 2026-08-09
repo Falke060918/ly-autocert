@@ -370,7 +370,9 @@ paths:
     post:
       operationId: createUser
       summary: 사용자 생성 (System Administrator 전용)
-      description: 비밀번호 정책(12자 이상, username과 상이)을 검사한다. 감사 이벤트를 남긴다.
+      description: >
+        비밀번호 정책(12자 이상, username과 상이)을 검사한다. 감사 이벤트를 남긴다.
+        모르는 필드가 오면 400(invalid_body)이다 — 조용히 버리지 않는다.
       tags: [users]
       requestBody:
         required: true
@@ -379,11 +381,20 @@ paths:
             schema:
               type: object
               required: [username, password, role]
+              additionalProperties: false
               properties:
                 username: { type: string }
                 password: { type: string, format: password, minLength: 12 }
                 display_name: { type: string, nullable: true }
                 role: { $ref: "#/components/schemas/Role" }
+                email:
+                  type: string
+                  format: email
+                  nullable: true
+                  maxLength: 254
+                  description: >
+                    알림 메일 수신 주소. 빈 문자열은 null과 같게 취급한다.
+                    local@domain 형식이 아니면 400(invalid_email)이다.
       responses:
         "201":
           description: 생성된 사용자
@@ -391,7 +402,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/User" }
         "400":
-          description: 비밀번호 정책 위반 또는 잘못된 역할
+          description: 비밀번호 정책 위반, 잘못된 역할, 잘못된 메일 주소(invalid_email), 알 수 없는 필드
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -409,9 +420,11 @@ paths:
       operationId: updateUser
       summary: 사용자 수정 (System Administrator 전용)
       description: >
-        role·display_name을 부분 수정한다. 제공한 필드만 바뀌며, display_name에 null을
-        보내면 값을 지운다. user.update 감사 이벤트를 같은 트랜잭션으로 남긴다.
+        role·display_name·email을 부분 수정한다. 제공한 필드만 바뀌며, display_name·email에
+        null(또는 email은 빈 문자열)을 보내면 값을 지운다.
+        user.update 감사 이벤트를 같은 트랜잭션으로 남긴다.
         락아웃 방지: 자기 역할 변경과 마지막 활성 System Administrator 강등은 409로 거부한다.
+        모르는 필드가 오면 400(invalid_body)이다.
       tags: [users]
       parameters:
         - name: id
@@ -425,9 +438,11 @@ paths:
             schema:
               type: object
               minProperties: 1
+              additionalProperties: false
               properties:
                 role: { $ref: "#/components/schemas/Role" }
                 display_name: { type: string, nullable: true }
+                email: { type: string, format: email, nullable: true, maxLength: 254 }
       responses:
         "200":
           description: 수정된 사용자
@@ -435,7 +450,9 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/User" }
         "400":
-          description: 잘못된 역할 또는 수정할 필드 없음 (invalid_role·no_fields)
+          description: >
+            잘못된 역할, 잘못된 메일 주소, 수정할 필드 없음
+            (invalid_role·invalid_email·no_fields)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -535,6 +552,7 @@ paths:
             schema:
               type: object
               required: [password]
+              additionalProperties: false
               properties:
                 password: { type: string, format: password, minLength: 12 }
       responses:
@@ -1595,6 +1613,13 @@ components:
         department_id: { type: string, format: uuid, nullable: true }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+        email:
+          type: string
+          format: email
+          nullable: true
+          description: >
+            알림 메일 수신 주소. null이면 이 계정은 owner/role/user 수신자로 지정돼도
+            메일 채널에서 수신자로 해석되지 않는다.
     ScanRequest:
       type: object
       description: 네트워크 TLS 스캔 입력 (00-spec 7.1)
