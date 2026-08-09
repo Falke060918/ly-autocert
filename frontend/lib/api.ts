@@ -254,6 +254,155 @@ export interface SensorCreateResponse {
   enroll_command_example: string;
 }
 
+// ── 알림 (docs/design/05-notifications.md · openapi notifications 태그) ────
+
+/** 서버가 만료 잔여일로 계산한 심각도 (0일 이하 critical → 7일 error → 30일 warning). */
+export type NotificationSeverity = "info" | "warning" | "error" | "critical";
+
+/** 알림함 목록 필터 — archived는 보관함, all은 "보관하지 않은 전체"다. */
+export type NotificationStatusFilter = "unread" | "all" | "archived";
+
+/**
+ * 알림함 행 1건. 표시 내용(title/body)은 사건 시점에 굳어 있으므로
+ * 인증서가 지워져도 그대로 읽을 수 있다 (certificate_id만 null이 될 수 있다).
+ */
+export interface NotificationItem {
+  id: string;
+  event_id: string;
+  title: string;
+  body: string;
+  severity: NotificationSeverity;
+  certificate_id: string | null;
+  read_at: string | null;
+  archived_at: string | null;
+  created_at: string;
+}
+
+export interface NotificationListResponse {
+  request_id?: string;
+  items: NotificationItem[];
+  total: number;
+  /** 필터와 무관한 전체 안 읽은 건수. */
+  unread: number;
+  page: number;
+  page_size: number;
+}
+
+export type NotificationChannel = "email" | "webhook" | "inbox" | "syslog";
+
+export type NotificationEventType =
+  | "certificate.expiring"
+  | "certificate.expired";
+
+/** 수신자 종류 정본 (설계 14.2) — 서버 검증과 같은 4종이다. */
+export type NotificationRecipientKind = "owner" | "role" | "user" | "static";
+
+export interface NotificationRecipient {
+  kind: NotificationRecipientKind;
+  /** kind=role */
+  role?: Role;
+  /** kind=user */
+  user_id?: string;
+  /** kind=static */
+  email?: string;
+}
+
+/** 필터가 null이면 전체 인증서에 매칭된다. */
+export interface NotificationPolicy {
+  id: string;
+  name: string;
+  enabled: boolean;
+  event_types: NotificationEventType[];
+  thresholds: number[];
+  channels: NotificationChannel[];
+  recipients: NotificationRecipient[];
+  filter_environments: string[] | null;
+  filter_department_ids: string[] | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NotificationPolicyListResponse {
+  request_id?: string;
+  items: NotificationPolicy[];
+  total: number;
+}
+
+export interface NotificationPolicyRequest {
+  name: string;
+  enabled?: boolean;
+  event_types: NotificationEventType[];
+  thresholds: number[];
+  channels: NotificationChannel[];
+  recipients: NotificationRecipient[];
+  filter_environments?: string[];
+  filter_department_ids?: string[];
+}
+
+/** 부분 수정 — 보낸 필드만 바뀐다 (PATCH /notification-policies/{id}). */
+export type NotificationPolicyPatch = Partial<NotificationPolicyRequest>;
+
+/**
+ * 채널 상태. **필드는 이 셋뿐이다** — 호스트·계정·URL 같은 설정값은 응답에
+ * 아예 실리지 않는다 (설계 9.3). 비활성 사유는 reason 문자열로만 확인한다.
+ */
+export interface NotificationChannelStatus {
+  channel: NotificationChannel;
+  enabled: boolean;
+  reason: string;
+}
+
+export interface NotificationChannelListResponse {
+  request_id?: string;
+  items: NotificationChannelStatus[];
+}
+
+export interface NotificationTestChannelResult {
+  channel: NotificationChannel;
+  status: "sent" | "skipped" | "failed";
+  reason?: string;
+}
+
+export interface NotificationTestResponse {
+  request_id?: string;
+  policy_id: string;
+  results: NotificationTestChannelResult[];
+}
+
+/** skipped = 실패가 아니라 "보낼 수 없어 건너뜀"(채널 비활성·수신자 없음). */
+export type NotificationDeliveryStatus =
+  | "pending"
+  | "sending"
+  | "sent"
+  | "failed"
+  | "skipped";
+
+export interface NotificationDelivery {
+  id: string;
+  event_id: string;
+  channel: NotificationChannel;
+  recipient: string;
+  status: NotificationDeliveryStatus;
+  attempt_count: number;
+  next_attempt_at: string;
+  last_error: string | null;
+  sent_at: string | null;
+  created_at: string;
+  event_type: string;
+  severity: NotificationSeverity;
+  certificate_id: string | null;
+  threshold_days: number | null;
+}
+
+export interface NotificationDeliveryListResponse {
+  request_id?: string;
+  items: NotificationDelivery[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
 // ── 오류·요청 헬퍼 ────────────────────────────────────────────────────────
 
 /** 통일 오류 응답(00-spec 13장)을 담는 예외. status로 401/403 분기한다. */
@@ -499,5 +648,121 @@ export function disableSensor(id: string) {
   return apiFetch<SensorDetailResponse>(
     `/api/v1/sensors/${encodeURIComponent(id)}/disable`,
     { method: "POST" },
+  );
+}
+
+// ── 알림함 (전 역할 — 언제나 본인 소유 행만 다룬다) ───────────────────────
+
+/** 남의 알림을 지정하면 404다 — 존재 여부를 흘리지 않으려고 403을 쓰지 않는다. */
+export function listNotifications(
+  status: NotificationStatusFilter = "unread",
+  opts?: { page?: number; pageSize?: number },
+) {
+  const params = new URLSearchParams({ status });
+  if (opts?.page) params.set("page", String(opts.page));
+  if (opts?.pageSize) params.set("page_size", String(opts.pageSize));
+  return apiFetch<NotificationListResponse>(
+    `/api/v1/notifications?${params.toString()}`,
+  );
+}
+
+/** 벨 배지용 — 목록보다 훨씬 가벼우므로 주기 폴링은 이쪽만 한다. */
+export function getUnreadNotificationCount() {
+  return apiFetch<{ request_id?: string; unread: number }>(
+    "/api/v1/notifications/unread-count",
+  );
+}
+
+/** 읽음 처리 (204, 본문 없음). */
+export function markNotificationRead(id: string) {
+  return apiFetch<void>(
+    `/api/v1/notifications/${encodeURIComponent(id)}/read`,
+    { method: "POST" },
+  );
+}
+
+/** 보관 — 읽음도 함께 처리된다 (204, 본문 없음). */
+export function archiveNotification(id: string) {
+  return apiFetch<void>(
+    `/api/v1/notifications/${encodeURIComponent(id)}/archive`,
+    { method: "POST" },
+  );
+}
+
+export function markAllNotificationsRead() {
+  return apiFetch<{ request_id?: string; updated: number }>(
+    "/api/v1/notifications/read-all",
+    { method: "POST" },
+  );
+}
+
+// ── 알림 정책·채널·발송 이력 (System/Security Administrator — 00-spec 7.11) ─
+
+export function listNotificationPolicies() {
+  return apiFetch<NotificationPolicyListResponse>("/api/v1/notification-policies");
+}
+
+/** 서버는 생성과 notification.policy.create 감사를 단일 트랜잭션으로 남긴다. */
+export function createNotificationPolicy(req: NotificationPolicyRequest) {
+  return apiFetch<NotificationPolicy>("/api/v1/notification-policies", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
+}
+
+export function updateNotificationPolicy(
+  id: string,
+  patch: NotificationPolicyPatch,
+) {
+  return apiFetch<NotificationPolicy>(
+    `/api/v1/notification-policies/${encodeURIComponent(id)}`,
+    { method: "PATCH", body: JSON.stringify(patch) },
+  );
+}
+
+/** 삭제해도 이미 만들어진 이벤트·발송 이력은 남는다 (policy_id만 NULL이 된다). */
+export function deleteNotificationPolicy(id: string) {
+  return apiFetch<void>(
+    `/api/v1/notification-policies/${encodeURIComponent(id)}`,
+    { method: "DELETE" },
+  );
+}
+
+/**
+ * 테스트 발송. channel을 비우면 정책의 전 채널로 보낸다.
+ * 서버에 알림 발송이 배선되어 있지 않으면 503(channels_unavailable)이다.
+ */
+export function testNotificationPolicy(
+  id: string,
+  body?: { channel?: NotificationChannel; recipient?: string },
+) {
+  return apiFetch<NotificationTestResponse>(
+    `/api/v1/notification-policies/${encodeURIComponent(id)}/test`,
+    { method: "POST", body: JSON.stringify(body ?? {}) },
+  );
+}
+
+/** 채널 상태 — 설정값은 응답에 없다. 비활성 사유(reason)만 그대로 보여준다. */
+export function listNotificationChannels() {
+  return apiFetch<NotificationChannelListResponse>("/api/v1/notification-channels");
+}
+
+/** 발송 이력 — "왜 안 왔는지"의 답. 빈 필터 값은 붙이지 않는다. */
+export function listNotificationDeliveries(opts?: {
+  status?: NotificationDeliveryStatus;
+  channel?: NotificationChannel;
+  eventId?: string;
+  page?: number;
+  pageSize?: number;
+}) {
+  const params = new URLSearchParams();
+  if (opts?.status) params.set("status", opts.status);
+  if (opts?.channel) params.set("channel", opts.channel);
+  if (opts?.eventId) params.set("event_id", opts.eventId);
+  if (opts?.page) params.set("page", String(opts.page));
+  if (opts?.pageSize) params.set("page_size", String(opts.pageSize));
+  const qs = params.toString();
+  return apiFetch<NotificationDeliveryListResponse>(
+    `/api/v1/notification-deliveries${qs ? `?${qs}` : ""}`,
   );
 }

@@ -2,6 +2,7 @@
 
 import { LogOut } from "lucide-react";
 
+import { NotificationBell } from "@/components/notification-bell";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { roleLabel, useAuth } from "@/lib/auth";
@@ -19,6 +20,8 @@ export function AppTopbar() {
           <Skeleton className="h-8 w-40" />
         ) : user ? (
           <>
+            {/* 벨은 세션이 확인된 뒤에만 — 미인증 상태에서 폴링을 시작하지 않는다. */}
+            <NotificationBell />
             <div className="flex items-center gap-2.5">
               <div className="grid size-7 place-items-center rounded-full border bg-secondary text-xs font-medium text-secondary-foreground">
                 {(user.display_name ?? user.username).slice(0, 1).toUpperCase()}

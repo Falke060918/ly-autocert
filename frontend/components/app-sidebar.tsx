@@ -2,7 +2,15 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Radar, RadioTower, ShieldCheck, Users } from "lucide-react";
+import {
+  Bell,
+  BellRing,
+  LayoutDashboard,
+  Radar,
+  RadioTower,
+  ShieldCheck,
+  Users,
+} from "lucide-react";
 
 import { isSystemAdministrator, useAuth } from "@/lib/auth";
 import { cn } from "@/lib/utils";
@@ -12,11 +20,20 @@ const NAV_ITEMS = [
   { href: "/certificates", label: "인증서", icon: ShieldCheck },
   { href: "/discovery", label: "Discovery", icon: Radar },
   { href: "/sensors", label: "센서", icon: RadioTower },
+  { href: "/notifications", label: "알림", icon: Bell },
 ] as const;
 
 /** System Administrator에게만 보이는 메뉴 — 화면 자체도 같은 역할로 잠겨 있다. */
 const ADMIN_NAV_ITEMS = [
   { href: "/users", label: "사용자", icon: Users },
+] as const;
+
+/**
+ * 알림 설정은 System + Security Administrator다 (00-spec 7.11 "보안 관리자 =
+ * 정책 설정") — 백엔드 protected() 등록과 같은 조건이라 사용자 메뉴와 게이트가 다르다.
+ */
+const NOTIFY_ADMIN_NAV_ITEMS = [
+  { href: "/settings/notifications", label: "알림 설정", icon: BellRing },
 ] as const;
 
 function isActive(pathname: string, href: string) {
@@ -55,6 +72,9 @@ export function AppSidebar() {
   const pathname = usePathname();
   const { user } = useAuth();
   const canAdminUsers = isSystemAdministrator(user);
+  const canAdminNotifications =
+    user?.role === "system_administrator" ||
+    user?.role === "security_administrator";
 
   return (
     <aside className="flex w-60 shrink-0 flex-col border-r bg-sidebar">
@@ -81,6 +101,10 @@ export function AppSidebar() {
         </div>
         {canAdminUsers &&
           ADMIN_NAV_ITEMS.map((item) => (
+            <NavLink key={item.href} {...item} pathname={pathname} />
+          ))}
+        {canAdminNotifications &&
+          NOTIFY_ADMIN_NAV_ITEMS.map((item) => (
             <NavLink key={item.href} {...item} pathname={pathname} />
           ))}
         {["CA 관리", "정책", "작업", "감사 로그"].map((label) => (
