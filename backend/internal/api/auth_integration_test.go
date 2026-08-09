@@ -38,7 +38,9 @@ type testEnv struct {
 	server *httptest.Server
 }
 
-func newTestEnv(t *testing.T) *testEnv {
+// newTestEnv는 테스트용 서버를 띄운다. opts는 선택 의존성 주입용이다
+// (알림 채널 배선 등 — 지정하지 않으면 배선 없는 기본 서버다).
+func newTestEnv(t *testing.T, opts ...Option) *testEnv {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
@@ -74,7 +76,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	if _, err := rand.Read(caKey); err != nil {
 		t.Fatalf("random sensor ca key: %v", err)
 	}
-	server := httptest.NewServer(NewServer(pool, svc, rec, caKey))
+	server := httptest.NewServer(NewServer(pool, svc, rec, caKey, opts...))
 	t.Cleanup(server.Close)
 	return &testEnv{pool: pool, svc: svc, server: server}
 }

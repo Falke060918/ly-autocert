@@ -26,24 +26,50 @@ import (
 // 이 목록과 api/openapi.yaml을 대조한다 (openapi_conformance_test.go).
 type Server struct {
 	mux    *http.ServeMux
+	pool   *sql.DB
+	store  *store.Store
 	auth   *auth.Service
 	audit  *audit.Recorder
 	routes []string
+
+	// 아래 둘은 배선(cmd/server)이 있어야 채워지는 선택 의존성이다.
+	// 비어 있어도 코어 API는 정상 동작한다 (05-notifications 10.1 실패 격리).
+	channels      NotificationChannels
+	sweepDefaults SweepDefaults
+}
+
+// Option은 NewServer의 선택 의존성 주입이다.
+type Option func(*Server)
+
+// WithNotificationChannels는 알림 채널 상태 조회·테스트 발송 구현을 주입한다.
+// 주입하지 않으면 GET /notification-channels는 전 채널을 "배선되지 않음"으로
+// 보고하고 테스트 발송은 503이다 — 코어 API는 그대로 뜬다.
+func WithNotificationChannels(ch NotificationChannels) Option {
+	return func(s *Server) { s.channels = ch }
+}
+
+// WithSweepDefaults는 SCAN_SWEEP_* 설정에서 파생한 스윕 기본값을 주입한다.
+// 0 필드는 store의 기본값으로 폴백한다.
+func WithSweepDefaults(d SweepDefaults) Option {
+	return func(s *Server) { s.sweepDefaults = d }
 }
 
 // NewServer는 모든 라우트가 등록된 HTTP 핸들러를 반환한다.
 // sensorCAKey는 센서 mTLS 내부 CA 개인키의 봉인 키(32바이트)다 — 센서 CA를
 // 처음 부트스트랩하는 시점(첫 센서 생성)에만 필요하며 nil이어도 기동은 된다.
-func NewServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorCAKey []byte) http.Handler {
-	return withSecurityHeaders(withRequestID(newServer(pool, authSvc, rec, sensorCAKey).mux))
+func NewServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorCAKey []byte, opts ...Option) http.Handler {
+	return withSecurityHeaders(withRequestID(newServer(pool, authSvc, rec, sensorCAKey, opts...).mux))
 }
 
 // newServer는 라우트를 등록한 Server를 만든다. 핸들러를 호출하지 않는 한
 // 의존성은 nil이어도 안전하다 — 정합 테스트가 라우트 목록만 뽑을 때 쓴다.
-func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorCAKey []byte) *Server {
+func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorCAKey []byte, opts ...Option) *Server {
 	st := store.New(pool)
 	disc := discovery.NewManager(st)
-	s := &Server{mux: http.NewServeMux(), auth: authSvc, audit: rec}
+	s := &Server{mux: http.NewServeMux(), pool: pool, store: st, auth: authSvc, audit: rec}
+	for _, opt := range opts {
+		opt(s)
+	}
 
 	// 비보호 라우트: 헬스체크와 로그인뿐이다.
 	s.public("GET /healthz", handleHealthz(pool))
@@ -78,6 +104,45 @@ func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorC
 	s.protected("POST /api/v1/discovery/scans", handleCreateScan(disc, st),
 		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
 	s.protected("GET /api/v1/discovery/scans/{id}", handleGetScan(st), domain.AllRoles...)
+	// 전 포트 백그라운드 스윕 (04-port-autoscan 9.2). 발주·제어는 스캔과 같은 3역할,
+	// 조회는 읽기 전용이라 전 역할. 상태 전이는 discovery.sweep 감사를 남긴다(store).
+	s.protected("POST /api/v1/discovery/sweeps", s.handleCreateSweep,
+		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
+	s.protected("GET /api/v1/discovery/sweeps", s.handleListSweeps, domain.AllRoles...)
+	// 리터럴 세그먼트가 {id}보다 우선 매칭된다 (Go 1.22+ ServeMux 규칙).
+	s.protected("GET /api/v1/discovery/port-presets", handleListPortPresets, domain.AllRoles...)
+	s.protected("GET /api/v1/discovery/sweeps/{id}", s.handleGetSweep, domain.AllRoles...)
+	s.protected("POST /api/v1/discovery/sweeps/{id}/pause", s.handlePauseSweep,
+		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
+	s.protected("POST /api/v1/discovery/sweeps/{id}/resume", s.handleResumeSweep,
+		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
+	s.protected("POST /api/v1/discovery/sweeps/{id}/cancel", s.handleCancelSweep,
+		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
+	// 알림함 (05-notifications 9.1) — 전 역할. 본인 것만 강제 필터하며 남의 행은 404다.
+	// 읽음·보관은 감사 이벤트를 남기지 않는다 (설계 12 ① — handlers_notifications.go 참조).
+	// 리터럴 세그먼트(unread-count·read-all)를 {id} 라우트보다 먼저 등록한다.
+	s.protected("GET /api/v1/notifications", handleListNotifications(st), domain.AllRoles...)
+	s.protected("GET /api/v1/notifications/unread-count", handleUnreadNotificationCount(st), domain.AllRoles...)
+	s.protected("POST /api/v1/notifications/read-all", handleMarkAllNotificationsRead(st), domain.AllRoles...)
+	s.protected("POST /api/v1/notifications/{id}/read", handleMarkNotificationRead(st), domain.AllRoles...)
+	s.protected("POST /api/v1/notifications/{id}/archive", handleArchiveNotification(st), domain.AllRoles...)
+	// 알림 정책·채널 (05-notifications 9.2) — System Administrator + Security
+	// Administrator. 후자의 근거는 00-spec 7.11 "보안 관리자 = 정책 설정"이다.
+	s.protected("GET /api/v1/notification-policies", s.handleListNotificationPolicies,
+		domain.RoleSystemAdministrator, domain.RoleSecurityAdministrator)
+	s.protected("POST /api/v1/notification-policies", s.handleCreateNotificationPolicy,
+		domain.RoleSystemAdministrator, domain.RoleSecurityAdministrator)
+	s.protected("PATCH /api/v1/notification-policies/{id}", s.handleUpdateNotificationPolicy,
+		domain.RoleSystemAdministrator, domain.RoleSecurityAdministrator)
+	s.protected("DELETE /api/v1/notification-policies/{id}", s.handleDeleteNotificationPolicy,
+		domain.RoleSystemAdministrator, domain.RoleSecurityAdministrator)
+	s.protected("POST /api/v1/notification-policies/{id}/test", s.handleTestNotificationPolicy,
+		domain.RoleSystemAdministrator, domain.RoleSecurityAdministrator)
+	s.protected("GET /api/v1/notification-channels", s.handleListNotificationChannels,
+		domain.RoleSystemAdministrator, domain.RoleSecurityAdministrator)
+	// 발송 이력은 "왜 안 왔는지"의 답이라 감사자도 열람할 수 있다 (설계 14.3).
+	s.protected("GET /api/v1/notification-deliveries", s.handleListNotificationDeliveries,
+		domain.RoleSystemAdministrator, domain.RoleSecurityAdministrator, domain.RoleAuditor)
 	// 센서(원격 수집기, 00-spec 7.8) — 생성(1회용 토큰 발급)·비활성화는 System
 	// Administrator 전용, 목록·상세는 읽기 전용이라 전 역할 (감사 이벤트 없음).
 	s.protected("POST /api/v1/sensors", handleCreateSensor(st, sensorCAKey),

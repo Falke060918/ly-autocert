@@ -24,7 +24,8 @@ CREATE TABLE notification_policies (
     channels              text[] NOT NULL
         CONSTRAINT notification_policies_channels_known
             CHECK (channels <@ ARRAY['email', 'webhook', 'inbox', 'syslog']::text[]),
-    -- [{"kind":"role","role":"..."} | {"kind":"user","user_id":"..."} | {"kind":"address", ...}]
+    -- 수신자 kind 정본은 owner|role|user|static이다 (설계 14.2).
+    -- [{"kind":"owner"} | {"kind":"role","role":"..."} | {"kind":"user","user_id":"..."} | {"kind":"static","email":"..."}]
     recipients            jsonb NOT NULL DEFAULT '[]',
     -- NULL = 필터 없음(전체 대상). 빈 배열과 구분된다.
     filter_environments   text[],
