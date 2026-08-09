@@ -139,7 +139,7 @@ func NewEmail(cfg EmailConfig) *EmailNotifier {
 // WebhookConfig는 웹훅 채널 설정이다 (config 패키지가 WEBHOOK_* 환경변수로 채운다).
 type WebhookConfig struct {
 	URL string // WEBHOOK_URL — 비면 채널 비활성. http/https만 허용
-	// Secret은 HMAC-SHA256 서명 키다 (WEBHOOK_SECRET). 설정된 경우에만
+	// Secret은 HMAC-SHA256 서명 키다 (WEBHOOK_HMAC_SECRET). 설정된 경우에만
 	// X-AutoCert-Signature 헤더를 붙인다. secret이므로 로그에 넣지 않는다.
 	Secret string
 	// AuthHeader는 "Name: value" 형태의 원문 헤더다 (WEBHOOK_AUTH_HEADER).
