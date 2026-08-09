@@ -825,6 +825,100 @@ func TestMarkDeliverySent(t *testing.T) {
 	}
 }
 
+// TestMarkDeliverySkipped는 비활성 채널 딜리버리가 종결되고 리스가 정리되는지,
+// 그리고 이미 종결된 행에는 아무 영향이 없는지(멱등) 검증한다.
+func TestMarkDeliverySkipped(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool)
+	ctx := context.Background()
+
+	eventID := newRawEvent(t, pool)
+
+	// sending(리스 보유) 상태의 행을 종결한다.
+	id := newTestDelivery(t, pool, eventID, NotifyChannelEmail, "skip@example.test")
+	if _, err := pool.Exec(`
+		UPDATE notification_deliveries
+		   SET status = 'sending', leased_at = now(),
+		       lease_expires_at = now() + interval '2 minutes'
+		 WHERE id = $1::uuid`, id); err != nil {
+		t.Fatalf("simulate lease: %v", err)
+	}
+	const reason = "channel disabled: NOTIFY_SMTP_HOST not set"
+	if err := st.MarkDeliverySkipped(ctx, id, reason); err != nil {
+		t.Fatalf("mark skipped: %v", err)
+	}
+	var (
+		status       string
+		lastErr      sql.NullString
+		leasedAt     sql.NullTime
+		leaseExpires sql.NullTime
+		sentAt       sql.NullTime
+	)
+	readDelivery := func(id string) {
+		t.Helper()
+		if err := pool.QueryRow(`
+			SELECT status, last_error, leased_at, lease_expires_at, sent_at
+			  FROM notification_deliveries WHERE id = $1::uuid`, id).
+			Scan(&status, &lastErr, &leasedAt, &leaseExpires, &sentAt); err != nil {
+			t.Fatalf("read delivery: %v", err)
+		}
+	}
+	readDelivery(id)
+	if status != DeliveryStatusSkipped {
+		t.Errorf("status = %q, want skipped", status)
+	}
+	if lastErr.String != reason {
+		t.Errorf("last_error = %q, want %q", lastErr.String, reason)
+	}
+	if leasedAt.Valid || leaseExpires.Valid {
+		t.Error("lease columns were not cleared")
+	}
+	if sentAt.Valid {
+		t.Error("sent_at must stay NULL for a skipped delivery")
+	}
+
+	// 멱등: 이미 skipped인 행은 사유조차 덮어쓰지 않고 조용히 성공한다.
+	if err := st.MarkDeliverySkipped(ctx, id, "another reason"); err != nil {
+		t.Fatalf("re-skip must be a silent no-op, got %v", err)
+	}
+	readDelivery(id)
+	if lastErr.String != reason {
+		t.Errorf("last_error was overwritten on re-skip: %q", lastErr.String)
+	}
+
+	// 멱등: sent로 종결된 행도 건드리지 않는다.
+	sentID := newTestDelivery(t, pool, eventID, NotifyChannelInbox, "skip-user")
+	if err := st.MarkDeliverySent(ctx, sentID); err != nil {
+		t.Fatalf("mark sent: %v", err)
+	}
+	if err := st.MarkDeliverySkipped(ctx, sentID, reason); err != nil {
+		t.Fatalf("skip on sent row must be a no-op, got %v", err)
+	}
+	readDelivery(sentID)
+	if status != DeliveryStatusSent || lastErr.Valid {
+		t.Errorf("sent row was modified: status=%q last_error=%v", status, lastErr.String)
+	}
+
+	// pending 행도 곧바로 종결한다(리스를 잡기 전에 걸러낸 경우).
+	pendingID := newTestDelivery(t, pool, eventID, NotifyChannelWebhook, "")
+	long := strings.Repeat("가", 900) // 룬 단위 절단 (MarkDeliveryFailed와 같은 규약)
+	if err := st.MarkDeliverySkipped(ctx, pendingID, long); err != nil {
+		t.Fatalf("skip pending: %v", err)
+	}
+	readDelivery(pendingID)
+	if status != DeliveryStatusSkipped {
+		t.Errorf("status = %q, want skipped", status)
+	}
+	if n := len([]rune(lastErr.String)); n != maxDeliveryErrorRunes {
+		t.Errorf("last_error rune length = %d, want %d", n, maxDeliveryErrorRunes)
+	}
+
+	// 없는 행은 오류가 아니다(이미 정리·보존 만료된 경우와 구분할 수 없다).
+	if err := st.MarkDeliverySkipped(ctx, "00000000-0000-0000-0000-000000000000", reason); err != nil {
+		t.Errorf("skip on missing row = %v, want nil", err)
+	}
+}
+
 // ===== 알림함 =====
 
 // TestInboxUniqueAbsorbsDuplicate는 발송 재시도로 같은 사건이 같은 사용자에게

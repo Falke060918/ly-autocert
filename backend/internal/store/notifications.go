@@ -1164,6 +1164,26 @@ func (s *Store) MarkDeliverySent(ctx context.Context, deliveryID string) error {
 	return nil
 }
 
+// MarkDeliverySkipped는 시도 없이 딜리버리를 skipped로 종결한다.
+// 디스패처가 config에서 비활성된 채널을 만났을 때 쓰는 경로다 — 이것이 없으면
+// 설정이 고쳐질 때까지 pending이 무한히 쌓인다 (notify.DispatcherStore).
+//
+// 이미 종료 상태(sent/failed/skipped)인 행은 사유조차 덮어쓰지 않고 조용히 성공을
+// 반환한다(멱등) — 디스패처 tick이 겹쳐도 종결된 기록을 뒤집지 않기 위해서다.
+// reason은 500자로 절단해 저장하며, 수신자 주소를 담지 않는 것은 호출부 책임이다.
+func (s *Store) MarkDeliverySkipped(ctx context.Context, deliveryID, reason string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE notification_deliveries
+		   SET status = 'skipped', last_error = $2,
+		       leased_at = NULL, lease_expires_at = NULL, updated_at = now()
+		 WHERE id = $1::uuid AND status IN ('sending', 'pending')`,
+		deliveryID, truncateError(reason))
+	if err != nil {
+		return fmt.Errorf("store: mark delivery skipped: %w", err)
+	}
+	return nil
+}
+
 // DeliveryAttempt는 실패 기록 후의 딜리버리 상태다.
 type DeliveryAttempt struct {
 	Status        string
