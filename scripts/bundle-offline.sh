@@ -120,28 +120,53 @@ bre_escape() { printf '%s' "$1" | sed 's/[^A-Za-z0-9_-]/\\&/g'; }
 # (검사 5·6은 성격상 사후 assert 라 각 패키지 생성 직후에 있다.)
 # ---------------------------------------------------------------------------
 
-# [검사 1/6] VERSION 파일이 비어있지 않고 SemVer 형태인가
-[ -f VERSION ] || die "[검사 1/6] VERSION 파일이 없다"
+# [검사 1/7] VERSION 파일이 비어있지 않고 SemVer 형태인가
+[ -f VERSION ] || die "[검사 1/7] VERSION 파일이 없다"
 file_version=$(tr -d ' \t\r\n' < VERSION)
-[ -n "$file_version" ] || die "[검사 1/6] VERSION 파일이 비었다"
+[ -n "$file_version" ] || die "[검사 1/7] VERSION 파일이 비었다"
 printf '%s\n' "$file_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)*$' \
-	|| die "[검사 1/6] VERSION 이 SemVer(MAJOR.MINOR.PATCH) 형태가 아니다: $file_version"
+	|| die "[검사 1/7] VERSION 이 SemVer(MAJOR.MINOR.PATCH) 형태가 아니다: $file_version"
 
 # docker-compose.yml 의 ${AUTOCERT_VERSION:-X} 기본값.
 compose_raw=$(sed -n 's/.*AUTOCERT_VERSION:-\([^}]*\)}.*/\1/p' docker-compose.yml)
 compose_count=$(printf '%s\n' "$compose_raw" | grep -c . || true)
 
-# [검사 3/6] 원시 매칭 수 ≥ 2 — 유니크 값 검사만으로는 backend·frontend 중 한쪽에서
+# [검사 3/7] 원시 매칭 수 ≥ 2 — 유니크 값 검사만으로는 backend·frontend 중 한쪽에서
 # 변수가 통째로 사라져도(남은 하나의 유니크 값이 여전히 1개라) 통과해버린다.
 [ "$compose_count" -ge 2 ] \
-	|| die "[검사 3/6] docker-compose.yml 의 \${AUTOCERT_VERSION:-…} 참조가 ${compose_count}개다 — backend·frontend 두 서비스 모두에 있어야 한다"
+	|| die "[검사 3/7] docker-compose.yml 의 \${AUTOCERT_VERSION:-…} 참조가 ${compose_count}개다 — backend·frontend 두 서비스 모두에 있어야 한다"
 
-# [검사 2/6] 기본값이 서비스마다 같고 VERSION 과 일치하는가
+# [검사 2/7] 기본값이 서비스마다 같고 VERSION 과 일치하는가
 compose_version=$(printf '%s\n' "$compose_raw" | sort -u)
 [ "$(printf '%s\n' "$compose_version" | wc -l)" -eq 1 ] \
-	|| die "[검사 2/6] docker-compose.yml 의 AUTOCERT_VERSION 기본값이 서비스마다 다르다"
+	|| die "[검사 2/7] docker-compose.yml 의 AUTOCERT_VERSION 기본값이 서비스마다 다르다"
 [ "$compose_version" = "$file_version" ] \
-	|| die "[검사 2/6] VERSION($file_version) != docker-compose.yml 기본 태그($compose_version) — 릴리즈 시 VERSION·docker-compose.yml·CHANGELOG.md 를 함께 올린다"
+	|| die "[검사 2/7] VERSION($file_version) != docker-compose.yml 기본 태그($compose_version) — 릴리즈 시 VERSION·docker-compose.yml·CHANGELOG.md 를 함께 올린다"
+
+# [검사 7/7] frontend 의 package.json·package-lock.json version = VERSION
+# 이미지 안에 그대로 실려 나가는 값이라 어긋나면 화면·번들이 다른 버전을 주장하게 된다.
+# 의존성 트리에도 "version" 키가 수천 개라 최상위 블록만 본다(jq 없이 들여쓰기로 가른다).
+[ -f frontend/package.json ] || die "[검사 7/7] frontend/package.json 이 없다"
+[ -f frontend/package-lock.json ] || die "[검사 7/7] frontend/package-lock.json 이 없다"
+
+# package.json 은 최상위에만 "version" 이 있다(dependencies 는 "<이름>": "<범위>" 형태).
+pkg_version=$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' frontend/package.json | head -1)
+[ -n "$pkg_version" ] || die "[검사 7/7] frontend/package.json 에서 version 을 읽지 못했다"
+[ "$pkg_version" = "$file_version" ] \
+	|| die "[검사 7/7] VERSION($file_version) != frontend/package.json version($pkg_version) — 릴리즈 시 함께 올린다"
+
+# lock 최상위 version: 들여쓰기 2칸. 패키지 트리 항목은 6칸 이상이라 섞이지 않는다.
+lock_version=$(sed -n 's/^  "version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' frontend/package-lock.json | head -1)
+[ -n "$lock_version" ] || die "[검사 7/7] frontend/package-lock.json 에서 최상위 version 을 읽지 못했다"
+[ "$lock_version" = "$file_version" ] \
+	|| die "[검사 7/7] VERSION($file_version) != frontend/package-lock.json 최상위 version($lock_version) — 릴리즈 시 함께 올린다"
+
+# lock 의 packages[""] 항목(= 루트 패키지 자신). 블록의 첫 version 줄을 읽는다.
+lock_root_version=$(sed -n '/^[[:space:]]*"": {/,/^[[:space:]]*},/p' frontend/package-lock.json \
+	| sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+[ -n "$lock_root_version" ] || die "[검사 7/7] frontend/package-lock.json 의 packages[\"\"] 에서 version 을 읽지 못했다"
+[ "$lock_root_version" = "$file_version" ] \
+	|| die "[검사 7/7] VERSION($file_version) != frontend/package-lock.json packages[\"\"] version($lock_root_version) — 릴리즈 시 함께 올린다"
 
 version="${version:-${AUTOCERT_VERSION:-$file_version}}"
 version_overridden=0
@@ -156,14 +181,14 @@ if printf '%s' "$version" | grep -q '[[:space:]]'; then
 	die "버전 문자열에 공백을 쓸 수 없다(파일명에 들어간다): $version"
 fi
 
-# [검사 4/6] CHANGELOG.md 에 '## v<버전> (' 헤딩이 있는가
-[ -f CHANGELOG.md ] || die "[검사 4/6] CHANGELOG.md 가 없다"
+# [검사 4/7] CHANGELOG.md 에 '## v<버전> (' 헤딩이 있는가
+[ -f CHANGELOG.md ] || die "[검사 4/7] CHANGELOG.md 가 없다"
 if grep -q "^## v$(bre_escape "$version") (" CHANGELOG.md; then
 	:
 elif [ "$version_overridden" -eq 1 ]; then
-	warn "[검사 4/6] CHANGELOG.md 에 '## v$version (' 헤딩이 없다 — --version 으로 덮어쓴 개발 빌드로 보고 계속한다"
+	warn "[검사 4/7] CHANGELOG.md 에 '## v$version (' 헤딩이 없다 — --version 으로 덮어쓴 개발 빌드로 보고 계속한다"
 else
-	die "[검사 4/6] CHANGELOG.md 에 '## v$version (' 헤딩이 없다 — 릴리즈 시 VERSION·docker-compose.yml·CHANGELOG.md 를 함께 올린다"
+	die "[검사 4/7] CHANGELOG.md 에 '## v$version (' 헤딩이 없다 — 릴리즈 시 VERSION·docker-compose.yml·CHANGELOG.md 를 함께 올린다"
 fi
 
 if [ "$version_overridden" -eq 1 ]; then
@@ -233,7 +258,7 @@ fi
 # 공용 헬퍼
 # ---------------------------------------------------------------------------
 
-# MANIFEST 공통 머리말. '제품 버전' 줄은 [검사 5/6] 이 grep -Fx 로 대조한다.
+# MANIFEST 공통 머리말. '제품 버전' 줄은 [검사 5/7] 이 grep -Fx 로 대조한다.
 manifest_head() {
 	printf 'INHERIT AutoCert %s\n' "$1"
 	printf '===================================\n'
@@ -255,22 +280,22 @@ write_sha256sums() {
 	)
 }
 
-# [검사 5/6] 생성된 패키지의 VERSION 파일·MANIFEST 버전 문자열 = 결정된 버전
+# [검사 5/7] 생성된 패키지의 VERSION 파일·MANIFEST 버전 문자열 = 결정된 버전
 assert_package_version() {
 	_dir="$1"
-	[ -f "$_dir/VERSION" ] || die "[검사 5/6] $_dir/VERSION 이 없다"
+	[ -f "$_dir/VERSION" ] || die "[검사 5/7] $_dir/VERSION 이 없다"
 	_pv=$(tr -d ' \t\r\n' < "$_dir/VERSION")
-	[ "$_pv" = "$version" ] || die "[검사 5/6] 패키지 VERSION($_pv) != 결정된 버전($version)"
-	[ -f "$_dir/MANIFEST.txt" ] || die "[검사 5/6] $_dir/MANIFEST.txt 가 없다"
+	[ "$_pv" = "$version" ] || die "[검사 5/7] 패키지 VERSION($_pv) != 결정된 버전($version)"
+	[ -f "$_dir/MANIFEST.txt" ] || die "[검사 5/7] $_dir/MANIFEST.txt 가 없다"
 	grep -Fxq "제품 버전     : $version" "$_dir/MANIFEST.txt" \
-		|| die "[검사 5/6] MANIFEST.txt 의 제품 버전 줄이 결정된 버전($version)과 다르다: $_dir"
+		|| die "[검사 5/7] MANIFEST.txt 의 제품 버전 줄이 결정된 버전($version)과 다르다: $_dir"
 }
 
-# [검사 6/6] 아카이브 파일명의 버전 = 결정된 버전
+# [검사 6/7] 아카이브 파일명의 버전 = 결정된 버전
 assert_archive_name() {
 	case "$1" in
 		*"_$version".tar.gz|*"_$version".zip) : ;;
-		*) die "[검사 6/6] 아카이브 파일명에 결정된 버전($version)이 없다: $1" ;;
+		*) die "[검사 6/7] 아카이브 파일명에 결정된 버전($version)이 없다: $1" ;;
 	esac
 }
 
