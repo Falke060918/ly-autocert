@@ -29,10 +29,13 @@ type certificateListResponse struct {
 }
 
 type certificateDetailResponse struct {
-	RequestID   string                     `json:"request_id"`
-	Certificate domain.Certificate         `json:"certificate"`
-	Locations   []store.LocationWithTarget `json:"locations"`
-	Chain       []store.ChainItem          `json:"chain"` // 자신→상위→루트 순, 미보유 상위는 stored=false
+	RequestID   string             `json:"request_id"`
+	Certificate domain.Certificate `json:"certificate"`
+	// Owner는 certificate.owner_id가 가리키는 계정의 표시용 요약이다.
+	// 미지정이거나 계정이 사라졌으면 null — 화면이 UUID를 그대로 띄우지 않게 한다.
+	Owner     *store.OwnerRef            `json:"owner"`
+	Locations []store.LocationWithTarget `json:"locations"`
+	Chain     []store.ChainItem          `json:"chain"` // 자신→상위→루트 순, 미보유 상위는 stored=false
 }
 
 // paramError는 쿼리 파라미터 검증 실패다 (통일 오류 형식의 code·message로 그대로 나간다).
@@ -190,6 +193,7 @@ func handleGetCertificate(st *store.Store) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, certificateDetailResponse{
 			RequestID:   deref(requestIDFrom(r.Context())),
 			Certificate: res.Certificate,
+			Owner:       res.Owner,
 			Locations:   res.Locations,
 			Chain:       res.Chain,
 		})

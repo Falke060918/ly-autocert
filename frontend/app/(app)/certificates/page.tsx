@@ -27,7 +27,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { CertStatusBadge, DdayText } from "@/components/cert-badges";
-import { canManageInventory, useAuth } from "@/lib/auth";
+import { canExportInventory, canManageInventory, useAuth } from "@/lib/auth";
 import {
   ApiError,
   exportCertificatesCsv,
@@ -148,6 +148,7 @@ function CertificatesBody() {
   const sort = searchParams.get("sort") ?? "not_after";
   const order = searchParams.get("order") ?? "asc";
   const canManage = canManageInventory(user);
+  const canExport = canExportInventory(user);
 
   /** 현재 필터 조건 전체를 CSV로 내려받는다 (서버가 certificate.export 감사 기록). */
   const exportCsv = React.useCallback(async () => {
@@ -181,14 +182,16 @@ function CertificatesBody() {
           </p>
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <Button
-            variant="outline"
-            disabled={exporting || !data || data.total === 0}
-            onClick={() => void exportCsv()}
-          >
-            <Download data-icon="inline-start" />
-            {exporting ? "내보내는 중…" : "CSV 내보내기"}
-          </Button>
+          {canExport && (
+            <Button
+              variant="outline"
+              disabled={exporting || !data || data.total === 0}
+              onClick={() => void exportCsv()}
+            >
+              <Download data-icon="inline-start" />
+              {exporting ? "내보내는 중…" : "CSV 내보내기"}
+            </Button>
+          )}
           {canManage && (
             <Button onClick={() => setUploadOpen((v) => !v)}>
               <Upload data-icon="inline-start" />
