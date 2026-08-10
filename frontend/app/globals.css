@@ -43,6 +43,10 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
+  --color-danger: var(--danger);
+  --color-danger-foreground: var(--danger-foreground);
+  --color-warn: var(--warn);
+  --color-ok: var(--ok);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -52,73 +56,106 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/*
+ * "관제 콘솔" 테마 — 심청 슬레이트 표면 + cert-blue 단일 강조.
+ * 상태 3색(danger/warn/ok)은 인증서 상태 표현 전용이다. 장식·강조에 쓰지 않는다.
+ * 다크가 기준 테마이고 라이트는 대등한 대응값이다 (구조는 shadcn 토큰 그대로).
+ */
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
+  --background: oklch(0.985 0.002 255);
+  --foreground: oklch(0.19 0.02 255);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
+  --card-foreground: oklch(0.19 0.02 255);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
+  --popover-foreground: oklch(0.19 0.02 255);
+  --primary: oklch(0.45 0.13 245);
+  --primary-foreground: oklch(0.985 0.005 250);
+  --secondary: oklch(0.955 0.006 255);
+  --secondary-foreground: oklch(0.25 0.02 250);
+  --muted: oklch(0.96 0.005 255);
+  --muted-foreground: oklch(0.5 0.02 252);
+  --accent: oklch(0.945 0.01 250);
+  --accent-foreground: oklch(0.25 0.02 250);
+  --destructive: oklch(0.53 0.21 25);
+  --danger: oklch(0.53 0.21 25);
+  --danger-foreground: oklch(0.985 0.005 25);
+  --warn: oklch(0.52 0.12 78);
+  --ok: oklch(0.52 0.13 155);
+  --border: oklch(0.905 0.008 255);
+  --input: oklch(0.905 0.008 255);
+  --ring: oklch(0.45 0.13 245);
+  --chart-1: oklch(0.5 0.13 230);
+  --chart-2: oklch(0.55 0.11 190);
+  --chart-3: oklch(0.52 0.14 290);
+  --chart-4: oklch(0.62 0.13 80);
+  --chart-5: oklch(0.52 0.16 20);
   --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --sidebar: oklch(0.975 0.004 255);
+  --sidebar-foreground: oklch(0.19 0.02 255);
+  --sidebar-primary: oklch(0.45 0.13 245);
+  --sidebar-primary-foreground: oklch(0.985 0.005 250);
+  --sidebar-accent: oklch(0.93 0.01 250);
+  --sidebar-accent-foreground: oklch(0.22 0.02 250);
+  --sidebar-border: oklch(0.9 0.01 255);
+  --sidebar-ring: oklch(0.45 0.13 245);
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --background: oklch(0.15 0.015 255);
+  --foreground: oklch(0.93 0.008 250);
+  --card: oklch(0.19 0.018 255);
+  --card-foreground: oklch(0.93 0.008 250);
+  --popover: oklch(0.21 0.02 255);
+  --popover-foreground: oklch(0.93 0.008 250);
+  --primary: oklch(0.7 0.13 235);
+  --primary-foreground: oklch(0.16 0.03 245);
+  --secondary: oklch(0.26 0.02 255);
+  --secondary-foreground: oklch(0.93 0.008 250);
+  --muted: oklch(0.24 0.018 255);
+  --muted-foreground: oklch(0.68 0.02 250);
+  --accent: oklch(0.26 0.025 250);
+  --accent-foreground: oklch(0.95 0.008 250);
+  --destructive: oklch(0.63 0.21 25);
+  --danger: oklch(0.63 0.21 25);
+  --danger-foreground: oklch(0.14 0.03 25);
+  --warn: oklch(0.79 0.15 80);
+  --ok: oklch(0.72 0.15 155);
+  --border: oklch(0.85 0.03 250 / 14%);
+  --input: oklch(0.85 0.03 250 / 18%);
+  --ring: oklch(0.7 0.13 235);
+  --chart-1: oklch(0.7 0.13 230);
+  --chart-2: oklch(0.75 0.12 190);
+  --chart-3: oklch(0.7 0.14 290);
+  --chart-4: oklch(0.79 0.15 80);
+  --chart-5: oklch(0.68 0.18 20);
+  --sidebar: oklch(0.13 0.014 255);
+  --sidebar-foreground: oklch(0.93 0.008 250);
+  --sidebar-primary: oklch(0.7 0.13 235);
+  --sidebar-primary-foreground: oklch(0.16 0.03 245);
+  --sidebar-accent: oklch(0.22 0.02 253);
+  --sidebar-accent-foreground: oklch(0.95 0.008 250);
+  --sidebar-border: oklch(0.85 0.03 250 / 12%);
+  --sidebar-ring: oklch(0.7 0.13 235);
+}
+
+/* KPI 숫자 — 대시보드 지표용. Geist 그대로(폰트 패밀리 미지정), 등폭 숫자. */
+@utility kpi-number {
+  font-size: 1.875rem; /* 30px — 28~32 범위의 중앙값 */
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 섹션 eyebrow — 11px 모노 대문자, 자간 +0.08em. 색은 muted 고정. */
+@utility eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.2;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-muted-foreground);
 }
 
 @layer base {
@@ -130,5 +167,16 @@
   }
   html {
     @apply font-sans;
+  }
+  /* 모션 축소 설정 존중 — 애니메이션·트랜지션을 사실상 즉시 완료로 줄인다. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 }
