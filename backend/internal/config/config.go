@@ -69,6 +69,10 @@ type Config struct {
 	NotifyChannelErrors map[string]string
 	// Sweep은 대역 스윕 설정이다 (SCAN_SWEEP_*).
 	Sweep SweepConfig
+	// ScanSuggestedNetworks는 스캔 대상 제안에 실을 운영자 지정 대역이다
+	// (SCAN_SUGGESTED_NETWORKS, 콤마 구분 IP/CIDR). 정규화된 CIDR 문자열로
+	// 보관하며, 형식 오류 항목은 그 항목만 버리고 경고한다 (ADMIN_IP_*와 같은 처리).
+	ScanSuggestedNetworks []string
 	// AdminIP는 관리 콘솔 접근 IP 제한 설정이다 (ADMIN_IP_*).
 	AdminIP AdminIPConfig
 	// Rescan은 주기 재스캔·교체 감지 설정이다 (RESCAN_*).
@@ -185,6 +189,20 @@ func (l *envLoader) cidrList(key string) []*net.IPNet {
 	return nets
 }
 
+// cidrStrings는 cidrList와 같은 파싱·경고 규칙으로 읽되 정규화된 CIDR
+// 문자열 목록으로 돌려준다 (스캔 대상 제안처럼 표시·전달만 하는 용도).
+func (l *envLoader) cidrStrings(key string) []string {
+	nets := l.cidrList(key)
+	if len(nets) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(nets))
+	for _, n := range nets {
+		out = append(out, n.String())
+	}
+	return out
+}
+
 // RescanConfig는 주기 재스캔·교체 감지 설정이다 (RESCAN_*).
 // 값이 잘못돼도 기동을 막지 않는다 — 경고 + 기본값 폴백이다 (설계 12.2).
 type RescanConfig struct {
@@ -260,6 +278,7 @@ func Load() (Config, error) {
 	// 해당 채널만 비활성이다 (센서 게이트웨이 선례).
 	cfg.Notify = l.notify()
 	cfg.Sweep = l.sweep()
+	cfg.ScanSuggestedNetworks = l.cidrStrings("SCAN_SUGGESTED_NETWORKS")
 	cfg.AdminIP = l.adminIP()
 	cfg.Rescan = l.rescan()
 	cfg.NotifyChannelErrors = l.channelErrors

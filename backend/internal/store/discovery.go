@@ -21,9 +21,11 @@ import (
 // EventDiscoveryScan은 스캔 Job 생성·완료 감사 이벤트 타입이다.
 const EventDiscoveryScan = "discovery.scan"
 
-// 스캔 Job 상태(명시적 상태 머신). pending → running → completed/failed.
+// 스캔 Job 상태(명시적 상태 머신). 서버 실행: pending → running → completed/failed.
+// 센서 위임: pending → leased → running → …(sensorjobs.go 리스 상태 머신).
 const (
 	ScanStatusPending   = "pending"
+	ScanStatusLeased    = "leased"
 	ScanStatusRunning   = "running"
 	ScanStatusCompleted = "completed"
 	ScanStatusFailed    = "failed"
@@ -54,8 +56,11 @@ type ScanInput struct {
 
 // ScanJob은 스캔 Job 1건의 상태·진행률·결과 요약이다.
 type ScanJob struct {
-	ID                 string     `json:"id"`
-	Status             string     `json:"status"`
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	// Origin은 발주 출처다 (0015: manual/sweep/rescan). 목록에서 사람이 발주한
+	// 스캔과 백그라운드 발주(스윕 청크·재스캔)를 구분하는 기준이다.
+	Origin             string     `json:"origin"`
 	ExecutorType       string     `json:"executor_type"`
 	SensorID           *string    `json:"sensor_id,omitempty"`
 	Targets            []string   `json:"targets"`
@@ -350,7 +355,7 @@ func (s *Store) GetScanJob(ctx context.Context, jobID string) (*ScanJob, error) 
 		portsStr   string
 	)
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, status, executor_type, sensor_id::text,
+		SELECT id, status, origin, executor_type, sensor_id::text,
 		       array_to_string(targets, chr(31)),
 		       array_to_string(ports, ','),
 		       timeout_ms, concurrency, total_endpoints, scanned_endpoints,
@@ -358,7 +363,7 @@ func (s *Store) GetScanJob(ctx context.Context, jobID string) (*ScanJob, error) 
 		       error, created_at, started_at, finished_at
 		  FROM scan_jobs WHERE id = $1::uuid`,
 		jobID,
-	).Scan(&j.ID, &j.Status, &j.ExecutorType, &j.SensorID, &targetsStr, &portsStr, &j.TimeoutMs, &j.Concurrency,
+	).Scan(&j.ID, &j.Status, &j.Origin, &j.ExecutorType, &j.SensorID, &targetsStr, &portsStr, &j.TimeoutMs, &j.Concurrency,
 		&j.TotalEndpoints, &j.ScannedEndpoints, &j.ReachableEndpoints,
 		&j.CertificatesFound, &j.CertificatesNew, &j.Error,
 		&j.CreatedAt, &j.StartedAt, &j.FinishedAt)
@@ -371,6 +376,106 @@ func (s *Store) GetScanJob(ctx context.Context, jobID string) (*ScanJob, error) 
 	j.Targets = splitNonEmpty(targetsStr, sansSep)
 	j.Ports = parseInts(splitNonEmpty(portsStr, portSep))
 	return &j, nil
+}
+
+// 스캔 Job 발주 출처 (0015 scan_jobs.origin CHECK와 같은 값).
+const (
+	ScanOriginManual = "manual"
+	ScanOriginSweep  = "sweep"
+	ScanOriginRescan = "rescan"
+)
+
+// ListScanJobsInput은 스캔 Job 목록 조회 조건이다.
+type ListScanJobsInput struct {
+	Statuses []string // 비면 전체 (값 검증은 API 계층)
+	Origins  []string // 비면 전체 (manual/sweep/rescan)
+	Page     int
+	PageSize int
+}
+
+// ScanJobList는 스캔 Job 목록 조회 결과다.
+type ScanJobList struct {
+	Items    []ScanJob `json:"items"`
+	Total    int       `json:"total"`
+	Page     int       `json:"page"`
+	PageSize int       `json:"page_size"`
+}
+
+// ListScanJobs는 스캔 Job을 최신 생성 순으로 조회한다(상태·출처 필터 + 페이지네이션).
+// 조회 전용이라 감사 이벤트를 남기지 않는다 (00-spec 7.12 기록 대상에 조회 없음).
+func (s *Store) ListScanJobs(ctx context.Context, in ListScanJobsInput) (*ScanJobList, error) {
+	page := in.Page
+	if page < 1 {
+		page = 1
+	}
+	size := in.PageSize
+	if size < 1 {
+		size = defaultPageSize
+	}
+	if size > maxPageSize {
+		size = maxPageSize
+	}
+
+	var conds []string
+	var args []any
+	if len(in.Statuses) > 0 {
+		args = append(args, strings.Join(in.Statuses, sansSep))
+		conds = append(conds, fmt.Sprintf("status = ANY(string_to_array($%d, chr(31)))", len(args)))
+	}
+	if len(in.Origins) > 0 {
+		args = append(args, strings.Join(in.Origins, sansSep))
+		conds = append(conds, fmt.Sprintf("origin = ANY(string_to_array($%d, chr(31)))", len(args)))
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
+	}
+
+	var total int
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT count(*) FROM scan_jobs"+where, args...).Scan(&total); err != nil {
+		return nil, fmt.Errorf("store: count scan jobs: %w", err)
+	}
+
+	// id 보조 정렬로 페이지 경계를 안정화한다 (ListCertificates와 같은 규약).
+	query := fmt.Sprintf(`
+		SELECT id, status, origin, executor_type, sensor_id::text,
+		       array_to_string(targets, chr(31)),
+		       array_to_string(ports, ','),
+		       timeout_ms, concurrency, total_endpoints, scanned_endpoints,
+		       reachable_endpoints, certificates_found, certificates_new,
+		       error, created_at, started_at, finished_at
+		  FROM scan_jobs%s
+		 ORDER BY created_at DESC, id ASC LIMIT $%d OFFSET $%d`,
+		where, len(args)+1, len(args)+2)
+	rows, err := s.db.QueryContext(ctx, query, append(args, size, (page-1)*size)...)
+	if err != nil {
+		return nil, fmt.Errorf("store: list scan jobs: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+
+	items := []ScanJob{} // 빈 결과도 JSON []로 나가도록 nil이 아닌 슬라이스
+	for rows.Next() {
+		var (
+			j          ScanJob
+			targetsStr string
+			portsStr   string
+		)
+		if err := rows.Scan(&j.ID, &j.Status, &j.Origin, &j.ExecutorType, &j.SensorID,
+			&targetsStr, &portsStr, &j.TimeoutMs, &j.Concurrency,
+			&j.TotalEndpoints, &j.ScannedEndpoints, &j.ReachableEndpoints,
+			&j.CertificatesFound, &j.CertificatesNew, &j.Error,
+			&j.CreatedAt, &j.StartedAt, &j.FinishedAt); err != nil {
+			return nil, fmt.Errorf("store: scan scan job: %w", err)
+		}
+		j.Targets = splitNonEmpty(targetsStr, sansSep)
+		j.Ports = parseInts(splitNonEmpty(portsStr, portSep))
+		items = append(items, j)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate scan jobs: %w", err)
+	}
+	return &ScanJobList{Items: items, Total: total, Page: page, PageSize: size}, nil
 }
 
 // recordDiscoveredChain은 발견된 체인을 저장하고 리프에 network_endpoint 위치를 붙인다.

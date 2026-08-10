@@ -99,6 +99,8 @@ services:
       SCAN_SWEEP_CHUNK_GAP: ${SCAN_SWEEP_CHUNK_GAP:-5s}
       SCAN_SWEEP_MAX_DAYS: ${SCAN_SWEEP_MAX_DAYS:-30}
       SCAN_SWEEP_STALL_AFTER: ${SCAN_SWEEP_STALL_AFTER:-10m}
+      # 스캔 화면의 대상 제안에 실을 운영자 지정 대역 (콤마 구분 IP/CIDR, 선택).
+      SCAN_SUGGESTED_NETWORKS: ${SCAN_SUGGESTED_NETWORKS:-}
       # --- 관리 콘솔 접근 IP 제한 (INSTALL.md 5.2.3) ---
       # 허용 목록 자체는 DB에 있고 화면에서 관리한다. 목록이 비면 제한 없음이다.
       # 이 구성(브라우저 → frontend → backend)에서는 백엔드가 보는 출발지가 frontend
