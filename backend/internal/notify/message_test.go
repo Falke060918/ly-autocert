@@ -85,10 +85,60 @@ func TestBuildCertExpiryMessageSeverity(t *testing.T) {
 		if m.Severity != tc.want {
 			t.Errorf("days=%d severity = %q, want %q", tc.days, m.Severity, tc.want)
 		}
-		if tc.days <= 0 {
-			if m.EventID != EventCertExpired || strings.Contains(m.Title, "D-") {
-				t.Errorf("days=%d must render as an expired event: %q / %q", tc.days, m.EventID, m.Title)
-			}
+	}
+}
+
+// 만료 판정은 DaysRemaining 부호가 아니라 NotAfter와 현재 시각 비교다.
+// DaysRemaining은 탐지 쿼리의 floor(잔여 초/86400)이므로 잔여 12시간이면 0이 되고,
+// 부호로 판정하면 아직 유효한 인증서에 "만료되었습니다"가 나간다.
+func TestBuildCertExpiryMessageStillValidWithinLastDay(t *testing.T) {
+	f := testFacts()
+	f.NotAfter = time.Now().Add(12 * time.Hour)
+	f.DaysRemaining = 0 // floor(0.5) — 탐지 쿼리가 주는 값
+
+	m := BuildCertExpiryMessage(f)
+
+	if m.EventID != EventCertExpiring {
+		t.Errorf("event id = %q, want %q", m.EventID, EventCertExpiring)
+	}
+	if !strings.Contains(m.Title, "D-0") || strings.Contains(m.Title, "[인증서 만료]") {
+		t.Errorf("title must stay an expiring title: %q", m.Title)
+	}
+	if strings.Contains(m.TextBody, "만료되었습니다") || strings.Contains(m.TextBody, "만료 경과") {
+		t.Errorf("a still-valid certificate must not read as expired:\n%s", m.TextBody)
+	}
+	if !strings.Contains(m.TextBody, "남은 일수: 0일") {
+		t.Errorf("text body must keep the backend days_remaining:\n%s", m.TextBody)
+	}
+}
+
+// 만료 경과 일수는 -DaysRemaining이 아니다 — 6시간 경과면 floor(-0.25) = -1이라 "1일"이 된다.
+func TestBuildCertExpiryMessageElapsedMatchesRealElapsed(t *testing.T) {
+	cases := []struct {
+		name  string
+		since time.Duration
+		days  int
+		want  string
+	}{
+		{"6시간 경과", 6 * time.Hour, -1, "만료 경과: 6시간"},
+		{"36시간 경과", 36 * time.Hour, -2, "만료 경과: 1일"},
+		{"10일 경과", 10 * 24 * time.Hour, -10, "만료 경과: 10일"},
+	}
+	for _, tc := range cases {
+		f := testFacts()
+		f.NotAfter = time.Now().Add(-tc.since)
+		f.DaysRemaining = tc.days
+
+		m := BuildCertExpiryMessage(f)
+
+		if m.EventID != EventCertExpired {
+			t.Errorf("%s: event id = %q, want %q", tc.name, m.EventID, EventCertExpired)
+		}
+		if strings.Contains(m.Title, "D-") {
+			t.Errorf("%s: expired title must not carry a D-day: %q", tc.name, m.Title)
+		}
+		if !strings.Contains(m.TextBody, tc.want) {
+			t.Errorf("%s: text body missing %q:\n%s", tc.name, tc.want, m.TextBody)
 		}
 	}
 }
