@@ -26,7 +26,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { CertStatusBadge, DdayText } from "@/components/cert-badges";
+import { FreshnessText } from "@/components/freshness";
+import { useTicker } from "@/components/notification-bell";
 import { canExportInventory, canManageInventory, useAuth } from "@/lib/auth";
 import {
   ApiError,
@@ -91,7 +95,14 @@ function CertificatesBody() {
   const [reloadKey, setReloadKey] = React.useState(0);
   const [exporting, setExporting] = React.useState(false);
 
+  // 신선도 표기는 상대 시각이라 주기적으로 다시 그린다(렌더 중 Date.now 금지).
+  const now = useTicker(60_000);
+
   // URL 쿼리 → API 쿼리 (허용 파라미터만 통과시킨다).
+  //
+  // 교체된 인증서는 **프론트가 명시적으로** 뺀다 — 서버 목록 API의 기본값은
+  // 그대로이고(CSV 내보내기가 같은 필터를 공유한다), 화면 토글로 되돌릴 수 있다.
+  // status=replaced를 직접 고른 경우에는 제외하지 않는다(빈 목록 방지).
   const apiQuery = React.useMemo(() => {
     const out = new URLSearchParams();
     for (const key of [
@@ -100,6 +111,11 @@ function CertificatesBody() {
     ]) {
       const v = searchParams.get(key);
       if (v) out.set(key, v);
+    }
+    const includeReplaced = searchParams.get("include_replaced") === "true";
+    const statusFilter = searchParams.get("status") ?? "";
+    if (!includeReplaced && !statusFilter.split(",").includes("replaced")) {
+      out.set("exclude_status", "replaced");
     }
     return out;
   }, [searchParams]);
@@ -143,7 +159,10 @@ function CertificatesBody() {
 
   const hasFilter = [
     "q", "status", "type", "expired", "expires_within_days", "self_signed", "unowned",
+    "include_replaced",
   ].some((k) => searchParams.get(k));
+
+  const includeReplaced = searchParams.get("include_replaced") === "true";
 
   const sort = searchParams.get("sort") ?? "not_after";
   const order = searchParams.get("order") ?? "asc";
@@ -263,6 +282,23 @@ function CertificatesBody() {
             ))}
           </SelectContent>
         </Select>
+        {/*
+          교체된 인증서는 기본으로 숨긴다 — 갱신이 끝나 죽은 인증서가 목록·만료
+          집계에 섞이면 이미 처리한 건에 대한 알림처럼 신뢰를 깎는다. 다만 이력
+          추적은 필요하므로 토글로 되돌릴 수 있게 두고 상태는 URL에 남긴다.
+        */}
+        <div className="flex items-center gap-2">
+          <Switch
+            id="include-replaced"
+            checked={includeReplaced}
+            onCheckedChange={(v) =>
+              setQuery({ include_replaced: v ? "true" : null })
+            }
+          />
+          <Label htmlFor="include-replaced" className="text-[13px] font-normal">
+            교체된 인증서 포함
+          </Label>
+        </div>
         <div className="ml-auto flex items-center gap-2">
           {searchParams.get("self_signed") === "true" && (
             <FilterChip label="자체 서명" onRemove={() => setQuery({ self_signed: null })} />
@@ -294,7 +330,12 @@ function CertificatesBody() {
                 <>조건에 맞는 인증서가 없습니다. 필터를 초기화해 보십시오.</>
               ) : (
                 <>
-                  아직 등록된 인증서가 없습니다.{" "}
+                  {/*
+                    교체된 인증서는 기본으로 빠져 있다 — 인벤토리에 그것만 남은
+                    설치에서 "등록된 인증서가 없다"고만 말하면 거짓말이 된다.
+                  */}
+                  아직 등록된 인증서가 없습니다. 교체된 인증서는 기본으로 숨겨져
+                  있으니 위의 &ldquo;교체된 인증서 포함&rdquo;도 확인해 보십시오.{" "}
                   {canManage
                     ? "인증서 등록 또는 Discovery 스캔으로 시작하십시오."
                     : "관리자에게 등록을 요청하십시오."}
@@ -313,6 +354,8 @@ function CertificatesBody() {
                   <TableHead>서명 알고리즘</TableHead>
                   <TableHead>발급자</TableHead>
                   <TableHead>유형</TableHead>
+                  {/* 정렬 불가 — 위치 집계 파생값이라 서버 정렬 화이트리스트에 없다. */}
+                  <TableHead>최근 확인</TableHead>
                   <SortHead field="created_at" sort={sort} order={order} setQuery={setQuery} />
                 </TableRow>
               </TableHeader>
@@ -352,6 +395,9 @@ function CertificatesBody() {
                     </TableCell>
                     <TableCell className="text-[13px]">
                       {TYPE_LABELS[c.certificate_type] ?? c.certificate_type}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap">
+                      <FreshnessText iso={c.last_seen_at} now={now} />
                     </TableCell>
                     <TableCell className="font-mono text-xs tabular-nums">
                       {formatDate(c.created_at)}
