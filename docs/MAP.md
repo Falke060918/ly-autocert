@@ -79,6 +79,7 @@
   - `load-offline.sh`(고객사 — 체크섬 대조 실패 시 **적재 전 중단**, docker load, MANIFEST 태그 대조. main 패키지에 사본으로 실려 간다. 옵션 `--verify-only`/`--no-next-steps`(install.sh가 호출할 때 쓴다). 자기 자신은 `sh load-offline.sh`로 부르지만 종료 안내는 "이 디렉터리에서 `bash install.sh`"다 — INSTALL.md 5.1.3과 install.sh 힌트도 이 표기로 통일돼 있다)
   - `build-sensor-dist.sh`(센서 크로스 빌드 레시피의 단일 진실원천 — `backend/Makefile`의 `sensor-dist`와 `bundle-offline.sh`가 모두 이걸 호출한다. Git Bash에선 MSYS 경로 변환을 꺼야 `-w /src`가 깨지지 않는다)
 - `mockup/index.html` — 승인된 4화면 정적 목업 (제품 코드 아님)
+- `docs/mockups/ui-redesign.html` — UI 전면 개선안 정적 목업(file:// 단독 실행, 4화면 해시 딥링크 `#dashboard|#discovery|#certificates|#detail`, 다크/라이트 토글. 제품 코드 아님)
 - `docs/` — 00-spec(명세) / 01-plan(기획) / 02-goals(목표) / STATE / MAP / GOTCHAS. 절대 경로·OS 전용 명령은 여기가 아니라 git 미추적 `docs/MACHINE.md`(원본 `MACHINE.md.example`)에 적는다
   - 00-spec 15장=Phase 1~5 로드맵 + 상용화 준비 트랙(Phase 2 병렬), 16장=MVP 제외 목록, 02-goals=성공 기준 7개+M1~M3(Phase 판정 시 대조 출처)
   - `docs/design/` — 설계 확정본 (03-license 오프라인 라이선스 — **구현 코드 없음** / 04-port-autoscan 포트 자동 탐지(0013) · 05-notifications 만료 알림 4채널(0012) — **구현·e2e 검증 완료**, 이후 동작 근거를 따질 때 인용처로 쓴다: 소급 발송 차단 근거는 05의 7.3.1, 빈 포트 토큰 거부 근거는 04의 2.1 / 06-rescan-and-replacement 주기 재스캔·교체 감지(0015) — **U4~U7 전부 구현·배선 완료**(store/rescan.go·replacement.go·rescan_status.go, discovery/rescan.go, config.RescanConfig, api/rescan.go, frontend rescan-card). cmd/server가 재스캔 스케줄러를 `api.WithRescanController`로 주입하므로 상태 API는 `wired:true`다)
