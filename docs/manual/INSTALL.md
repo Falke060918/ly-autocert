@@ -10,18 +10,16 @@
 
 ## 0. 빠른 설치
 
-`scripts/install.sh` 하나가 설치의 전부다. `.env` 편집·키 생성·`docker compose` 명령을 직접 칠 일이 없다.
+`install.sh` 하나가 설치의 전부다. `.env` 편집·키 생성·`docker compose` 명령을 직접 칠 일이 없다.
 
-### 0.1 서버 설치 — 명령 5줄
+### 0.1 서버 설치 — 명령 3줄
 
-반입 매체를 서버에 복사한 디렉터리에서 순서대로 실행한다. (버전 `1.0.0`은 반입한 번들 파일명에 맞춘다.)
+반입할 것은 **서버 패키지 `main_<버전>.tar.gz`와 그 `.sha256`** 둘뿐이다. 매체를 서버에 복사한 디렉터리에서 순서대로 실행한다. (버전 `1.0.0`은 반입한 파일명에 맞춘다.)
 
 ```sh
-sha256sum -c autocert-offline-1.0.0.tar.sha256
-tar xf autocert-offline-1.0.0.tar && cd autocert-offline-1.0.0
-sh load-offline.sh
-tar xzf source/autocert-source-1.0.0.tar.gz && cd autocert-1.0.0
-bash scripts/install.sh
+sha256sum -c main_1.0.0.tar.gz.sha256
+tar xzf main_1.0.0.tar.gz && cd main_1.0.0
+bash install.sh
 ```
 
 각 줄이 하는 일:
@@ -29,26 +27,31 @@ bash scripts/install.sh
 | 줄 | 하는 일 |
 | --- | --- |
 | 1 | 매체 손상 확인. **어긋나면 매체를 다시 받는다** — 재시도·부분 적재로 넘기지 않는다 |
-| 2 | 번들 해제 |
-| 3 | 번들 안 모든 파일 체크섬 대조 + 컨테이너 이미지 적재(`docker load`) |
-| 4 | 제품 소스 해제 (`autocert-1.0.0/`) |
-| 5 | **설치 스크립트 실행** — 방향키 메뉴가 뜬다 |
+| 2 | 패키지 해제 후 그 안으로 이동. **패키지 루트가 곧 설치 루트다** — 여기서 제품이 돌아간다 |
+| 3 | **설치 스크립트 실행** — 방향키 메뉴가 뜬다 |
 
-`scripts/install.sh`가 대신 해 주므로 **직접 할 필요가 없는 것**:
+`install.sh`가 대신 해 주므로 **직접 할 필요가 없는 것**:
 
+- 패키지 안 전 파일 체크섬 대조와 컨테이너 이미지 적재 — `load-offline.sh`를 스크립트가 호출한다
+- 제품 소스 전개 (`source/autocert-source-<버전>.tar.gz` → 패키지 루트)
 - `.env` 생성과 편집
 - `POSTGRES_PASSWORD`·`SENSOR_CA_ENC_KEY` 난수 생성 (`openssl rand` 불필요)
 - NIC IP 자동 탐지 → `SENSOR_ADVERTISED_HOSTS` 후보 제시
 - compose 네트워크 대역을 `ADMIN_IP_TRUSTED_PROXIES`에 자동 주입 (8.1절 ②의 함정을 미리 막는다)
+- compose 프로젝트명 고정(`COMPOSE_PROJECT_NAME`) — 업그레이드 때 DB 볼륨을 잃지 않기 위한 값이다 (5.1.4절)
 - 호스트 포트 충돌 검사
 - `docker compose up -d` 실행과 `/healthz` 응답 대기
 
 무인 실행(전부 기본값)과 도움말:
 
 ```sh
-bash scripts/install.sh --yes
-bash scripts/install.sh --help
+bash install.sh --yes
+bash install.sh --help
 ```
+
+> 저장소 소스 트리에서 실행하는 경우에는 같은 스크립트가 `scripts/install.sh`에 있다. 패키지 루트에 풀린 소스에도 `scripts/install.sh`가 함께 들어 있으므로, 설치를 마친 디렉터리에서는 두 경로 중 어느 쪽으로 불러도 같다.
+
+**센서(원격 수집기)는 이 패키지에 들어 있지 않다.** 센서 호스트에는 `sensor_linux_<버전>.tar.gz` / `sensor_windows_<버전>.zip`을 따로 반입한다 (SENSOR.md).
 
 ### 0.2 설치 중 무엇을 묻는가
 
@@ -94,6 +97,7 @@ http://<서버 IP>:3000
 | 만료 메일·웹훅·Syslog 알림 켜기 | 5.2.1절(값) → OPERATIONS.md 2.7절(정책) |
 | 관리 콘솔 접근 IP 제한 | 5.2.3절 → OPERATIONS.md 2.9절 |
 | 포트 변경 | 5.5절 |
+| 새 버전으로 업그레이드 | **5.1.4절** — 새 디렉터리에 깔리므로 `COMPOSE_PROJECT_NAME`을 놓치면 빈 DB로 뜬다 |
 | 설치가 안 됨 | **8장 트러블슈팅** |
 
 ## 1. 제품 개요
@@ -126,8 +130,8 @@ INHERIT AutoCert는 폐쇄망·레거시 환경을 위한 온프레미스 인증
 **운영에 외부 인터넷 연결이 필요 없다.**
 
 - 웹 콘솔의 폰트를 포함한 모든 정적 자원은 컨테이너에 셀프호스팅되어 있다. CDN 등 외부 요청이 발생하지 않는다 (브라우저 개발자도구 네트워크 탭에서 외부 요청 0건으로 확인 가능).
-- 단, 컨테이너 **이미지 반입**은 별도로 필요하다. 인터넷이 되는 개발측에서 반입 번들(이미지 + 소스 + 센서 바이너리 + 체크섬)을 만들어 매체로 옮기고, 폐쇄망에서는 검증·적재만 한다 — 절차는 **5.1절**. 사내 레지스트리를 쓰는 경우는 5.1.2절.
-- 번들에는 최종 이미지가 들어 있으므로 **폐쇄망 안에서 빌드할 필요가 없다.** 굳이 현장 빌드를 택하면 베이스 이미지·의존성(Go 모듈·npm 패키지) 접근이 가능한 내부 미러가 따로 필요하다.
+- 단, 컨테이너 **이미지 반입**은 별도로 필요하다. 인터넷이 되는 개발측에서 릴리즈 패키지(이미지 + 소스 + 설치 스크립트 + 체크섬)를 만들어 매체로 옮기고, 폐쇄망에서는 검증·적재만 한다 — 절차는 **5.1절**. 사내 레지스트리를 쓰는 경우는 5.1.2절.
+- 서버 패키지에는 최종 이미지가 들어 있으므로 **폐쇄망 안에서 빌드할 필요가 없다.** 굳이 현장 빌드를 택하면 베이스 이미지·의존성(Go 모듈·npm 패키지) 접근이 가능한 내부 미러가 따로 필요하다.
 
 ### 2.3 하드웨어 (권장 최소값)
 
@@ -229,47 +233,81 @@ frontend → backend(8080), backend → db(5432) 통신은 Docker Compose 내부
 
 ### 5.1 오프라인 반입 (이미지·소스)
 
-폐쇄망 서버는 이미지를 내려받을 수 없다. **인터넷이 되는 개발측에서 반입 번들을 만들어 매체로 옮기고, 고객사에서는 체크섬 대조 후 적재만 한다.** 폐쇄망 안에서 빌드하지 않는다 — 번들에 최종 이미지가 들어 있으므로 현장에 Go·Node.js·내부 미러가 필요 없다.
+폐쇄망 서버는 이미지를 내려받을 수 없다. **인터넷이 되는 개발측에서 릴리즈 패키지를 만들어 매체로 옮기고, 고객사에서는 체크섬 대조 후 적재만 한다.** 폐쇄망 안에서 빌드하지 않는다 — 서버 패키지에 최종 이미지가 들어 있으므로 현장에 Go·Node.js·내부 미러가 필요 없다.
+
+**릴리즈 산출물은 버전별·환경별 3종이다.** 예전의 통합 번들(`autocert-offline-<버전>.tar`)은 **폐기됐다** — 센서 호스트에 200 MB짜리 서버 이미지를 함께 옮길 이유가 없어서다.
+
+| 산출물 | 무엇이 들어 있나 | 어디로 반입하나 | 대략 크기 |
+| --- | --- | --- | --- |
+| `main_<버전>.tar.gz` (+ `.sha256`) | 컨테이너 이미지 3종·제품 소스·매뉴얼·compose·`install.sh`·`load-offline.sh` | **AutoCert 서버 1대** | 약 200 MB |
+| `sensor_linux_<버전>.tar.gz` (+ `.sha256`) | Linux 센서 바이너리·`install-sensor.sh`·SENSOR.md | **Linux 센서 호스트마다** | 약 10 MB |
+| `sensor_windows_<버전>.zip` (+ `.sha256`) | Windows 센서 exe·`install-sensor.ps1`·SENSOR.md | **Windows 센서 호스트마다** | 약 10 MB |
+
+**무엇을 언제 반입하나**
+
+| 상황 | 반입할 것 |
+| --- | --- |
+| 서버만 설치한다 (센서 미사용) | `main_<버전>.tar.gz` + `.sha256` |
+| 서버 + Linux 격리 세그먼트 수집 | 서버에 `main_…`, 각 Linux 센서 호스트에 `sensor_linux_…` |
+| 서버 + Windows 격리 세그먼트 수집 | 서버에 `main_…`, 각 Windows 센서 호스트에 `sensor_windows_…` |
+| 센서만 추가·재설치 (서버는 이미 운영 중) | 해당 센서 패키지 하나만 |
+
+- **센서는 별도 패키지다.** `main_…`에는 센서 바이너리가 들어 있지 않다 — 서버에서 `sensor/` 디렉터리를 찾지 말 것. 센서 절차 전체는 SENSOR.md에 있다.
+- 세 패키지는 **버전이 같아야 한다.** 서버와 센서의 버전 스큐 주의사항은 SENSOR.md 8.1절.
+- 각 패키지는 자기 안에 `MANIFEST.txt`와 `SHA256SUMS`(자기 자신을 제외한 전 파일)를 갖는다. 설치 스크립트가 실행 전에 이 `SHA256SUMS`를 대조한다.
 
 두 스크립트가 이 절차의 전부다.
 
 | 스크립트 | 실행 위치 | 실행 환경 |
 | --- | --- | --- |
-| `scripts/bundle-offline.sh` | **개발측** (인터넷 가능) | Linux·macOS·WSL·Git Bash. docker(+compose v2)·git·tar·gzip·sha256sum 필요 |
-| `load-offline.sh` (번들에 동봉) | **고객사 서버** (폐쇄망) | Linux·macOS. docker·gzip·sha256sum 필요 |
+| `scripts/bundle-offline.sh` | **개발측** (인터넷 가능) | Linux·macOS·WSL·Git Bash. docker(+compose v2)·git·tar·gzip·sha256sum 필요. Windows zip 생성에는 zip / python3 / bsdtar / docker 중 하나가 더 필요하다 |
+| `load-offline.sh` (`main_…` 패키지에 동봉) | **고객사 서버** (폐쇄망) | Linux·macOS. docker·gzip·sha256sum 필요. `install.sh`가 대신 호출하므로 직접 실행할 일은 보통 없다 |
 
 #### 5.1.1 개발측 — 매체에 담아 갈 것
 
-저장소 루트에서 한 줄이다.
+저장소 루트에서 한 줄이면 3종이 모두 나온다.
 
 ```sh
 sh scripts/bundle-offline.sh
 ```
 
-이미지 빌드 → `docker save` → 센서 바이너리 크로스 빌드 → 소스·compose·매뉴얼 수집 → SHA-256 체크섬 생성까지 수행하고, `dist/` 아래에 결과를 만든다. **반입 매체에 담을 것은 아래 두 파일뿐이다.**
+이미지 빌드 → `docker save` → 센서 바이너리 크로스 빌드 → 소스·compose·매뉴얼·설치 스크립트 수집 → SHA-256 체크섬 생성까지 수행하고, `dist/` 아래에 결과를 만든다. **버전당 파일 6개**다.
 
 ```
-dist/autocert-offline-<버전>.tar           # 번들 전체
-dist/autocert-offline-<버전>.tar.sha256    # 매체 손상 판별용
+dist/main_<버전>.tar.gz            + .sha256
+dist/sensor_linux_<버전>.tar.gz    + .sha256
+dist/sensor_windows_<버전>.zip     + .sha256
+dist/SHA256SUMS-<버전>
 ```
 
-주요 옵션: `--version <버전>` / `--output <디렉터리>` / `--skip-build`(이미 빌드된 이미지 사용) / `--skip-sensor` / `--no-archive`. 전체 목록은 `sh scripts/bundle-offline.sh --help`.
+`dist/SHA256SUMS-<버전>`(3줄 집계)은 **3종을 모두 만들었을 때만** 나온다 — 부분 빌드의 집계 파일이 완본으로 오인되지 않게 하기 위해서다.
 
-번들(`.tar`)을 풀면 다음이 들어 있다.
+필요한 것만 만들려면 `--target`을 쓴다.
+
+```sh
+sh scripts/bundle-offline.sh --target main
+sh scripts/bundle-offline.sh --target sensor-linux,sensor-windows
+```
+
+주요 옵션: `--target <all|main|sensor-linux|sensor-windows>`(반복·콤마 지정 가능, 기본 `all`) / `--version <버전>` / `--output <디렉터리>` / `--skip-build`(이미 빌드된 이미지 사용, `main` 전용) / `--no-archive`(디렉터리만 만들고 묶지 않는다). `--skip-sensor`는 `--target main`의 deprecated 별칭이다. 전체 목록은 `sh scripts/bundle-offline.sh --help`.
+
+`main_<버전>.tar.gz`를 풀면 `main_<버전>/` 디렉터리가 생기고 그 안은 다음과 같다. **이 디렉터리가 곧 설치 루트다.**
 
 | 경로 | 내용 |
 | --- | --- |
 | `MANIFEST.txt` | 제품 버전·생성 일시(UTC)·소스 커밋·**포함 이미지 태그와 이미지 ID** |
-| `SHA256SUMS` | 번들 안 모든 파일의 SHA-256 (적재 스크립트가 이걸로 대조한다) |
-| `load-offline.sh` | 고객사에서 실행할 검증·적재 스크립트 |
+| `SHA256SUMS` | 패키지 안 모든 파일의 SHA-256 (설치 스크립트가 이걸로 대조한다) |
+| `VERSION` | 제품 버전 (한 줄) |
+| `install.sh` | **설치 진입점 — 이 파일 하나만 실행하면 된다** |
+| `load-offline.sh` | 검증·적재 스크립트 (`install.sh`가 호출한다) |
+| `lib/tui.sh` | 설치 스크립트 공용 출력 라이브러리 |
 | `images/` | `postgres:16-alpine`, `inherit-autocert/backend:<버전>`, `inherit-autocert/frontend:<버전>` (docker save + gzip) |
-| `sensor/` | 센서 바이너리 linux/windows amd64 + 자체 SHA256SUMS (SENSOR.md 2장) |
-| `source/` | 제품 소스 아카이브 (`git archive` — `.env` 등 비밀값 파일은 원천적으로 들어가지 않는다) |
-| `manual/` | INSTALL·OPERATIONS·SENSOR 매뉴얼 |
-| `docker-compose.yml`, `.env.example` | 참고용 사본 (실제 기동은 `source/`를 푼 디렉터리에서 한다) |
+| `source/` | 제품 소스 아카이브 (`git archive` — `.env` 등 비밀값 파일은 원천적으로 들어가지 않는다). `install.sh`가 이 디렉터리로 전개한다 |
+| `manual/` | INSTALL·OPERATIONS·SENSOR·TLS 매뉴얼 |
+| `docker-compose.yml`, `.env.example` | 반입 심사 사전 열람용 사본 (소스 아카이브에서 그대로 꺼낸 동일 바이트) |
 
 - **빌드 단계 전용 베이스 이미지(`golang`·`node`)는 담지 않는다.** 두 Dockerfile 모두 멀티스테이지라 최종 이미지에 실행에 필요한 레이어가 이미 포함되어 있다.
-- 번들 크기는 이미지 3종 기준 **약 200 MB**다(센서 바이너리 포함 시 +13 MB).
+- 센서 패키지의 내용물은 SENSOR.md 4장에 있다.
 
 #### 5.1.2 이미지 이름과 버전 태그
 
@@ -281,28 +319,67 @@ dist/autocert-offline-<버전>.tar.sha256    # 매체 손상 판별용
 | frontend | `inherit-autocert/frontend:<버전>` |
 | db | `postgres:16-alpine` (공식 이미지 그대로) |
 
-- 버전 기본값은 저장소 루트의 `VERSION` 파일이며 `docker-compose.yml`의 기본 태그와 같아야 한다(다르면 번들 스크립트가 중단한다). 변경 이력은 `CHANGELOG.md`.
-- `.env`에 `AUTOCERT_VERSION`·`AUTOCERT_IMAGE_PREFIX`를 넣으면 태그와 접두어를 덮어쓸 수 있다. **사내 레지스트리에 올려 쓰는 경우** `AUTOCERT_IMAGE_PREFIX=registry.internal/autocert` 같은 값을 쓰고, 이때는 반입 번들 대신 레지스트리 push/pull로 대체해도 된다.
+- 버전 기본값은 저장소 루트의 `VERSION` 파일이며 `docker-compose.yml`의 기본 태그와 같아야 한다(다르면 패키지 스크립트가 중단한다). 변경 이력은 `CHANGELOG.md`.
+- `.env`에 `AUTOCERT_VERSION`·`AUTOCERT_IMAGE_PREFIX`를 넣으면 태그와 접두어를 덮어쓸 수 있다. **사내 레지스트리에 올려 쓰는 경우** `AUTOCERT_IMAGE_PREFIX=registry.internal/autocert` 같은 값을 쓰고, 이때는 오프라인 반입 대신 레지스트리 push/pull로 대체해도 된다.
 
 #### 5.1.3 고객사 — 현장에서 실행할 것
 
-매체를 서버에 복사한 뒤, 아래가 전부다. (**0.1절의 5줄과 같은 절차**이며, 여기서는 마지막 `bash scripts/install.sh` 대신 5.2–5.3을 손으로 한다.)
+매체를 서버에 복사한 뒤, 아래가 전부다. (**0.1절의 3줄과 같은 절차**이며, 여기서는 마지막 `bash install.sh` 대신 5.2–5.3을 손으로 한다.)
 
 ```sh
-sha256sum -c autocert-offline-1.0.0.tar.sha256   # 매체 손상 확인
-tar xf autocert-offline-1.0.0.tar
-cd autocert-offline-1.0.0
-sh load-offline.sh                                # 체크섬 대조 + docker load
-tar xzf source/autocert-source-1.0.0.tar.gz       # autocert-1.0.0/ 으로 풀린다
-cd autocert-1.0.0
+sha256sum -c main_1.0.0.tar.gz.sha256
+tar xzf main_1.0.0.tar.gz
+cd main_1.0.0
+sh load-offline.sh
+tar xzf source/autocert-source-1.0.0.tar.gz --strip-components=1
 ```
+
+| 줄 | 하는 일 |
+| --- | --- |
+| 1 | 매체 손상 확인 |
+| 2–3 | 패키지 해제 후 그 안으로 이동 — **여기가 설치 루트다** |
+| 4 | 체크섬 대조 + `docker load` |
+| 5 | 제품 소스를 **패키지 루트에 그대로 전개** (`--strip-components=1`이 아카이브 안 `autocert-1.0.0/` 접두어를 벗긴다) |
 
 `load-offline.sh`는 ① `SHA256SUMS` 전건 대조 ② `docker load` ③ 매니페스트의 이미지 태그가 실제로 적재됐는지 확인, 순서로 진행한다.
 
 - **체크섬이 하나라도 어긋나면 적재하지 않고 즉시 중단한다.** 이때는 매체를 다시 복사해 받는다 — 부분 적재나 재시도로 넘기지 않는다.
-- 적재 없이 검증만 하려면 `sh load-offline.sh --verify-only`.
+- 적재 없이 검증만 하려면 `sh load-offline.sh --verify-only`. 끝의 다음 단계 안내를 끄려면 `--no-next-steps`(`install.sh`가 호출할 때 쓰는 옵션이다).
+- 소스를 전개하면 패키지 루트의 `docker-compose.yml`·`.env.example`이 아카이브 안 같은 파일로 덮인다 — **동일 바이트라 내용은 바뀌지 않는다.**
 - 이후 5.2절(환경 변수) → 5.3절(기동) 순으로 진행한다. **기동 시 `--build`를 붙이지 않는다** — 적재한 이미지를 그대로 쓴다.
-- 센서를 쓸 경우 `sensor/` 의 바이너리를 센서 호스트로 옮긴다 (SENSOR.md 2장).
+- 센서를 쓸 경우 별도 패키지(`sensor_linux_<버전>.tar.gz` / `sensor_windows_<버전>.zip`)를 센서 호스트로 옮긴다 (SENSOR.md 4장).
+
+#### 5.1.4 업그레이드 — 새 버전 패키지로 갈아탈 때
+
+새 버전은 **새 디렉터리(`main_<새 버전>/`)에 풀린다.** 패키지 루트가 곧 설치 루트이므로 구·신 버전이 서로 다른 디렉터리에 있게 되고, 여기에 함정이 하나 있다.
+
+> **`COMPOSE_PROJECT_NAME`을 고정하지 않으면 업그레이드 후 빈 DB로 뜬다.**
+> Docker 볼륨(`pgdata`)은 compose **프로젝트명**으로 이름이 붙고, 프로젝트명의 기본값은 **디렉터리명**이다. 디렉터리가 `main_1.0.0` → `main_1.1.0`으로 바뀌면 compose는 이를 다른 프로젝트로 보고 **새 빈 볼륨을 만든다.** 기존 데이터는 지워지지 않고 옛 볼륨에 남아 있지만, 화면에는 인증서 0건·계정 0명(초기 설정 화면)이 나타난다.
+
+`install.sh`는 `.env`에 `COMPOSE_PROJECT_NAME`을 써 넣어 이 값을 디렉터리명에서 떼어 놓는다. **`.env`를 손으로 만든다면 이 줄을 반드시 넣는다.**
+
+```
+COMPOSE_PROJECT_NAME=inherit_autocert
+```
+
+절차는 3단계다. (백업은 그 전에 한다 — OPERATIONS.md 4.1절.)
+
+```sh
+cd <구버전 디렉터리> && docker compose down
+cp .env <신버전 디렉터리>/.env
+cd <신버전 디렉터리> && bash install.sh
+```
+
+| 줄 | 하는 일 |
+| --- | --- |
+| 1 | 구버전 컨테이너 정지·제거. **`-v`를 붙이지 않는다** — 붙이면 DB 볼륨까지 지워진다 |
+| 2 | 기존 설정을 그대로 승계한다. 비밀값(`POSTGRES_PASSWORD`·`SENSOR_CA_ENC_KEY`)이 여기 있으므로 **새로 만들면 안 된다** — `SENSOR_CA_ENC_KEY`가 바뀌면 기존 센서 CA를 복호화할 수 없다 |
+| 3 | 신버전 이미지 적재 + 기동. 기존 `.env`를 발견하면 값을 유지한다 |
+
+- 승계한 `.env`에 `COMPOSE_PROJECT_NAME`이 없으면(1.0.0에서 손으로 설치한 경우) **위 줄을 직접 추가하되, 값은 구버전 디렉터리명과 같게 맞춘다.** 이미 그 이름으로 볼륨이 만들어져 있기 때문이다. 확인은 `docker volume ls`.
+- 마이그레이션은 backend가 기동하면서 자동 적용한다. 확인·롤백 주의사항은 OPERATIONS.md 5장.
+- 구버전 디렉터리는 신버전이 정상 동작하는 것을 확인한 뒤에 지운다.
+- 센서는 서버와 별개로 갱신한다 (SENSOR.md 8장). 재등록은 필요 없다.
 
 ### 5.2 환경 변수 설정
 
@@ -325,8 +402,9 @@ cp .env.example .env
 | `SESSION_COOKIE_SECURE` | `false` | 세션 쿠키에 `Secure` 플래그를 붙인다. **HTTPS 리버스 프록시로 TLS를 종단할 때만 `true`** — 평문 HTTP로 접속하면 브라우저가 쿠키를 버려 로그인이 조용히 실패한다. `docker-compose.https.yml`을 쓰면 자동으로 켜지므로 직접 넣을 필요는 없다 (TLS.md) |
 | `SENSOR_CA_ENC_KEY` | (없음) | 센서 사용 시에만. 센서 CA 개인키 암호화 키 — hex 64자, `openssl rand -hex 32`로 생성. 미설정이면 센서 게이트웨이(8443)가 열리지 않는다. 설정하면 `SENSOR_ADVERTISED_HOSTS`도 반드시 함께 채운다 (SENSOR.md 3.1절) |
 | `SENSOR_ADVERTISED_HOSTS` | (없음) | 센서 사용 시에만. 센서가 서버 접속에 쓸 **실제** DNS/IP 목록(쉼표 구분, 예: `10.20.0.5,autocert.internal`) — 게이트웨이 서버 인증서 SAN. 위 키를 설정했는데 이 값이 비면 센서 게이트웨이(8443)가 뜨지 않는다 — 8080 웹/API는 정상 기동한다 (SENSOR.md 3.1절). **포트를 적지 않는다** (`10.20.0.5:9443` ✗) — 포트가 붙은 항목은 기동 시 경고와 함께 무시된다 |
-| `AUTOCERT_VERSION` | 릴리즈 버전 (`docker-compose.yml`에 고정) | 쓸 이미지의 버전 태그. **반입 번들 그대로 쓰면 설정할 필요가 없다** — 버전을 덮어써서 번들을 만든 경우에만 같은 값을 넣는다 (5.1.2절) |
+| `AUTOCERT_VERSION` | 릴리즈 버전 (`docker-compose.yml`에 고정) | 쓸 이미지의 버전 태그. **반입 패키지 그대로 쓰면 설정할 필요가 없다** — 버전을 덮어써서 패키지를 만든 경우에만 같은 값을 넣는다 (5.1.2절) |
 | `AUTOCERT_IMAGE_PREFIX` | `inherit-autocert` | 이미지 이름 접두어. 사내 레지스트리를 쓸 때만 변경 (5.1.2절) |
+| `COMPOSE_PROJECT_NAME` | (디렉터리명) | compose 프로젝트명 = **DB 볼륨 이름의 접두어**. 설치 디렉터리명이 버전마다 바뀌므로 고정하지 않으면 업그레이드 때 빈 DB로 뜬다. `install.sh`가 자동으로 넣으며, 손으로 설치했다면 직접 넣는다 (**5.1.4절** — 값을 바꾸는 것도 같은 사고를 낸다) |
 | 포트 변경용 변수 | (5.5절) | `FRONTEND_PORT`·`BACKEND_PORT`·`SENSOR_GATEWAY_PORT` 등. 기본값을 쓸 것이면 넣지 않아도 된다 — 절차와 함께 봐야 하므로 **5.5절**에 모아 두었다 |
 
 - `POSTGRES_PASSWORD`가 비어 있으면 기동이 거부된다(의도된 안전장치).
@@ -476,7 +554,7 @@ docker compose up -d
 ```
 
 - **폐쇄망에서는 `--build`를 붙이지 않는다.** 5.1절로 적재한 `inherit-autocert/backend:<버전>`·`inherit-autocert/frontend:<버전>` 이미지를 그대로 쓴다. `--build`는 인터넷(또는 내부 미러)이 되는 환경에서 소스로부터 다시 빌드할 때만 쓴다.
-- `docker compose up`이 이미지를 찾지 못하면(`manifest unknown`·`pull access denied`) 적재가 안 됐거나 `.env`의 `AUTOCERT_VERSION`이 적재한 태그와 다른 경우다 — `docker image ls` 결과를 번들의 `MANIFEST.txt`와 대조한다.
+- `docker compose up`이 이미지를 찾지 못하면(`manifest unknown`·`pull access denied`) 적재가 안 됐거나 `.env`의 `AUTOCERT_VERSION`이 적재한 태그와 다른 경우다 — `docker image ls` 결과를 패키지의 `MANIFEST.txt`와 대조한다.
 - 최초 기동 시 backend가 DB 연결 후 **SQL 마이그레이션을 자동 적용**한다. 별도의 스키마 생성 작업이 필요 없다.
 - DB 데이터는 Docker 볼륨 `pgdata`에 영속 저장된다.
 
@@ -689,7 +767,7 @@ docker compose version
 
 **⑤ 센서가 서버에 붙지 못한다 — 인증서 유효기간 오류**
 
-센서 mTLS는 인증서 유효기간을 검증하므로 **센서 호스트와 서버의 시계가 어긋나면 등록·통신이 실패한다.** 폐쇄망 내부 NTP 서버에 동기화한다 (SENSOR.md 2장). `scripts/install-sensor.sh`가 설치 전에 이 항목을 점검한다.
+센서 mTLS는 인증서 유효기간을 검증하므로 **센서 호스트와 서버의 시계가 어긋나면 등록·통신이 실패한다.** 폐쇄망 내부 NTP 서버에 동기화한다 (SENSOR.md 2장). 센서 설치 스크립트(`install-sensor.sh` / `.ps1`)가 설치 전에 이 항목을 점검한다.
 
 **⑥ 센서 접속이 TLS 검증 실패 — `certificate is valid for … not …`**
 
@@ -709,7 +787,7 @@ docker compose version
 | 증상 | 원인 | 조치 |
 | --- | --- | --- |
 | `set POSTGRES_PASSWORD in .env` | `.env`에 `POSTGRES_PASSWORD`가 없음(의도된 안전장치) | 값을 채우거나 `bash scripts/install.sh`를 다시 실행한다 |
-| `manifest unknown` / `pull access denied` | 이미지 적재 실패, 또는 `.env`의 `AUTOCERT_VERSION`이 적재한 태그와 다름 | `docker image ls`를 번들의 `MANIFEST.txt`와 대조 (5.1.2절). 폐쇄망에서는 `--build`를 붙이지 않는다 |
+| `manifest unknown` / `pull access denied` | 이미지 적재 실패, 또는 `.env`의 `AUTOCERT_VERSION`이 적재한 태그와 다름 | `docker image ls`를 패키지의 `MANIFEST.txt`와 대조 (5.1.2절). 폐쇄망에서는 `--build`를 붙이지 않는다 |
 | 웹 콘솔은 뜨는데 8443만 안 열림 (로그: `sensor gateway disabled: startup failed — check SENSOR_ADVERTISED_HOSTS …`) | `SENSOR_CA_ENC_KEY`만 넣고 `SENSOR_ADVERTISED_HOSTS`를 비움. 센서 게이트웨이만 꺼지고 코어 API는 정상 기동하므로 화면에 증상이 없다 | 두 변수는 **세트**다 — 둘 다 채우거나 둘 다 지운다 (5.2절 마지막 항목, SENSOR.md 3.1절) |
 | 알림 메일·웹훅·Syslog가 안 나감 | 해당 채널 설정이 비었거나 잘못됨 — **그 채널만** 비활성화되고 나머지는 정상 동작한다 | backend 기동 로그의 경고와 `GET /api/v1/notification-channels`의 `reason`이 같은 문구로 이유를 알려준다 (5.2.1절) |
 | 스윕·재스캔 값을 바꿨는데 반영이 안 됨 | 오타 시 기동 실패가 아니라 **경고 로그 후 기본값 폴백**이다 | 로그에서 변수명을 지목한 경고를 찾는다 (5.2.2·5.2.4절). 값 변경은 backend 재기동 후 새 작업부터 적용된다 |

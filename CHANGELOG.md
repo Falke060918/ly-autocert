@@ -5,7 +5,9 @@
 ## 버전 체계
 
 **Semantic Versioning(`MAJOR.MINOR.PATCH`) 하나로 제품 전체를 센다.** backend·frontend·센서 바이너리는
-같은 커밋에서 함께 빌드·반입되므로 컴포넌트별 버전을 따로 두지 않는다 — 반입 번들 하나 = 버전 하나다.
+같은 커밋에서 함께 빌드·반입되므로 컴포넌트별 버전을 따로 두지 않는다. 릴리즈 산출물은 환경별로 3종
+(`main_<버전>.tar.gz` / `sensor_linux_<버전>.tar.gz` / `sensor_windows_<버전>.zip`)이지만 **버전은 하나이고
+셋은 항상 같은 값을 쓴다** — 서버와 센서를 다른 버전으로 섞지 않는다.
 
 - `MAJOR` — 하위 호환이 깨지는 변경(마이그레이션 되돌리기 불가, API 계약 파기, 센서 프로토콜 비호환).
 - `MINOR` — 기능 추가와 하위 호환되는 변경. Phase 완료는 보통 여기에 해당한다.
@@ -18,12 +20,33 @@
 
 | 위치 | 역할 |
 | --- | --- |
-| 루트 `VERSION` | 단일 진실원천. 번들 스크립트가 읽는다 |
+| 루트 `VERSION` | 단일 진실원천. 패키지 스크립트가 읽는다 |
 | `docker-compose.yml`의 `${AUTOCERT_VERSION:-…}` | 이미지 태그 기본값. `VERSION`과 달라지면 `scripts/bundle-offline.sh`가 중단한다 |
 | 이 파일 | 사람이 읽는 변경 이력 |
 
 이미지 태그는 `inherit-autocert/backend:<버전>`·`inherit-autocert/frontend:<버전>`이다.
 `AUTOCERT_VERSION`·`AUTOCERT_IMAGE_PREFIX` 환경변수로 덮어쓸 수 있다(사내 레지스트리 미러 등).
+
+---
+
+## Unreleased
+
+**설치·반입**
+- **대화형 설치 스크립트 도입** — 서버는 `install.sh`, 센서는 `install-sensor.sh`(Linux) / `install-sensor.ps1`(Windows).
+  방향키 메뉴로 묻고, `.env` 생성·비밀값 난수 생성·이미지 적재·소스 전개·기동·`/healthz` 확인까지 한 번에 끝낸다.
+  **패키지 루트가 곧 설치 루트다** — 압축을 한 번 풀고 그 안에서 진입점 하나만 실행하면 된다
+- **릴리즈 산출물을 버전별·환경별 3종으로 분리**하고 통합 번들(`autocert-offline-<버전>.tar`)을 폐기했다.
+  `main_<버전>.tar.gz`(서버) / `sensor_linux_<버전>.tar.gz` / `sensor_windows_<버전>.zip` + 각 `.sha256`.
+  **센서 호스트에 200 MB짜리 서버 이미지를 옮길 필요가 없어졌다** — 센서 패키지는 약 10 MB다.
+  `scripts/bundle-offline.sh --target <all|main|sensor-linux|sensor-windows>`로 필요한 것만 만든다
+- `autocert-sensor --version` 추가 — 센서가 빌드된 버전을 출력한다(주입하지 않고 빌드하면 `dev`)
+- 설치 디렉터리가 버전마다 바뀌므로 `install.sh`가 `.env`에 **`COMPOSE_PROJECT_NAME`을 고정**한다.
+  고정하지 않으면 업그레이드 시 compose가 새 볼륨을 만들어 빈 DB로 뜬다 — 업그레이드 절차는 INSTALL.md 5.1.4절
+
+**문서**
+- INSTALL.md 빠른 설치를 3줄로 축소(0.1절), 5.1절을 산출물 3종 기준으로 재작성, 업그레이드 절차 신설(5.1.4절)
+- SENSOR.md 0.3절의 복붙 실패 2건 수정 — Linux는 `sudo` 필수, Windows는 `-ExecutionPolicy Bypass` 필수(+ 매체 경유 zip의 `Unblock-File` 안내)
+- SENSOR.md 4장을 "센서 패키지 반입"으로 재작성 — 센서 바이너리는 더 이상 서버 패키지에 들어 있지 않다
 
 ---
 

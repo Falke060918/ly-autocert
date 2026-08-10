@@ -10,7 +10,7 @@
 
 ## 0. 빠른 설치
 
-`scripts/install-sensor.sh`(Linux) / `scripts\install-sensor.ps1`(Windows) 하나가 설치의 전부다. 사전 점검·등록·서비스 등록까지 스크립트가 맡는다.
+`install-sensor.sh`(Linux) / `install-sensor.ps1`(Windows) 하나가 설치의 전부다. 사전 점검·등록·서비스 등록까지 스크립트가 맡는다. 두 스크립트는 **센서 패키지 루트**에 들어 있다 (저장소 소스 트리에서는 `scripts/` 아래다).
 
 ### 0.1 먼저 — 서버 쪽에서 센서 기능을 켠다 (한 번만)
 
@@ -30,22 +30,26 @@ bash scripts/install.sh
 
 ### 0.3 센서 호스트에서 — 명령 2줄
 
-센서 바이너리와 설치 스크립트를 반입한 디렉터리에서 실행한다.
+센서 패키지를 반입해 푼 디렉터리에서 실행한다 (반입 절차는 4장). **패키지 루트에서 그대로 실행한다** — 스크립트와 바이너리가 같은 디렉터리에 있다.
 
-**Linux**
+**Linux** — `sensor_linux_<버전>.tar.gz`를 푼 `sensor_linux_<버전>/` 안에서
 
 ```sh
 sha256sum -c SHA256SUMS
-bash scripts/install-sensor.sh
+sudo bash install-sensor.sh
 ```
 
-**Windows** (관리자 권한 PowerShell)
+**Windows** (관리자 권한 PowerShell) — `sensor_windows_<버전>.zip`을 푼 폴더 안에서
 
 ```powershell
-powershell -File scripts\install-sensor.ps1
+Get-ChildItem -Recurse -File | Unblock-File
+powershell -ExecutionPolicy Bypass -File .\install-sensor.ps1
 ```
 
-- Windows의 바이너리 체크섬 대조는 `certutil`로 한다 — 4.2절.
+- **Linux는 `sudo`가 필수다.** systemd 유닛 등록과 `/usr/local/bin` 배치를 하므로, root가 아니면 사전 점검에서 실패하고 멈춘다.
+- **Windows는 `-ExecutionPolicy Bypass`가 필수다.** 서명되지 않은 `.ps1`이라 기본 실행 정책에서 차단될 수 있다.
+- **`Unblock-File`은 매체 경유 zip 때문이다.** 다른 PC에서 내려받아 옮긴 zip은 Mark-of-the-Web가 붙어 압축을 풀어도 파일마다 "차단됨" 표시가 남고, 그러면 `Bypass`를 줘도 스크립트가 실행되지 않는다. 파일 속성 창의 [차단 해제] 체크박스와 같은 동작이다.
+- Windows의 바이너리 체크섬 대조는 `install-sensor.ps1`이 대신 수행한다. 손으로 하려면 `certutil` — 4.1절.
 - 스크립트가 **"enroll 명령을 붙여넣으라"** 고 물으면 0.2에서 복사한 **명령 전체를 그대로 붙여 넣는다.** 서버 주소·토큰·fingerprint를 알아서 파싱하므로 값을 나눠 입력할 필요가 없다.
 
 스크립트가 대신 해 주므로 **직접 할 필요가 없는 것**:
@@ -133,15 +137,47 @@ SENSOR_ADVERTISED_HOSTS=10.20.0.5,autocert.internal
 - 센서 호스트 → 스캔 대상 세그먼트의 TLS 포트(443 등) 아웃바운드는 스캔 대상에 맞게 연다.
 - 센서 호스트에 인바운드 규칙은 필요 없다.
 
-## 4. 센서 바이너리 반입
+## 4. 센서 패키지 반입
 
-> 4.2절의 체크섬 대조와 배치는 **0.3절 빠른 설치에 이미 포함**돼 있다(`install-sensor.sh`가 배치와 권한까지 처리한다). 아래는 바이너리를 따로 만들어야 하거나 손으로 배치할 때 본다.
+**센서는 서버와 별개의 패키지다.** 서버 패키지 `main_<버전>.tar.gz`에는 센서 바이너리가 들어 있지 않다 — 센서 호스트에 200 MB짜리 서버 이미지를 옮기지 않으려고 분리했다. 예전의 통합 번들(`autocert-offline-<버전>.tar`)과 그 안의 `sensor/` 디렉터리는 **폐기됐다.**
 
-### 4.1 빌드 (인터넷이 되는 빌드 환경에서)
+| 산출물 | 대상 | 들어 있는 것 |
+| --- | --- | --- |
+| `sensor_linux_<버전>.tar.gz` (+ `.sha256`) | Linux x86_64 센서 호스트 | `install-sensor.sh` · `autocert-sensor-linux-amd64` · `lib/tui.sh` · `manual/SENSOR.md` · `VERSION` · `MANIFEST.txt` · `SHA256SUMS` |
+| `sensor_windows_<버전>.zip` (+ `.sha256`) | Windows x86_64 센서 호스트 | `install-sensor.ps1` · `autocert-sensor-windows-amd64.exe` · `manual\SENSOR.md` · `VERSION` · `MANIFEST.txt` · `SHA256SUMS` |
 
-**오프라인 반입 번들(INSTALL.md 5.1절)을 쓴다면 이 절은 건너뛴다** — 번들의 `sensor/` 디렉터리에 아래 산출물이 그대로 들어 있고, 번들 적재 시 체크섬 대조도 함께 끝난다.
+**서버와 센서의 버전은 같게 맞춘다** (버전 스큐 주의사항은 8.1절). 패키지 안 `VERSION`과 `MANIFEST.txt`에 버전이 적혀 있고, 설치 후에는 `autocert-sensor --version`으로도 확인할 수 있다 (7장).
 
-번들 없이 센서 바이너리만 따로 만들려면 저장소 루트에서 실행한다 (Docker 필요, 로컬 Go 불필요):
+> 4.1–4.2의 체크섬 대조와 배치는 **0.3절 빠른 설치에 이미 포함**돼 있다(설치 스크립트가 배치와 권한까지 처리한다). 아래는 바이너리를 따로 만들어야 하거나 손으로 배치할 때 본다.
+
+### 4.1 반입과 무결성 검증 — 2단 검증
+
+체크섬은 두 번 본다. **사이드카 `.sha256`은 매체 손상 판별용**이고, **패키지 안 `SHA256SUMS`는 내용물 전건 대조용**이다.
+
+**Linux**
+
+```sh
+sha256sum -c sensor_linux_1.0.0.tar.gz.sha256
+tar xzf sensor_linux_1.0.0.tar.gz
+cd sensor_linux_1.0.0
+sha256sum -c SHA256SUMS
+```
+
+**Windows** (PowerShell)
+
+```powershell
+Get-FileHash .\sensor_windows_1.0.0.zip -Algorithm SHA256
+Get-Content .\sensor_windows_1.0.0.zip.sha256
+Expand-Archive .\sensor_windows_1.0.0.zip -DestinationPath .
+```
+
+- Windows는 위 두 해시를 **눈으로 대조**한다. 압축을 푼 뒤 패키지 안 `SHA256SUMS` 전건 대조는 `install-sensor.ps1`이 실행 전에 자동으로 수행하므로 손으로 할 필요가 없다 (`certutil -hashfile <파일> SHA256`으로 개별 확인은 가능하다).
+- **어긋나면 설치하지 않고 매체를 다시 받는다.** 부분 복사·재시도로 넘기지 않는다.
+- 검증이 끝나면 0.3절대로 설치 스크립트를 실행한다. 스크립트가 실행 경로 배치(Linux `/usr/local/bin/autocert-sensor`, Windows `C:\Program Files\AutocertSensor\autocert-sensor.exe`)와 상태 디렉토리 권한까지 처리한다.
+
+### 4.2 빌드 (인터넷이 되는 빌드 환경에서)
+
+**센서 패키지를 반입해 쓴다면 이 절은 건너뛴다.** 바이너리만 따로 만들려면 저장소 루트에서 실행한다 (Docker 필요, 로컬 Go 불필요):
 
 ```sh
 sh scripts/build-sensor-dist.sh
@@ -156,21 +192,9 @@ sh scripts/build-sensor-dist.sh
 | `autocert-sensor-windows-amd64.exe` | Windows x86_64 |
 | `SHA256SUMS` | 위 두 파일의 SHA-256 체크섬 |
 
-### 4.2 반입과 무결성 검증
+버전 문자열은 빌드할 때 바이너리에 새겨진다 — `AUTOCERT_VERSION` 환경변수 → 저장소 루트 `VERSION` 파일 → `dev` 순으로 결정한다. 배포판 패키지를 만드는 `scripts/bundle-offline.sh`도 같은 스크립트를 호출하므로 결과가 어긋나지 않는다.
 
-반입 매체로 옮긴 뒤 센서 호스트에서 체크섬을 **반드시 대조**한다:
-
-```sh
-# Linux — dist 산출물 3개 파일이 같은 디렉터리에 있는 상태에서
-sha256sum -c SHA256SUMS
-```
-
-```bat
-:: Windows — 출력 해시를 SHA256SUMS 기재 값과 눈으로 대조
-certutil -hashfile autocert-sensor-windows-amd64.exe SHA256
-```
-
-검증 후 실행 경로에 배치한다 (예: Linux `/usr/local/bin/autocert-sensor`, Windows `C:\Program Files\AutocertSensor\autocert-sensor.exe`).
+손으로 배치할 경우 실행 경로는 Linux `/usr/local/bin/autocert-sensor`, Windows `C:\Program Files\AutocertSensor\autocert-sensor.exe`다.
 
 ## 5. 등록 절차 (수동)
 
@@ -269,13 +293,16 @@ schtasks /Run /TN "AutocertSensor"
 - **클라이언트 인증서 자동 갱신**: 인증서는 90일 유효이며, 센서가 기동 시와 하루 1회 잔여 기간을 검사해 **30일 미만이면 자동 갱신**한다(무중단, `sensor.renew` 감사 기록). 운영자가 할 일은 없다. 단, 센서를 90일 넘게 꺼두면 인증서가 만료되어 재등록이 필요하다.
 - **비활성화**: [센서] 화면에서 비활성화(System Administrator 전용)하면 **다음 요청부터 즉시 차단**된다(401). 되돌릴 수 없으며 다시 쓰려면 새로 등록한다. 미사용 등록 토큰 회수(대기 상태 센서)도 같은 버튼으로 한다.
 - **감사 로그**: 토큰 발급(`sensor.token.issue`)·등록(`sensor.enroll`, 실패 포함)·인증서 갱신(`sensor.renew`)·비활성화(`sensor.disable`)는 전건 감사 이벤트로 기록된다 (OPERATIONS.md 3.1절).
+- **버전 확인**: `autocert-sensor --version`이 빌드된 버전을 출력한다(`autocert-sensor 1.0.0`). 버전을 새기지 않고 빌드한 바이너리는 `dev`로 나온다 — 정식 패키지에서 `dev`가 보이면 그 바이너리는 릴리즈 산출물이 아니다. 서버와 버전이 어긋나면 8.1절을 본다.
 - **로그**: 센서는 구조화 JSON 로그를 표준 출력으로 남긴다. 개인키·인증서·토큰은 로그에 출력되지 않는다 — 발견되면 제품 결함이므로 즉시 보고할 것.
 
 ## 8. 업데이트
 
-1. 새 버전 바이너리를 빌드·반입하고 체크섬을 검증한다 (4장).
+1. 새 버전 **센서 패키지**를 반입하고 체크섬을 검증한다 (4장). 서버 패키지에는 센서 바이너리가 없다.
 2. 센서 중지 (`systemctl stop autocert-sensor` / 작업 종료).
-3. 바이너리 교체 후 재시작.
+3. 바이너리 교체 후 재시작. `autocert-sensor --version`으로 교체가 실제로 됐는지 확인한다.
+
+설치 스크립트를 다시 돌려도 된다 — 이미 등록된 센서라면 `--skip-enroll`로 서비스만 재설치한다.
 
 상태 디렉토리는 그대로 유지되므로 **재등록이 필요 없다.** 등록 정보를 지우지 않는 한 `enroll`을 다시 실행하지 않는다.
 
@@ -286,15 +313,20 @@ schtasks /Run /TN "AutocertSensor"
 **이 필드가 추가되기 전 버전의 센서는 `rate_pps`를 그냥 무시하고 레이트 제한 없이 전속력으로 스캔한다.** 서버가 값을 내려보내도 구버전 바이너리에는 이를 해석하는 코드가 없으므로, 스윕이 몇 시간 만에 끝나는 대신 IPS·방화벽이 포트스캔으로 탐지해 **센서 호스트 IP가 차단**될 수 있다. 서버 쪽 설정(`SCAN_SWEEP_RATE_PPS`)을 아무리 낮춰도 구버전 센서에는 효과가 없다.
 
 - **스윕(전 포트 백그라운드 스캔)을 쓸 계획이라면 센서를 먼저 최신 버전으로 갱신한다** (위 1~3단계). 갱신 전에는 해당 센서를 스윕 실행기로 지정하지 않는다.
-- 센서 버전이 헷갈리면 갱신부터 한다 — 재등록이 필요 없어 비용이 거의 없다.
+- 센서 버전은 `autocert-sensor --version`으로 확인한다. 헷갈리면 갱신부터 한다 — 재등록이 필요 없어 비용이 거의 없다.
 - 단발 스캔(프리셋 포트)은 대상 수가 적어 영향이 작지만, 같은 이유로 속도 상한이 걸리지 않는다.
 
 ## 9. 트러블슈팅
 
-`scripts/install-sensor.sh`(`.ps1`)는 설치 전에 **시각 동기(NTP)** 와 **서버 8443 도달성**을 먼저 점검한다 — 아래 표에서 가장 흔한 두 원인이다. 사전 점검에서 멈췄다면 표의 해당 행을 먼저 본다. 서버 쪽 설치 단계의 증상은 INSTALL.md 8장에 있다.
+`install-sensor.sh`(`.ps1`)는 설치 전에 **시각 동기(NTP)** 와 **서버 8443 도달성**을 먼저 점검한다 — 아래 표에서 가장 흔한 두 원인이다. 사전 점검에서 멈췄다면 표의 해당 행을 먼저 본다. 서버 쪽 설치 단계의 증상은 INSTALL.md 8장에 있다.
 
 | 증상 | 원인 후보 | 조치 |
 | --- | --- | --- |
+| Linux 설치 스크립트가 시작하자마자 권한 실패로 멈춤 | `sudo` 없이 실행했다. systemd 유닛 등록·`/usr/local/bin` 배치에 root가 필요하다 | `sudo bash install-sensor.sh`로 다시 실행 (0.3절) |
+| Windows에서 `... cannot be loaded because running scripts is disabled on this system` | 서명되지 않은 `.ps1`이 기본 실행 정책에 걸렸다 | `powershell -ExecutionPolicy Bypass -File .\install-sensor.ps1`로 실행 (0.3절) |
+| Windows에서 `Bypass`를 줬는데도 스크립트가 열리지 않거나 보안 경고가 뜸 | 매체 경유 zip에 **Mark-of-the-Web**가 붙어 압축을 푼 파일마다 차단 표시가 남아 있다 | 푼 폴더에서 `Get-ChildItem -Recurse -File \| Unblock-File` 실행 후 재시도 (0.3절) |
+| 패키지 안에 센서 바이너리가 없음 | 서버 패키지(`main_<버전>.tar.gz`)를 센서 호스트에 반입했다 | 센서는 별도 패키지다 — `sensor_linux_<버전>.tar.gz` / `sensor_windows_<버전>.zip`을 반입한다 (4장) |
+| `autocert-sensor --version`이 `dev`를 출력 | 버전을 새기지 않고 직접 빌드한 바이너리다 | 정식 센서 패키지의 바이너리로 교체한다 (8장). 서버와의 버전 스큐는 8.1절 |
 | enroll이 `server certificate chain does not match --ca-fingerprint` | 지문 오입력, 또는 다른 서버/재구축된 서버에 접속 | 웹 콘솔에서 발급받은 CA fingerprint를 다시 확인. 서버를 재구축(DB 초기화)했다면 CA가 바뀌었으므로 센서를 새로 등록 |
 | enroll이 401 (`invalid_token`) | 등록 토큰 무효·이미 사용됨·**만료(24시간)** | [센서] 화면에서 해당 대기 센서를 비활성화(토큰 회수)하고 새로 등록해 새 토큰 발급 |
 | **웹 콘솔·8080은 멀쩡한데 8443만 안 열림** (로그 `sensor gateway disabled: startup failed — check SENSOR_ADVERTISED_HOSTS …`) | `SENSOR_CA_ENC_KEY`는 설정했는데 `SENSOR_ADVERTISED_HOSTS`가 비어 있음 — 서버 인증서에 넣을 SAN이 없다. 게이트웨이만 비활성화되고 코어 API는 계속 뜨므로 화면에는 증상이 없다 | `SENSOR_ADVERTISED_HOSTS`에 센서가 접속할 실제 주소를 넣고 backend 재기동 (3.1절). 센서를 쓰지 않을 거라면 `SENSOR_CA_ENC_KEY`도 함께 지운다 |
