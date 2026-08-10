@@ -81,11 +81,26 @@ type LocationWithTarget struct {
 	Target     TargetRef `json:"target"`
 }
 
+// OwnerRef는 인증서 소유자 표시용 요약이다. 화면이 owner_id(UUID)를 그대로
+// 노출하지 않도록 상세 응답에 실어 보낸다 — 목록 API가 System Administrator
+// 전용이라 프론트가 스스로 UUID를 이름으로 바꿀 방법이 없기 때문이다.
+// 비밀번호·메일 주소 등 계정 정보는 담지 않는다(표시에 필요한 최소 필드만).
+type OwnerRef struct {
+	ID          string  `json:"id"`
+	Username    string  `json:"username"`
+	DisplayName *string `json:"display_name"`
+	IsActive    bool    `json:"is_active"`
+}
+
 // CertificateDetail은 상세 조회 결과다 (설치 위치 목록 + 체인 포함).
 type CertificateDetail struct {
 	Certificate domain.Certificate
-	Locations   []LocationWithTarget
-	Chain       []ChainItem // 자신→상위→루트 순 (certificates_chain.go)
+	// Owner는 owner_id가 가리키는 계정이다. 소유자 미지정이면 nil이고,
+	// owner_id가 있는데 계정 행이 없으면(정상 경로에선 FK ON DELETE SET NULL이
+	// 막지만) 역시 nil이다 — 호출자는 두 경우를 owner_id 유무로 구분한다.
+	Owner     *OwnerRef
+	Locations []LocationWithTarget
+	Chain     []ChainItem // 자신→상위→루트 순 (certificates_chain.go)
 }
 
 // certificateColumns는 scanCertificate와 순서가 일치해야 한다.
@@ -305,9 +320,36 @@ func (s *Store) GetCertificateDetail(ctx context.Context, id string) (*Certifica
 		return nil, fmt.Errorf("store: iterate locations: %w", err)
 	}
 
+	owner, err := s.getCertificateOwner(ctx, cert.OwnerID)
+	if err != nil {
+		return nil, err
+	}
+
 	chain, err := s.getCertificateChain(ctx, cert)
 	if err != nil {
 		return nil, err
 	}
-	return &CertificateDetail{Certificate: cert, Locations: locations, Chain: chain}, nil
+	return &CertificateDetail{
+		Certificate: cert, Owner: owner, Locations: locations, Chain: chain,
+	}, nil
+}
+
+// getCertificateOwner는 owner_id에 해당하는 계정 요약을 조회한다.
+// ownerID가 nil이면 (nil, nil)이고, 계정 행이 사라진 경우에도 오류가 아니라
+// (nil, nil)이다 — 소유자 표시 하나 때문에 상세 조회 전체를 실패시키지 않는다.
+func (s *Store) getCertificateOwner(ctx context.Context, ownerID *string) (*OwnerRef, error) {
+	if ownerID == nil {
+		return nil, nil
+	}
+	var o OwnerRef
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, username, display_name, is_active FROM users WHERE id = $1`, *ownerID,
+	).Scan(&o.ID, &o.Username, &o.DisplayName, &o.IsActive)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: get certificate owner: %w", err)
+	}
+	return &o, nil
 }

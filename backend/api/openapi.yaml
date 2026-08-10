@@ -1568,12 +1568,29 @@ components:
           nullable: true
           enum: [active, expired, revoked, replaced, unknown, null]
         self_signed: { type: boolean, description: 자체 서명(루트) 여부 }
+    OwnerRef:
+      type: object
+      description: >
+        인증서 소유자(certificate.owner_id) 표시용 요약. 화면이 UUID 대신 이름을
+        띄우기 위한 최소 필드만 담으며 메일 주소·부서 등 계정 정보는 담지 않는다.
+      required: [id, username, is_active]
+      properties:
+        id: { type: string, format: uuid }
+        username: { type: string }
+        display_name: { type: string, nullable: true }
+        is_active: { type: boolean, description: 비활성(퇴사 등) 계정 표시용 }
     CertificateDetail:
       type: object
       required: [request_id, certificate, locations, chain]
       properties:
         request_id: { type: string }
         certificate: { $ref: "#/components/schemas/Certificate" }
+        owner:
+          allOf: [{ $ref: "#/components/schemas/OwnerRef" }]
+          nullable: true
+          description: >
+            certificate.owner_id가 가리키는 계정. 소유자 미지정이거나 계정이
+            사라졌으면 null이다 (owner_id 유무로 두 경우를 구분한다).
         locations:
           type: array
           items: { $ref: "#/components/schemas/CertificateLocation" }

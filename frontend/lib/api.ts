@@ -139,9 +139,22 @@ export interface CertificateChainItem {
   self_signed: boolean;
 }
 
+/**
+ * 인증서 소유자 표시용 요약. 사용자 목록 API는 System Administrator 전용이라
+ * 프론트가 owner_id(UUID)를 이름으로 바꿀 수 없어 상세 응답이 함께 내려준다.
+ */
+export interface CertificateOwner {
+  id: string;
+  username: string;
+  display_name: string | null;
+  is_active: boolean;
+}
+
 export interface CertificateDetailResponse {
   request_id: string;
   certificate: Certificate;
+  /** 소유자 미지정이거나 계정이 사라졌으면 null (certificate.owner_id로 구분). */
+  owner: CertificateOwner | null;
   locations: CertificateLocation[];
   chain: CertificateChainItem[];
 }

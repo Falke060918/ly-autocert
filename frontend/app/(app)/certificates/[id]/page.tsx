@@ -112,6 +112,19 @@ export default function CertificateDetailPage() {
 
   const c = data.certificate;
   const cn = c.common_name || dnCommonName(c.subject_dn);
+  // 소유자는 owner_id(UUID)가 아니라 사람이 읽는 이름으로 표시한다.
+  // 표시 이름이 없으면 계정명만 쓰고, owner_id는 있는데 계정이 사라진 경우에도
+  // UUID를 노출하지 않는다(화면이 깨지지 않게 문구로 대체).
+  const ownerLabel = data.owner
+    ? [
+        data.owner.display_name?.trim()
+          ? `${data.owner.display_name.trim()} (${data.owner.username})`
+          : data.owner.username,
+        data.owner.is_active ? "" : " · 비활성 계정",
+      ].join("")
+    : c.owner_id
+      ? "삭제된 사용자"
+      : "미지정";
   const validityDays = Math.round(
     (new Date(c.not_after).getTime() - new Date(c.not_before).getTime()) /
       (24 * 60 * 60 * 1000),
@@ -171,7 +184,7 @@ export default function CertificateDetailPage() {
                   ["서명 알고리즘", c.signature_algorithm, true],
                   ["인증서 유형", TYPE_LABELS[c.certificate_type] ?? c.certificate_type, false],
                   ["환경", c.environment ?? "미지정", false],
-                  ["소유자", c.owner_id ?? "미지정", false],
+                  ["소유자", ownerLabel, false],
                 ] as [string, string, boolean][]
               ).map(([k, v, mono]) => (
                 <div

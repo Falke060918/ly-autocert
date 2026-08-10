@@ -177,3 +177,137 @@ func TestCertificatesReadAPI(t *testing.T) {
 		}
 	})
 }
+
+// detailOwner는 상세 응답의 owner 블록이다 (표시용 최소 필드).
+type detailOwner struct {
+	ID          string  `json:"id"`
+	Username    string  `json:"username"`
+	DisplayName *string `json:"display_name"`
+	IsActive    bool    `json:"is_active"`
+}
+
+// TestCertificateDetailOwner는 상세 응답이 소유자를 UUID가 아니라 표시용 계정
+// 요약으로 내려주는지 검증한다 — 화면이 owner_id 원문을 띄우던 결함의 회귀 테스트.
+// 사용자 목록 API는 System Administrator 전용이라 최소 권한 역할(viewer)로 확인한다.
+func TestCertificateDetailOwner(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	for _, stmt := range []string{
+		`DELETE FROM certificate_locations`, `DELETE FROM certificates`, `DELETE FROM targets`,
+	} {
+		if _, err := env.pool.Exec(stmt); err != nil {
+			t.Fatalf("cleanup %q: %v", stmt, err)
+		}
+	}
+
+	viewerPW := randomPassword(t)
+	if _, err := env.svc.CreateUser(ctx, "own-viewer", viewerPW, nil,
+		domain.RoleViewer, nil, auth.AuditMeta{}); err != nil {
+		t.Fatalf("create viewer: %v", err)
+	}
+	viewerToken, status := env.login(t, "own-viewer", viewerPW)
+	if status != http.StatusOK {
+		t.Fatalf("viewer login = %d, want 200", status)
+	}
+
+	displayName := "김소유"
+	owner, err := env.svc.CreateUser(ctx, "own-operator", randomPassword(t), &displayName,
+		domain.RoleOperator, nil, auth.AuditMeta{})
+	if err != nil {
+		t.Fatalf("create owner: %v", err)
+	}
+	plain, err := env.svc.CreateUser(ctx, "own-plain", randomPassword(t), nil,
+		domain.RoleViewer, nil, auth.AuditMeta{})
+	if err != nil {
+		t.Fatalf("create plain owner: %v", err)
+	}
+
+	// 픽스처: 소유자별 인증서 3건.
+	newCert := func(label string, ownerID *string) string {
+		t.Helper()
+		sum := sha256.Sum256([]byte(label))
+		var id string
+		if err := env.pool.QueryRow(`
+			INSERT INTO certificates (
+				fingerprint_sha256, serial_number, subject_dn, issuer_dn, common_name, sans,
+				not_before, not_after, public_key_algorithm, public_key_size,
+				signature_algorithm, certificate_type, status, owner_id
+			) VALUES (
+				$1, $2, $3, 'CN=owner-fixture-ca', $4, ARRAY[$4::text],
+				$5, $6, 'ECDSA', 256, 'ECDSA-SHA256', 'server', 'active', $7
+			) RETURNING id`,
+			hex.EncodeToString(sum[:]), label, "CN="+label+".example.test",
+			label+".example.test",
+			time.Now().Add(-24*time.Hour), time.Now().Add(45*24*time.Hour), ownerID,
+		).Scan(&id); err != nil {
+			t.Fatalf("insert certificate %s: %v", label, err)
+		}
+		return id
+	}
+	ownedID := newCert("owner-named", &owner.ID)
+	plainID := newCert("owner-plain", &plain.ID)
+	unownedID := newCert("owner-none", nil)
+
+	detail := func(t *testing.T, id string) (domain.Certificate, *detailOwner) {
+		t.Helper()
+		resp := env.do(t, http.MethodGet, "/api/v1/certificates/"+id, viewerToken, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("detail = %d, want 200", resp.StatusCode)
+		}
+		var out struct {
+			Certificate domain.Certificate `json:"certificate"`
+			Owner       *detailOwner       `json:"owner"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatalf("decode detail: %v", err)
+		}
+		return out.Certificate, out.Owner
+	}
+
+	t.Run("owner resolves to display name and username", func(t *testing.T) {
+		_, got := detail(t, ownedID)
+		if got == nil {
+			t.Fatal("owner = null, want resolved owner")
+		}
+		if got.ID != owner.ID || got.Username != "own-operator" {
+			t.Errorf("owner = %+v, want %s/own-operator", got, owner.ID)
+		}
+		if got.DisplayName == nil || *got.DisplayName != displayName {
+			t.Errorf("owner display_name = %v, want %s", got.DisplayName, displayName)
+		}
+		if !got.IsActive {
+			t.Error("owner is_active = false, want true")
+		}
+	})
+
+	t.Run("owner without display name still resolves", func(t *testing.T) {
+		_, got := detail(t, plainID)
+		if got == nil || got.Username != "own-plain" {
+			t.Fatalf("owner = %+v, want own-plain", got)
+		}
+		if got.DisplayName != nil {
+			t.Errorf("owner display_name = %v, want null", *got.DisplayName)
+		}
+	})
+
+	t.Run("unowned certificate returns null owner", func(t *testing.T) {
+		cert, got := detail(t, unownedID)
+		if got != nil {
+			t.Errorf("owner = %+v, want null", got)
+		}
+		if cert.OwnerID != nil {
+			t.Errorf("owner_id = %v, want null", *cert.OwnerID)
+		}
+	})
+
+	t.Run("disabled owner is reported as inactive", func(t *testing.T) {
+		if _, err := env.svc.SetUserActive(ctx, owner.ID, false, plain.ID, auth.AuditMeta{}); err != nil {
+			t.Fatalf("disable owner: %v", err)
+		}
+		_, got := detail(t, ownedID)
+		if got == nil || got.IsActive {
+			t.Fatalf("owner = %+v, want is_active false", got)
+		}
+	})
+}
