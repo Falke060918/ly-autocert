@@ -424,6 +424,46 @@ func TestDispatchNextChunkSerializes(t *testing.T) {
 	}
 }
 
+// TestDispatchNextChunkRecordsSweepOrigin은 자식 청크 Job의 origin을 고정한다.
+//
+// 0015가 scan_jobs.origin을 추가하면서 기존 행만 백필했고(`WHERE sweep_id IS NOT NULL`),
+// 발주 INSERT는 컬럼을 빼먹어 **앞으로 생기는** 스윕 자식이 DEFAULT 'manual'로
+// 기록됐다. origin은 "누가 이 스캔을 냈나"의 유일한 기록이고 재스캔 현황
+// (`rescan_status.go`의 `origin='rescan'` 집계)과 같은 축을 쓰므로,
+// 여기가 틀리면 발주자별 진단이 통째로 어긋난다.
+func TestDispatchNextChunkRecordsSweepOrigin(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool)
+	ctx := context.Background()
+
+	ips := testIPs(2)
+	ports := WaveOrderPorts([]int{443}, testPriorityPorts)
+	const chunkSize = 2
+
+	sw := newTestSweep(t, st, pool, SweepInput{
+		Targets: ips, IPCount: len(ips),
+		PortSpec: "443", PortCount: len(ports),
+		ExecutorScope: "server", RatePPS: 100, ChunkEndpoints: chunkSize,
+	})
+
+	chunk, err := st.DispatchNextChunk(ctx, sw.ID, sweepDispatch(ips, ports, chunkSize))
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if chunk == nil {
+		t.Fatal("첫 청크가 발주되지 않았다")
+	}
+
+	var origin string
+	if err := pool.QueryRow(
+		`SELECT origin FROM scan_jobs WHERE id = $1::uuid`, chunk.JobID).Scan(&origin); err != nil {
+		t.Fatalf("read origin: %v", err)
+	}
+	if origin != "sweep" {
+		t.Errorf("자식 Job origin = %q, want %q", origin, "sweep")
+	}
+}
+
 // TestDispatchRetriesReapedChunk는 기존 리퍼와의 상호작용을 본다:
 // ReapOrphanedServerScanJobs가 자식 청크를 failed로 회수해도 스윕은 무사하고,
 // 부분 유니크 인덱스가 failed 행을 비켜가 같은 seq가 재발주된다 (설계 5.3).

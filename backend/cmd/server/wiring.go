@@ -464,3 +464,78 @@ func startSweepScheduler(ctx context.Context, logger *slog.Logger, cfg config.Co
 	}
 	return stop
 }
+
+// rescanOptions는 config.RescanConfig를 discovery.RescanOptions로 옮겨 담는다
+// (discovery가 config를 import하지 않으므로 별도 타입이다). 값 검증·경고는
+// config가 이미 했으므로 여기서는 매핑만 한다. 동시성은 설정 표면을 늘리지 않기
+// 위해 상수(discovery.RescanConcurrency)를 그대로 쓴다.
+func rescanOptions(c config.RescanConfig) discovery.RescanOptions {
+	return discovery.RescanOptions{
+		Enabled:        c.Enabled,
+		Interval:       c.Interval,
+		RatePPS:        c.RatePPS,
+		Concurrency:    discovery.RescanConcurrency,
+		BatchIPs:       c.BatchIPs,
+		ReplaceConfirm: c.ReplaceConfirm,
+		RetireMisses:   c.RetireMisses,
+	}
+}
+
+// startRescanScheduler는 주기 재스캔 tick 루프를 띄운다(발주 + 교체 전이).
+// 스윕과 마찬가지로 API Manager와 상태를 공유하지 않는 전용 인스턴스다.
+// RESCAN_ENABLED=false면 tick 루프를 띄우지 않고 사유 로그 1줄만 남긴다(stop은 no-op).
+//
+// 반환하는 controller는 그래도 non-nil이다 — 알림 채널 어댑터와 같은 규약이다.
+// 꺼져 있는 것과 배선이 없는 것은 화면에서 구분돼야 하고(`enabled` vs `wired`),
+// 감시 엔드포인트 수·적체 수는 스케줄러가 안 돌아도 의미가 있는 값이다.
+func startRescanScheduler(
+	ctx context.Context, logger *slog.Logger, cfg config.Config, st *store.Store,
+) (stop func(), controller api.RescanController) {
+	mgr := discovery.NewManager(st).UseRescanOptions(rescanOptions(cfg.Rescan))
+	stop = mgr.StartRescanScheduler(ctx)
+	if cfg.Rescan.Enabled {
+		logger.Info("discovery: rescan scheduler started",
+			"interval", cfg.Rescan.Interval.String(),
+			"rate_pps", cfg.Rescan.RatePPS,
+			"batch_ips", cfg.Rescan.BatchIPs,
+			"replace_confirm", cfg.Rescan.ReplaceConfirm,
+			"retire_misses", cfg.Rescan.RetireMisses)
+	}
+	return stop, &rescanController{mgr: mgr, cfg: cfg.Rescan, serverCtx: ctx}
+}
+
+// rescanController는 재스캔 스케줄러를 api.RescanController로 잇는 어댑터다
+// (notifyChannels와 같은 자리 — api는 discovery의 재스캔 타입을 import하지 않는다).
+type rescanController struct {
+	mgr *discovery.Manager
+	cfg config.RescanConfig
+	// serverCtx는 서버 수명 컨텍스트다. 수동 1배치가 시작하는 인프로세스 스캔은
+	// 응답보다 오래 살아야 하므로 요청 컨텍스트를 쓰지 않는다.
+	serverCtx context.Context
+}
+
+var _ api.RescanController = (*rescanController)(nil)
+
+// Settings는 화면이 띄울 설정 요약이다(원문 값이 아니라 on/off와 유효 간격뿐).
+func (c *rescanController) Settings() api.RescanSettings {
+	return api.RescanSettings{Enabled: c.cfg.Enabled, Interval: c.cfg.Interval}
+}
+
+// RunOnce는 due 판정을 그대로 두고 1배치를 즉시 발주한다.
+//
+// 요청 컨텍스트(ctx)는 쓰지 않는다 — 발주한 Job의 인프로세스 실행이 202 응답과
+// 함께 취소되면 그 Job은 종료 상태를 못 찍고 다음 기동의 고아 회수로 넘어간다.
+//
+// actor는 아직 감사에 실리지 않는다 — 발주 감사(discovery.scan)는 store가
+// actor NULL로 남기며(설계 10.4), 사람이 낸 발주와 스케줄러 발주는 지금은
+// after_value.origin으로만 구분된다.
+func (c *rescanController) RunOnce(_ context.Context, _ api.RescanRunActor) (api.RescanRunResult, error) {
+	sum, err := c.mgr.DispatchRescanOnce(c.serverCtx)
+	if err != nil {
+		return api.RescanRunResult{}, err
+	}
+	return api.RescanRunResult{
+		Jobs:      sum.ServerJobs + sum.SensorJobs,
+		Endpoints: sum.Claimed,
+	}, nil
+}

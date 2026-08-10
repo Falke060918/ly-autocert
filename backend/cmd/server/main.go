@@ -134,16 +134,27 @@ func run(logger *slog.Logger) error {
 	stopSweep := startSweepScheduler(ctx, logger, cfg, st)
 	defer stopSweep()
 
+	// 주기 재스캔 tick — 이미 아는 엔드포인트의 신선도 유지 + 교체 확정 전이.
+	// 스윕과는 목적도 주기도 다른 별개의 발주자다 (docs/design/06 1.3).
+	// rescanCtl은 상태 조회·수동 1배치 발주 API가 쓰는 어댑터이며,
+	// RESCAN_ENABLED=false여도 non-nil이다 — 꺼진 것과 배선이 없는 것을
+	// 화면이 구분해야 한다(알림 채널 어댑터와 같은 규약).
+	stopRescan, rescanCtl := startRescanScheduler(ctx, logger, cfg, st)
+	defer stopRescan()
+
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
-		// 선택 의존성 5개를 주입한다. 없어도 코어 API는 뜨지만, 없으면 채널 상태가
+		// 선택 의존성 6개를 주입한다. 없어도 코어 API는 뜨지만, 없으면 채널 상태가
 		// "배선 없음"이고 스윕 기본값이 SCAN_SWEEP_*를, 등록 예시가 실제 포트를 무시하며
-		// 접근 IP 제한이 XFF를 보지 않고 비상 우회 대역도 갖지 않는다.
+		// 접근 IP 제한이 XFF를 보지 않고 비상 우회 대역도 갖지 않으며, 재스캔 현황이
+		// "미배선"으로 나오고 수동 1배치 발주가 503이 된다.
 		// 세션 쿠키 Secure는 SESSION_COOKIE_SECURE(기본 false) — HTTPS 리버스
 		// 프록시로 종단할 때만 켠다 (docs/manual/TLS.md).
 		Handler: api.NewServer(pool, authSvc, rec, cfg.SensorCAEncKey,
 			api.WithNotificationChannels(notifyChannels),
 			api.WithSweepDefaults(sweepDefaults(cfg.Sweep)),
+			// 재스캔 스케줄러(discovery)를 API의 상태·수동 발주 엔드포인트에 잇는다.
+			api.WithRescanController(rescanCtl),
 			// 등록 명령 예시가 실제 게이트웨이 포트를 안내하게 한다.
 			api.WithSensorGatewayPort(cfg.SensorGatewayPort),
 			api.WithSecureCookies(cfg.SessionCookieSecure),

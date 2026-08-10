@@ -71,6 +71,8 @@ type Config struct {
 	Sweep SweepConfig
 	// AdminIP는 관리 콘솔 접근 IP 제한 설정이다 (ADMIN_IP_*).
 	AdminIP AdminIPConfig
+	// Rescan은 주기 재스캔·교체 감지 설정이다 (RESCAN_*).
+	Rescan RescanConfig
 	// Warnings는 값 오류로 기본값에 폴백했거나 위험한 값을 켠 항목의 경고다.
 	// cmd/server가 기동 시 경고 로그로 남긴다. secret 값은 담지 않는다.
 	// 채널을 비활성화하는 사유는 여기가 아니라 NotifyChannelErrors에 담긴다.
@@ -183,6 +185,32 @@ func (l *envLoader) cidrList(key string) []*net.IPNet {
 	return nets
 }
 
+// RescanConfig는 주기 재스캔·교체 감지 설정이다 (RESCAN_*).
+// 값이 잘못돼도 기동을 막지 않는다 — 경고 + 기본값 폴백이다 (설계 12.2).
+type RescanConfig struct {
+	// Enabled는 재스캔 기능 전체 on/off다 (기본 true).
+	Enabled bool
+	// Interval은 기본 재확인 간격이다 (기본 12h). 만료 임박 구간은 discovery가
+	// 고정 티어(30일 이하 6h / 7일 이하 1h)로 가속하므로 이 값이 상한이다.
+	Interval time.Duration
+	// RatePPS는 재스캔 Job의 dial 레이트다 (기본 20 — 단발 50과 스윕 10 사이).
+	RatePPS int
+	// BatchIPs는 한 tick이 다시 볼 엔드포인트 상한이다 (기본 1024).
+	BatchIPs int
+	// ReplaceConfirm은 교체 확정에 필요한 연속 관측 횟수다 (기본 2).
+	// 1이면 LB 뒤에서 인증서 두 개가 번갈아 보일 때 서로를 무한히 replaced로 만든다.
+	ReplaceConfirm int
+	// RetireMisses는 은퇴 판정 연속 미관측 횟수다 (기본 30 ≈ 기본 간격으로 보름).
+	RetireMisses int
+}
+
+// 재스캔 기본값·경계. minRescanInterval은 하한이다 — 1s 같은 값을 그대로 받으면
+// 인벤토리 전체를 매 tick 다시 훑어 폐쇄망에서 IPS 오탐을 부른다.
+const (
+	defaultRescanInterval = 12 * time.Hour
+	minRescanInterval     = 1 * time.Minute
+)
+
 // sweepMaxRatePPS는 레이트 상한이다. 더 큰 값을 받아도 여기로 깎고 경고를 남긴다
 // (IPS 오탐 억제).
 const sweepMaxRatePPS = 1000
@@ -233,6 +261,7 @@ func Load() (Config, error) {
 	cfg.Notify = l.notify()
 	cfg.Sweep = l.sweep()
 	cfg.AdminIP = l.adminIP()
+	cfg.Rescan = l.rescan()
 	cfg.NotifyChannelErrors = l.channelErrors
 	cfg.Warnings = l.warnings
 	return cfg, nil
@@ -519,5 +548,25 @@ func (l *envLoader) sweep() SweepConfig {
 		ChunkGap:       l.durationVal("SCAN_SWEEP_CHUNK_GAP", 5*time.Second, true),
 		MaxDays:        l.intVal("SCAN_SWEEP_MAX_DAYS", 30, 1, 3650),
 		StallAfter:     l.durationVal("SCAN_SWEEP_STALL_AFTER", 10*time.Minute, false),
+	}
+}
+
+// rescan은 RESCAN_*를 읽는다. 값 오류는 전부 경고 + 기본값 폴백이다.
+func (l *envLoader) rescan() RescanConfig {
+	interval := l.durationVal("RESCAN_INTERVAL", defaultRescanInterval, false)
+	if interval < minRescanInterval {
+		l.warnf("RESCAN_INTERVAL=%s is below the minimum %s; falling back to %s",
+			interval, minRescanInterval, defaultRescanInterval)
+		interval = defaultRescanInterval
+	}
+	return RescanConfig{
+		Enabled:  l.boolVal("RESCAN_ENABLED", true),
+		Interval: interval,
+		// 상한은 스윕과 같은 값을 쓴다 — 둘 다 같은 dial 경로를 지나므로
+		// 안전 한계가 다를 이유가 없다.
+		RatePPS:        l.intVal("RESCAN_RATE_PPS", 20, 1, sweepMaxRatePPS),
+		BatchIPs:       l.intVal("RESCAN_BATCH_IPS", 1024, 1, 65536),
+		ReplaceConfirm: l.intVal("RESCAN_REPLACE_CONFIRM", 2, 1, 100),
+		RetireMisses:   l.intVal("RESCAN_RETIRE_MISSES", 30, 1, 10000),
 	}
 }

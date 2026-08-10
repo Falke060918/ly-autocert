@@ -487,16 +487,19 @@ func (s *Store) DispatchNextChunk(ctx context.Context, sweepID string, in SweepD
 
 	// 아비터는 0013이 만든 부분 유니크 인덱스와 정확히 같은 술어여야 추론된다.
 	// 기존 아비터는 건드리지 않는다 (0010 사고 / GOTCHAS).
+	//
+	// origin은 반드시 명시한다 — 0015의 DEFAULT는 'manual'이고 백필도 기존 행만
+	// 했으므로, 빼먹으면 앞으로 생기는 자식 청크가 전부 수동 스캔으로 기록된다.
 	var jobID string
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO scan_jobs (
 			targets, ports, timeout_ms, concurrency, status, executor_type, sensor_id,
-			total_endpoints, sweep_id, sweep_seq, rate_pps, port_spec)
+			total_endpoints, sweep_id, sweep_seq, rate_pps, port_spec, origin)
 		VALUES (
 			coalesce(string_to_array(nullif($1, ''), chr(31)), '{}'),
 			coalesce(string_to_array(nullif($2, ''), ','), '{}')::int[],
 			$3, $4, 'pending', $5, $6::uuid,
-			$7, $8::uuid, $9, $10, $11)
+			$7, $8::uuid, $9, $10, $11, 'sweep')
 		ON CONFLICT (sweep_id, sweep_seq) WHERE sweep_id IS NOT NULL AND status <> 'failed'
 		DO NOTHING
 		RETURNING id`,

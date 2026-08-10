@@ -28,11 +28,18 @@ type Manager struct {
 	store *store.Store
 	// sweep은 대역 스윕 스케줄러 설정이다 (sweep.go). 기본값은 NewManager가 채운다.
 	sweep SweepOptions
+	// rescan은 주기 재스캔 스케줄러 설정이다 (rescan.go). 기본값은 NewManager가 채운다.
+	rescan RescanOptions
+	// rescanSched는 StartRescanScheduler가 띄운 루프의 상태다 (rescan.go).
+	// 수동 1배치 발주(API)가 같은 인스턴스를 쓰게 해서, 그때 시작된 인프로세스
+	// 실행도 스케줄러의 stop 대기에 함께 잡히게 한다. 대입은 기동 시 1회뿐이고
+	// HTTP 서버는 그 뒤에 뜬다(cmd/server/main.go 순서) — 이후로는 읽기 전용이다.
+	rescanSched *rescanScheduler
 }
 
 // NewManager는 Manager를 만든다.
 func NewManager(st *store.Store) *Manager {
-	return &Manager{store: st, sweep: DefaultSweepOptions()}
+	return &Manager{store: st, sweep: DefaultSweepOptions(), rescan: DefaultRescanOptions()}
 }
 
 // UseSweepOptions는 스윕 스케줄러 설정을 주입한 Manager를 돌려준다(자기 자신).
