@@ -11,10 +11,15 @@ import (
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/notify"
 )
 
-// setRequired는 Load가 요구하는 필수 환경변수를 채운다.
+// setRequired는 Load가 요구하는 필수 환경변수를 채우고 센서 변수를 비운다.
+// 센서 변수를 비우는 이유: 잘못된 값이 프로세스 환경에 있으면 경고가 섞여
+// "경고 없음"을 기대하는 테스트가 환경에 따라 흔들린다.
 func setRequired(t *testing.T) {
 	t.Helper()
 	t.Setenv("DATABASE_URL", "postgres://u:p@localhost:5432/db?sslmode=disable")
+	for _, k := range []string{"SENSOR_CA_ENC_KEY", "SENSOR_LISTEN_ADDR", "SENSOR_ADVERTISED_HOSTS"} {
+		t.Setenv(k, "")
+	}
 }
 
 func TestLoadSensorListenAddrDefault(t *testing.T) {
@@ -84,6 +89,93 @@ func TestLoadInvalidSensorCAEncKeyIsNotFatal(t *testing.T) {
 	}
 	if strings.Contains(cfg.SensorConfigError.Error(), "not-hex") {
 		t.Error("SensorConfigError must not echo the configured value")
+	}
+}
+
+// TestLoadSensorGatewayPort는 등록 명령 예시에 쓰이는 포트가 SENSOR_LISTEN_ADDR를
+// 따라가는지 본다 — 예시가 8443으로 굳어 있으면 포트를 바꾼 배치에서 명령을
+// 그대로 복사한 운영자가 접속에 실패한다.
+func TestLoadSensorGatewayPort(t *testing.T) {
+	tests := []struct {
+		addr     string
+		want     string
+		wantWarn bool
+	}{
+		{addr: "", want: defaultSensorPort},
+		{addr: ":9443", want: "9443"},
+		{addr: "0.0.0.0:9443", want: "9443"},
+		{addr: "[::1]:9443", want: "9443"},
+		// 포트가 없는 주소는 리슨 자체가 실패할 값이다 — 예시는 기본 포트로 폴백하고 경고한다.
+		{addr: "0.0.0.0", want: defaultSensorPort, wantWarn: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.addr, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("SENSOR_LISTEN_ADDR", tc.addr)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.SensorGatewayPort != tc.want {
+				t.Errorf("SensorGatewayPort = %q, want %q", cfg.SensorGatewayPort, tc.want)
+			}
+			warned := strings.Contains(strings.Join(cfg.Warnings, "\n"), "SENSOR_LISTEN_ADDR")
+			if warned != tc.wantWarn {
+				t.Errorf("warned = %v, want %v (warnings=%v)", warned, tc.wantWarn, cfg.Warnings)
+			}
+		})
+	}
+}
+
+// TestLoadSensorAdvertisedHostsRejectsInvalid는 포트가 붙었거나 호스트명이 아닌
+// 항목을 기동 시점에 걸러내는지 본다. 예전에는 net.ParseIP 실패분을 전부 DNS 이름으로
+// 받아 "10.0.0.5:9443"이 통째로 SAN에 박혔고, 한참 뒤 센서 접속에서야 TLS 검증
+// 실패로 드러났다. 유효한 항목은 그대로 살아야 한다.
+func TestLoadSensorAdvertisedHostsRejectsInvalid(t *testing.T) {
+	setRequired(t)
+	t.Setenv("SENSOR_ADVERTISED_HOSTS",
+		"10.0.0.5:9443, autocert.internal, https://gw.example.com, gw..example.com, -bad.example.com, ok-1.example.com., [2001:db8::1]:8443, 10.0.0.6")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	wantDNS := []string{"autocert.internal", "ok-1.example.com"}
+	if len(cfg.SensorAdvertisedDNS) != len(wantDNS) {
+		t.Fatalf("SensorAdvertisedDNS = %v, want %v", cfg.SensorAdvertisedDNS, wantDNS)
+	}
+	for i, d := range wantDNS {
+		if cfg.SensorAdvertisedDNS[i] != d {
+			t.Fatalf("SensorAdvertisedDNS = %v, want %v", cfg.SensorAdvertisedDNS, wantDNS)
+		}
+	}
+	if len(cfg.SensorAdvertisedIPs) != 1 || !cfg.SensorAdvertisedIPs[0].Equal(net.ParseIP("10.0.0.6")) {
+		t.Fatalf("SensorAdvertisedIPs = %v, want [10.0.0.6]", cfg.SensorAdvertisedIPs)
+	}
+	joined := strings.Join(cfg.Warnings, "\n")
+	for _, bad := range []string{"10.0.0.5:9443", "https://gw.example.com", "gw..example.com",
+		"-bad.example.com", "[2001:db8::1]:8443"} {
+		if !strings.Contains(joined, bad) {
+			t.Errorf("warnings do not name the rejected entry %q: %v", bad, cfg.Warnings)
+		}
+	}
+	if !strings.Contains(joined, "SENSOR_LISTEN_ADDR") {
+		t.Errorf("the port-attached entry should point at SENSOR_LISTEN_ADDR: %v", cfg.Warnings)
+	}
+	// 대괄호 표기의 IPv6 리터럴(포트 없음)은 유효한 값이다.
+	setRequired(t)
+	t.Setenv("SENSOR_ADVERTISED_HOSTS", "[2001:db8::1], localhost")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.SensorAdvertisedIPs) != 1 || !cfg.SensorAdvertisedIPs[0].Equal(net.ParseIP("2001:db8::1")) {
+		t.Errorf("SensorAdvertisedIPs = %v, want [2001:db8::1]", cfg.SensorAdvertisedIPs)
+	}
+	if len(cfg.SensorAdvertisedDNS) != 1 || cfg.SensorAdvertisedDNS[0] != "localhost" {
+		t.Errorf("SensorAdvertisedDNS = %v, want [localhost]", cfg.SensorAdvertisedDNS)
+	}
+	if len(cfg.Warnings) != 0 {
+		t.Errorf("valid hosts must not warn: %v", cfg.Warnings)
 	}
 }
 

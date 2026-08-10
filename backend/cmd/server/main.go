@@ -135,11 +135,13 @@ func run(logger *slog.Logger) error {
 
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
-		// 선택 의존성 2개를 주입한다. 둘 다 없어도 코어 API는 뜨지만, 없으면
-		// 채널 상태가 "배선 없음"이고 스윕 기본값이 SCAN_SWEEP_*를 무시한다.
+		// 선택 의존성 3개를 주입한다. 없어도 코어 API는 뜨지만, 없으면 채널 상태가
+		// "배선 없음"이고 스윕 기본값이 SCAN_SWEEP_*를, 등록 예시가 실제 포트를 무시한다.
 		Handler: api.NewServer(pool, authSvc, rec, cfg.SensorCAEncKey,
 			api.WithNotificationChannels(notifyChannels),
-			api.WithSweepDefaults(sweepDefaults(cfg.Sweep))),
+			api.WithSweepDefaults(sweepDefaults(cfg.Sweep)),
+			// 등록 명령 예시가 실제 게이트웨이 포트를 안내하게 한다.
+			api.WithSensorGatewayPort(cfg.SensorGatewayPort)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

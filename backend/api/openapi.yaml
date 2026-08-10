@@ -1771,7 +1771,9 @@ components:
           description: 센서 CA 인증서 DER의 SHA-256 (hex 64자) — enroll의 --ca-fingerprint 핀 값
         enroll_command_example:
           type: string
-          description: 센서 호스트에서 실행할 enroll 명령 예시 (서버 주소는 자리표시)
+          description: >-
+            센서 호스트에서 실행할 enroll 명령 예시. 서버 주소는 자리표시이고,
+            포트는 서버에 설정된 실제 센서 게이트웨이 포트(SENSOR_LISTEN_ADDR)다.
     AuditEvent:
       type: object
       description: 감사 이벤트 (00-spec 7.12·12장). before/after에 민감값 없음.

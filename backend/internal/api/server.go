@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/audit"
@@ -32,10 +33,13 @@ type Server struct {
 	audit  *audit.Recorder
 	routes []string
 
-	// 아래 둘은 배선(cmd/server)이 있어야 채워지는 선택 의존성이다.
+	// 아래 셋은 배선(cmd/server)이 있어야 채워지는 선택 의존성이다.
 	// 비어 있어도 코어 API는 정상 동작한다 (05-notifications 10.1 실패 격리).
 	channels      NotificationChannels
 	sweepDefaults SweepDefaults
+	// sensorGatewayPort는 센서 등록 명령 예시에 넣을 게이트웨이 포트다.
+	// 기본값은 defaultSensorGatewayPort이고 WithSensorGatewayPort가 덮어쓴다.
+	sensorGatewayPort string
 }
 
 // Option은 NewServer의 선택 의존성 주입이다.
@@ -54,6 +58,17 @@ func WithSweepDefaults(d SweepDefaults) Option {
 	return func(s *Server) { s.sweepDefaults = d }
 }
 
+// WithSensorGatewayPort는 SENSOR_LISTEN_ADDR에서 파생한 실제 게이트웨이 포트를 주입한다.
+// 센서 생성 응답의 등록 명령 예시가 이 포트를 쓴다 — 주입하지 않으면 기본 포트로
+// 안내되므로, 게이트웨이 포트를 바꾼 배치에서는 반드시 배선한다.
+func WithSensorGatewayPort(port string) Option {
+	return func(s *Server) {
+		if p := strings.TrimSpace(port); p != "" {
+			s.sensorGatewayPort = p
+		}
+	}
+}
+
 // NewServer는 모든 라우트가 등록된 HTTP 핸들러를 반환한다.
 // sensorCAKey는 센서 mTLS 내부 CA 개인키의 봉인 키(32바이트)다 — 센서 CA를
 // 처음 부트스트랩하는 시점(첫 센서 생성)에만 필요하며 nil이어도 기동은 된다.
@@ -66,7 +81,8 @@ func NewServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorC
 func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorCAKey []byte, opts ...Option) *Server {
 	st := store.New(pool)
 	disc := discovery.NewManager(st)
-	s := &Server{mux: http.NewServeMux(), pool: pool, store: st, auth: authSvc, audit: rec}
+	s := &Server{mux: http.NewServeMux(), pool: pool, store: st, auth: authSvc, audit: rec,
+		sensorGatewayPort: defaultSensorGatewayPort}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -145,7 +161,7 @@ func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorC
 		domain.RoleSystemAdministrator, domain.RoleSecurityAdministrator, domain.RoleAuditor)
 	// 센서(원격 수집기, 00-spec 7.8) — 생성(1회용 토큰 발급)·비활성화는 System
 	// Administrator 전용, 목록·상세는 읽기 전용이라 전 역할 (감사 이벤트 없음).
-	s.protected("POST /api/v1/sensors", handleCreateSensor(st, sensorCAKey),
+	s.protected("POST /api/v1/sensors", handleCreateSensor(st, sensorCAKey, s.sensorGatewayPort),
 		domain.RoleSystemAdministrator)
 	s.protected("GET /api/v1/sensors", handleListSensors(st), domain.AllRoles...)
 	s.protected("GET /api/v1/sensors/{id}", handleGetSensor(st), domain.AllRoles...)

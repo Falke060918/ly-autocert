@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/domain"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/sensorca"
@@ -25,9 +26,10 @@ const maxSensorRequestBytes = 4 << 10 // 4 KiB
 // sensorCACommonName은 서버가 부트스트랩하는 센서 mTLS 내부 CA의 CN이다.
 const sensorCACommonName = "INHERIT AutoCert Sensor CA"
 
-// defaultSensorGatewayPort는 등록 명령 예시에 넣는 센서 게이트웨이 포트다.
-// sensorgw.DefaultAddr / config의 SENSOR_LISTEN_ADDR 기본값(":8443")과 같은 값이며,
-// 운영자가 게이트웨이 포트를 바꿨다면 예시 포트도 바꿔 써야 한다.
+// defaultSensorGatewayPort는 게이트웨이 포트가 배선되지 않았을 때 쓰는 폴백이다
+// (config의 SENSOR_LISTEN_ADDR 기본값 ":8443"과 같은 포트). 실제 포트는
+// WithSensorGatewayPort로 주입된다 — 예시가 이 상수로 굳어 있으면 포트를 바꾼
+// 운영자가 명령을 그대로 복사해 접속에 실패한다.
 const defaultSensorGatewayPort = "8443"
 
 // errSensorCAKeyMissing은 센서 CA를 새로 만들어야 하는데 봉인 키가 없을 때다.
@@ -62,7 +64,9 @@ type sensorDetailResponse struct {
 // store.CreateSensor가 같은 트랜잭션으로 남긴다.
 // 센서 CA가 아직 없으면 여기서 부트스트랩한다 — 개인키는 sensorCAKey로 봉인한
 // 암호문만 저장된다 (sensorca.Seal, 보안 하드 규칙 1).
-func handleCreateSensor(st *store.Store, sensorCAKey []byte) http.HandlerFunc {
+// gatewayPort는 등록 명령 예시에 넣을 센서 게이트웨이 포트다(SENSOR_LISTEN_ADDR에서 파생).
+// 비면 defaultSensorGatewayPort를 쓴다.
+func handleCreateSensor(st *store.Store, sensorCAKey []byte, gatewayPort string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		reqIDStr := ""
@@ -115,18 +119,26 @@ func handleCreateSensor(st *store.Store, sensorCAKey []byte) http.HandlerFunc {
 		}
 
 		writeJSON(w, http.StatusCreated, sensorCreateResponse{
-			RequestID:       reqIDStr,
-			Sensor:          sn,
-			EnrollmentToken: token,
-			CAFingerprint:   caFingerprint,
-			// 호스트는 배치 세그먼트에 따라 다르므로 자리표시로 남기되, 포트는 생략하면
-			// 443으로 붙으므로 센서 게이트웨이 기본 포트(SENSOR_LISTEN_ADDR 기본 ":8443")를
-			// 명시한다. 게이트웨이 포트를 바꿨다면 그 포트로 고쳐 쓴다.
-			EnrollCommandExample: fmt.Sprintf(
-				"sensor enroll --server https://<서버 주소>:%s --token %s --ca-fingerprint %s",
-				defaultSensorGatewayPort, token, caFingerprint),
+			RequestID:            reqIDStr,
+			Sensor:               sn,
+			EnrollmentToken:      token,
+			CAFingerprint:        caFingerprint,
+			EnrollCommandExample: enrollCommandExample(gatewayPort, token, caFingerprint),
 		})
 	}
+}
+
+// enrollCommandExample은 센서 등록 명령 예시를 만든다.
+// 호스트는 배치 세그먼트마다 다르므로 자리표시로 남기되, 포트는 생략하면 443으로
+// 붙으므로 **실제 게이트웨이 포트**를 박는다.
+func enrollCommandExample(gatewayPort, token, caFingerprint string) string {
+	port := strings.TrimSpace(gatewayPort)
+	if port == "" {
+		port = defaultSensorGatewayPort
+	}
+	return fmt.Sprintf(
+		"sensor enroll --server https://<서버 주소>:%s --token %s --ca-fingerprint %s",
+		port, token, caFingerprint)
 }
 
 // ensureSensorCAFingerprint는 센서 CA 인증서의 SHA-256 지문(hex 64자)을 반환한다.
