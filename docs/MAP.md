@@ -1,5 +1,5 @@
 # MAP — 코드베이스 구조·명령 캐시
-확인일: 2026-08-10
+확인일: 2026-08-11
 
 ## 저장소 구조
 - `backend/` — Go 백엔드
@@ -71,7 +71,7 @@
   - `deploy/tls/` — 서버 인증서·키 배치 위치(`server.crt`/`server.key` 이름 고정). `.gitignore`로 README만 추적 — 실제 키·인증서 커밋 금지
   - 베이스 이미지 3종: `golang:1.25-alpine`·`gcr.io/distroless/static-debian12`(backend/Dockerfile), `node:24-alpine`(frontend/Dockerfile) — 폐쇄망 빌드 시 내부 레지스트리 미러 필요. 단 **main 패키지는 최종 이미지만 담는다**(멀티스테이지라 빌드 단계 베이스는 불필요)
   - backend·frontend는 `image: ${AUTOCERT_IMAGE_PREFIX:-inherit-autocert}/<서비스>:${AUTOCERT_VERSION:-<버전>}`로 이름·태그가 고정돼 있다(compose 프로젝트명 의존 제거). 태그 기본값은 루트 `VERSION`과 **같아야 하며** `scripts/bundle-offline.sh`가 다르면 중단한다
-- `VERSION`(단일 진실원천) / `CHANGELOG.md`(SemVer 체계·릴리즈 시 VERSION·compose 기본 태그와 함께 갱신) / `.gitattributes`(`export-ignore`로 `.claude`·`.github`·`mockup`·CLAUDE/SETUP·STATE/MAP/GOTCHAS·개발 전용 scripts를 소스 아카이브에서 제외)
+- `VERSION`(단일 진실원천) / `CHANGELOG.md`(SemVer 체계·릴리즈 시 VERSION·compose 기본 태그와 함께 갱신) / `frontend/package.json`+`package-lock.json`의 `version`(**릴리즈 시 손으로 맞춘다** — 번들 스크립트의 검사 6종에 없어 어긋나도 조용히 통과한다) / `.gitattributes`(`export-ignore`로 `.claude`·`.github`·`mockup`·CLAUDE/SETUP·STATE/MAP/GOTCHAS·개발 전용 scripts를 소스 아카이브에서 제외)
 - `scripts/` — 제품 배포·설치 스크립트 7종(나머지는 템플릿 도구). **릴리즈 산출물은 버전별·환경별 3종**이고 통합 번들 `autocert-offline-<버전>.tar`은 폐기됐다 — `main_<버전>.tar.gz`(이미지 3종·소스·매뉴얼·compose·install.sh·load-offline.sh·lib/tui.sh) / `sensor_linux_<버전>.tar.gz`(센서 바이너리·install-sensor.sh·lib/tui.sh·SENSOR.md) / `sensor_windows_<버전>.zip`(센서 exe·install-sensor.ps1·SENSOR.md). 각 산출물에 `.sha256` 사이드카가 붙고 `--target all`일 때만 `dist/SHA256SUMS-<버전>`(3줄 집계)이 추가된다. **패키지 루트 = 설치 루트**(사용자는 tar 한 번 풀고 그 안에서 진입점 하나만 실행). **셸이 갈린다** — `install.sh`·`install-sensor.sh`는 bash 전용이라 `sh <스크립트>`로 부르지 않고(sh로 불려도 스스로 bash로 재실행한다), `bundle-offline.sh`·`load-offline.sh`·`build-sensor-dist.sh`만 POSIX sh다
   - `bundle-offline.sh`(개발측 — 이미지 빌드·save·센서 크로스 빌드·git archive·패키지별 MANIFEST/SHA256SUMS. 옵션 `--target <all|main|sensor-linux|sensor-windows>`(반복·콤마 허용)/`--version`/`--output`/`--skip-build`(main 전용)/`--no-archive`, `--skip-sensor`는 `--target main`의 deprecated 별칭. 버전 정합 검사 6종 — 4번이 `CHANGELOG.md`의 `## v<버전> (` 헤딩을 grep하므로 **이 헤딩 포맷을 바꾸면 릴리즈가 중단된다**)
   - `install.sh`(고객사 설치 마법사 진입점 — 방향키 TUI. 패키지에서는 루트의 `bash install.sh`, 저장소에서는 같은 파일이 `bash scripts/install.sh`로 동작한다 — 설치 루트는 cwd·인자가 아니라 **마커 파일(`docker-compose.yml` + `VERSION`/`.env.example`/`MANIFEST.txt` 중 하나) 존재**로 `$SCRIPT_DIR` → `$SCRIPT_DIR/..` 순서로 판정하고 둘 다 아니면 즉시 에러 종료한다. 모드 4종 install|https|reconfigure|status, `-y`/`--non-interactive`/`--check-only`/`--skip-load`/`--build`. 체크섬 대조·이미지 적재(`load-offline.sh` 호출)·소스 전개·`.env` 생성(`COMPOSE_PROJECT_NAME=autocert`를 못박는다 — 패키지 디렉터리명이 버전마다 달라져도 `autocert_pgdata` 볼륨을 계속 쓰게)·난수 비밀값·포트 충돌 검사·`docker compose up -d`·`/healthz` 대기까지 한 번에)
