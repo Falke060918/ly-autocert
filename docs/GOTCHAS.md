@@ -16,10 +16,6 @@ Fix: prefix the whole command with `MSYS_NO_PATHCONV=1`, and pass the host side 
 
 ## Permissions & settings
 
-**Hook/permission edits: `/clear` does not reload them, and the classifier blocks the edit**
-Cause: `.claude/settings.json` hooks load only at session start and `/clear` does not re-read them; edits to hooks/permissions trip the permission-mode classifier regardless of allow rules; session-start markers are unenforced text easily eclipsed by the user's message.
-Fix: check markers **before** the user's request; state the user-approval basis at the top of the delegation prompt; after editing hooks restart Claude (not `/clear`). (last recurrence: 2026-07)
-
 **`.env.*` files are blocked from Read/Edit, so agents cannot add new env var placeholders**
 Cause: the permission deny rule for secret-leak prevention covers `.env.example` too, not just live `.env`.
 Fix: document new variables in docs/manual/INSTALL.md·SENSOR.md, wire them through scripts, and have the user add them to `.env.example` by hand. (last recurrence: 2026-08)
@@ -63,6 +59,12 @@ Fix: keep `security:` outside/after `paths:`; change the domain enum, backend/ap
 **JSON decoding drops new fields silently, and `*json.RawMessage` cannot see an explicit `null`**
 Cause: encoding/json discards unknown keys, so the API answers 201 while throwing the value away (`users.email` had a column, a CHECK and recipient logic yet no way to set it); and a pointer field stays nil both for "key absent" and for JSON `null`, so a PATCH quietly ignores a caller clearing a field.
 Fix: keep `DisallowUnknownFields` on the single decoder (`decodeUserRequest`), use a non-pointer `json.RawMessage` in partial-update DTOs, and verify a round-trip read rather than the 2xx. (last recurrence: 2026-08)
+
+## Release & packaging
+
+**A release has 4 version sync points, a fixed CHANGELOG heading, and dies if you `--amend` after packaging**
+Cause: `scripts/bundle-offline.sh` asserts `VERSION` against the compose tag defaults, `frontend/package.json`+`package-lock.json` (3 spots: lock top level and `packages[""]`) and a `## v<version> (` grep — a heading like `## 1.1.0 - date` fails checks 4/6; and MANIFEST freezes the source commit, so amending the release commit leaves shipped packages pointing at a dangling hash. v1.0.0 shipped with the frontend still at 0.1.0 because check 7 did not exist yet.
+Fix: bump all 4 places together, keep the heading exactly `## v<version> (<date>)`, and if you amend the release commit re-run the bundler with `--skip-build` to realign MANIFEST with HEAD. (last recurrence: 2026-08)
 
 ## Frontend & deployment
 
