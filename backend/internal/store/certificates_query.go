@@ -57,6 +57,13 @@ type ListCertificatesInput struct {
 	ExpiresWithinDays *int   // 파생 상태: 오늘부터 N일 이내 만료(이미 만료된 것 제외)
 	SelfSigned        *bool  // 파생 상태: subject_dn = issuer_dn (이슈 #8 대시보드 이동용)
 	Unowned           *bool  // 파생 상태: owner_id IS NULL
+	// IssuerOrg는 발급 기관(issuer_organization, 0016) 정확 일치 필터다.
+	// 분포 집계(GET /certificates/issuers)에서 클릭해 들어오는 경로라 부분 일치가 아니다.
+	IssuerOrg *string
+	// IssuedBy는 "이 CA 인증서가 발급한 인증서" 필터다 — 값은 발급자 인증서 id.
+	// 매칭은 certificates_chain.go findIssuer의 역방향과 같다:
+	// SKI=AKI 정확 일치 우선, 키 식별자가 없으면 issuer_dn = subject_dn 폴백.
+	IssuedBy *string
 	SortField         string // listSortColumns 키. 빈 값이면 not_after
 	SortDesc          bool
 	Page              int // 1부터
@@ -127,7 +134,8 @@ type CertificateDetail struct {
 // certificateColumns는 scanCertificate와 순서가 일치해야 한다.
 // sans는 text[] 제약(패키지 주석 참조) 때문에 chr(31) 연결 문자열로 내린다.
 const certificateColumns = `
-	id, fingerprint_sha256, serial_number, subject_dn, issuer_dn, common_name,
+	id, fingerprint_sha256, serial_number, subject_dn, issuer_dn, issuer_organization,
+	common_name,
 	array_to_string(sans, chr(31)),
 	not_before, not_after, public_key_algorithm, public_key_size, signature_algorithm,
 	certificate_type, status, ca_id, owner_id, department_id, environment,
@@ -138,7 +146,8 @@ const certificateColumns = `
 // 컬럼을 늘리면 여기도 같은 자리에 늘린다.
 func certificateScanDest(c *domain.Certificate, sans, ctype, status *string) []any {
 	return []any{
-		&c.ID, &c.FingerprintSHA256, &c.SerialNumber, &c.SubjectDN, &c.IssuerDN, &c.CommonName,
+		&c.ID, &c.FingerprintSHA256, &c.SerialNumber, &c.SubjectDN, &c.IssuerDN,
+		&c.IssuerOrganization, &c.CommonName,
 		sans,
 		&c.NotBefore, &c.NotAfter, &c.PublicKeyAlgorithm, &c.PublicKeySize, &c.SignatureAlgorithm,
 		ctype, status, &c.CAID, &c.OwnerID, &c.DepartmentID, &c.Environment,
@@ -256,6 +265,22 @@ func buildListWhere(in ListCertificatesInput) (conds []string, args []any) {
 		} else {
 			conds = append(conds, "owner_id IS NOT NULL")
 		}
+	}
+	if in.IssuerOrg != nil {
+		conds = append(conds, fmt.Sprintf("issuer_organization = %s", arg(*in.IssuerOrg)))
+	}
+	if in.IssuedBy != nil {
+		// certificates_chain.go findIssuer 술어의 역방향(발급자 → 하위).
+		// 자기 자신 제외: 자체 서명 루트는 AKI=자기 SKI라 스스로를 발급한 것으로 잡힌다.
+		ph := arg(*in.IssuedBy)
+		conds = append(conds, fmt.Sprintf(`EXISTS (
+			SELECT 1 FROM certificates ic
+			 WHERE ic.id = %s::uuid AND ic.id <> certificates.id
+			   AND (
+			        (ic.subject_key_id IS NOT NULL AND certificates.authority_key_id = ic.subject_key_id)
+			     OR (certificates.issuer_dn = ic.subject_dn
+			         AND (certificates.authority_key_id IS NULL OR ic.subject_key_id IS NULL))
+			   ))`, ph))
 	}
 	return conds, args
 }

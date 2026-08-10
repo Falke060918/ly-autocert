@@ -10,6 +10,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
@@ -131,6 +132,7 @@ func Describe(cert *x509.Certificate, now time.Time) domain.Certificate {
 		SerialNumber:       strings.ToLower(cert.SerialNumber.Text(16)),
 		SubjectDN:          cert.Subject.String(),
 		IssuerDN:           cert.Issuer.String(),
+		IssuerOrganization: firstOrganization(cert.Issuer),
 		CommonName:         cert.Subject.CommonName,
 		SANs:               collectSANs(cert),
 		NotBefore:          cert.NotBefore,
@@ -143,6 +145,18 @@ func Describe(cert *x509.Certificate, now time.Time) domain.Certificate {
 		CertificateType:    classify(cert),
 		Status:             lifecycleStatus(cert, now),
 	}
+}
+
+// firstOrganization은 DN의 첫 번째 비어 있지 않은 O(Organization) 값을 반환한다.
+// 문자열 파싱이 아니라 파싱된 pkix.Name 필드를 그대로 쓰므로 RFC2253 이스케이프와
+// 무관하게 정확하다 (0016 백필의 issuer_dn 정규식은 이전 데이터 전용 폴백이다).
+func firstOrganization(name pkix.Name) *string {
+	for _, o := range name.Organization {
+		if v := strings.TrimSpace(o); v != "" {
+			return &v
+		}
+	}
+	return nil
 }
 
 // keyIDHex는 SKI/AKI 확장 바이트를 소문자 hex로 변환한다. 확장이 없으면 nil.

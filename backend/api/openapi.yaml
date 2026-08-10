@@ -142,6 +142,19 @@ paths:
           in: query
           description: 소유자 미지정 여부 (owner_id IS NULL 파생 필터)
           schema: { type: boolean }
+        - name: issuer_org
+          in: query
+          description: >
+            발급 기관(issuer_organization) 정확 일치 필터. 발급 기관 분포
+            (GET /certificates/issuers)에서 항목을 클릭해 들어오는 경로다.
+          schema: { type: string, maxLength: 200 }
+        - name: issued_by
+          in: query
+          description: >
+            지정한 CA 인증서가 발급한 인증서만 반환한다(값은 발급자 인증서 id).
+            매칭은 상세 응답 chain과 같은 규칙 — SKI=AKI 정확 일치 우선,
+            키 식별자가 없는 데이터는 issuer_dn = subject_dn 폴백.
+          schema: { type: string, format: uuid }
         - name: sort
           in: query
           description: 정렬 필드 (기본 not_after)
@@ -190,6 +203,30 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CertificateSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/certificates/issuers:
+    get:
+      operationId: getCertificateIssuers
+      summary: 발급 기관 분포·CA 트리 집계
+      description: >
+        organizations는 발급 기관(issuer_organization)별 비-CA 인증서 분포이고
+        ca_tree는 보유 CA의 루트→중간 2계층 트리다(노드별 직접 발급 리프 수 포함,
+        더 깊은 중간 CA는 루트 바로 아래로 평탄화). 트리 노드의 id를 목록 API의
+        issued_by= 필터에 넣으면 그 CA가 발급한 인증서 목록으로 이동한다 — 두 API가
+        같은 매칭 술어를 쓴다. status=replaced 인증서는 리프 수·분포에서 제외한다
+        (대시보드 요약과 같은 규약). 인증된 전 역할(6종) 접근 가능. 읽기 전용이라
+        감사 이벤트를 남기지 않는다.
+      tags: [certificates]
+      responses:
+        "200":
+          description: 발급 기관 집계
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CertificateIssuers"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -245,6 +282,14 @@ paths:
         - name: unowned
           in: query
           schema: { type: boolean }
+        - name: issuer_org
+          in: query
+          description: 발급 기관 정확 일치 필터 (목록과 같은 의미)
+          schema: { type: string, maxLength: 200 }
+        - name: issued_by
+          in: query
+          description: 지정한 CA 인증서가 발급한 인증서만 (목록과 같은 의미)
+          schema: { type: string, format: uuid }
         - name: sort
           in: query
           description: 정렬 필드 (기본 not_after)
@@ -1730,6 +1775,12 @@ components:
         serial_number: { type: string }
         subject_dn: { type: string }
         issuer_dn: { type: string }
+        issuer_organization:
+          type: string
+          nullable: true
+          description: >
+            발급자 DN의 O(Organization) 값 (0016). 신규 행은 x509 파서가 채우고
+            0016 이전 행은 issuer_dn에서 소급 백필됐다. O가 없으면 null.
         common_name: { type: string }
         sans:
           type: array
@@ -1859,6 +1910,53 @@ components:
         dispatched_endpoints:
           type: integer
           description: 이번 배치가 claim한 엔드포인트 수. 0이면 지금 재확인할 것이 없다.
+    IssuerOrgCount:
+      type: object
+      required: [organization, count]
+      properties:
+        organization:
+          type: string
+          nullable: true
+          description: null이면 발급자 DN에 O가 없는 인증서 묶음
+        count: { type: integer }
+    CATreeNode:
+      type: object
+      description: >
+        CA 트리 1노드. 루트(자체 서명 CA) 아래에 그 계보의 중간 CA가 평탄화되어
+        붙는다. 인벤토리에 없는 상위는 stored=false·id null로 subject_dn만 안다
+        (체인 항목과 같은 규약).
+      required: [id, stored, subject_dn, common_name, not_after, status, self_signed, leaf_count, children]
+      properties:
+        id: { type: string, format: uuid, nullable: true }
+        stored: { type: boolean }
+        subject_dn: { type: string }
+        common_name: { type: string, nullable: true }
+        not_after: { type: string, format: date-time, nullable: true }
+        status:
+          type: string
+          nullable: true
+          enum: [active, expired, revoked, replaced, unknown, null]
+        self_signed: { type: boolean }
+        leaf_count:
+          type: integer
+          description: 이 CA가 직접 발급한 비-CA 인증서 수 (replaced 제외)
+        children:
+          type: array
+          items: { $ref: "#/components/schemas/CATreeNode" }
+    CertificateIssuers:
+      type: object
+      required: [request_id, organizations, ca_tree, unmatched_leaf_count]
+      properties:
+        request_id: { type: string }
+        organizations:
+          type: array
+          items: { $ref: "#/components/schemas/IssuerOrgCount" }
+        ca_tree:
+          type: array
+          items: { $ref: "#/components/schemas/CATreeNode" }
+        unmatched_leaf_count:
+          type: integer
+          description: 어떤 보유 CA와도 발급 관계가 잡히지 않는 비-CA 인증서 수 (replaced 제외)
     CertificateSummary:
       type: object
       description: >

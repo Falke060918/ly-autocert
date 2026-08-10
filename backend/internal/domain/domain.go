@@ -39,6 +39,10 @@ type Certificate struct {
 	SerialNumber       string            `json:"serial_number"`
 	SubjectDN          string            `json:"subject_dn"`
 	IssuerDN           string            `json:"issuer_dn"`
+	// IssuerOrganization은 발급자 DN의 O(Organization) 값이다 (0016).
+	// 신규 행은 certparse.Describe가 x509 pkix.Name에서 직접 뽑고,
+	// 0016 이전 행은 issuer_dn 문자열에서 소급 백필됐다. O가 없으면 nil.
+	IssuerOrganization *string           `json:"issuer_organization"`
 	CommonName         string            `json:"common_name"`
 	SANs               []string          `json:"sans"`
 	NotBefore          time.Time         `json:"not_before"`
