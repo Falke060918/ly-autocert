@@ -16,7 +16,7 @@ export function CertStatusBadge({
   notAfter: string;
 }) {
   const d = dday(notAfter);
-  if (d.days < 0) {
+  if (d.expired) {
     return (
       <Badge className="border border-red-200 bg-red-50 text-red-700">만료</Badge>
     );
