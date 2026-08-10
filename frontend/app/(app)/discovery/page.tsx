@@ -184,9 +184,11 @@ export default function DiscoveryPage() {
     return map;
   }, [sensors]);
 
+  // 수동 발주만 본다 — 스윕 청크·주기 재스캔 Job까지 실으면 자동 발주가 표를
+  // 도배해 방금 시작한 스캔이 밀려난다. 스윕·재스캔 현황은 각자의 탭이 정본이다.
   const refreshServerList = React.useCallback(
     () =>
-      listScanJobs({ pageSize: MAX_TRACKED })
+      listScanJobs({ pageSize: MAX_TRACKED, origins: ["manual"] })
         .then((res) => setServerJobs(res.items))
         .catch(() => {
           // 일시 오류는 다음 폴링이 흡수한다 — 목록을 비우지 않는다.
@@ -197,7 +199,7 @@ export default function DiscoveryPage() {
   // 최초 로드: 서버 목록 API를 먼저 시도하고, 실패하면 localStorage 방식으로 간다.
   React.useEffect(() => {
     let cancelled = false;
-    listScanJobs({ pageSize: MAX_TRACKED })
+    listScanJobs({ pageSize: MAX_TRACKED, origins: ["manual"] })
       .then((res) => {
         if (cancelled) return;
         setServerJobs(res.items);
@@ -814,7 +816,11 @@ function ScanJobRow({
       </TableCell>
       {canManage && (
         <TableCell className="text-right">
-          {isActiveJob(job) && (
+          {/*
+            취소는 수동 발주만 — 스윕 청크는 스윕 API로만 제어(409 sweep_chunk)
+            하고 재스캔 Job은 스케줄러가 곧 재발주하므로 개별 취소가 무의미하다.
+          */}
+          {isActiveJob(job) && job.origin !== "sweep" && job.origin !== "rescan" && (
             <Button
               type="button"
               size="xs"
