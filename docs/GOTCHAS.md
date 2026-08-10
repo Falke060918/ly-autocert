@@ -14,18 +14,6 @@ Fix: write files binary — `open(path,'wb').write(s.encode('utf-8'))`; write Ko
 Cause: MSYS rewrites absolute POSIX-looking arguments into Windows paths before docker sees them, so `-w`, `-v` targets and in-container paths are mangled and the run fails with a confusing "no such file".
 Fix: prefix the whole command with `MSYS_NO_PATHCONV=1`, and pass the host side of `-v` as `$(pwd -W)`. (Windows / last recurrence: 2026-08)
 
-**`openssl rand -hex 32` can emit CRLF, so a 64-char secret is written as 65 bytes**
-Cause: some builds terminate output with `\r\n`; the stray `\r` rides into `.env` and the value fails the hex-64 check at startup with nothing on screen hinting at an invisible byte.
-Fix: pipe every generated secret through `tr -d '\n\r'` before writing it (`SENSOR_CA_ENC_KEY`, `POSTGRES_PASSWORD` in `scripts/install.sh`). (Windows / last recurrence: 2026-08)
-
-**Archives built on Windows lose the exec bit and flip text files to CRLF**
-Cause: MSYS cannot store `chmod +x` on an ELF file (only PE/shebang count as executable) so tar records mode 644; and `git archive` honours `* text=auto`, exporting `VERSION` and friends as CRLF — when the source archive overwrites a package copy written as LF the bytes differ and SHA256SUMS / image-tag checks drift silently.
-Fix: fix permissions at archive time with tar `--mode`, and assert byte-identity after extraction for any file present in both the package and the source archive. (Windows / last recurrence: 2026-08)
-
-**`Write-Host -NoNewline` breaks lines apart when PowerShell output is redirected**
-Cause: each `Write-Host` call is one information-stream record, so a screen line assembled from several calls is split across records and reassembles as several broken lines in a log file or captured transcript.
-Fix: build the string first and emit one screen line with exactly one `Write-Host` call (`scripts/install-sensor.ps1` is PS 5.1 + UTF-8 BOM). (Windows / last recurrence: 2026-08)
-
 ## Permissions & settings
 
 **Hook/permission edits: `/clear` does not reload them, and the classifier blocks the edit**
@@ -51,6 +39,10 @@ Fix: isolate any parallel work that could touch the same files in its own git wo
 **Backend tests: no local Go toolchain, parallel packages wipe the schema, and cross-package state leaks in**
 Cause: `go`/`gofmt` are not guaranteed to exist on a dev machine (this one has none); the db package runs up/down/up against TEST_DATABASE_URL so package parallelism drops tables mid-run; and migration 0012's seeded `기본 만료 알림` policy plus a bootstrap admin left by an earlier package join notification assertions — running a single package hides all three.
 Fix: run in `golang:1.25-alpine` mounted at `backend/` with a disposable per-run postgres, always `go test -p 1 -count=1 ./...` as a whole; in store tests disable every enabled policy at setup and restore it afterwards. (last recurrence: 2026-08)
+
+**A blocked host listener does not block DB tests — put both containers on one docker network**
+Cause: "cannot bind a host port" was read as "cannot run postgres", so DB-backed Go tests were skipped for whole sessions; a container published with no `-p` never touches a host listener and is still reachable by service name from another container on the same user-defined network.
+Fix: `docker network create` → `docker run -d --network … postgres:16-alpine` (no `-p`) → run the golang container on the same network with `TEST_DATABASE_URL=postgres://…@<container-name>:5432/…`; remove the container and network afterwards. (last recurrence: 2026-08)
 
 **Audit insert must be the last statement in its transaction**
 Cause: implicit convention — the global advisory lock taken by the audit hash chain is held until tx end; inserting earlier widens lock contention and breaks chain-ordering assumptions.
@@ -89,6 +81,14 @@ Fix: flip the reverse proxy and `SESSION_COOKIE_SECURE` together; enable HSTS on
 **eslint `react-hooks/purity` + `set-state-in-effect` block the usual "elapsed time" tick**
 Cause: the config rejects `Date.now()` during render AND a bare `setState` inside an effect body, so both obvious ways to keep a ticking clock fail `npm run lint`.
 Fix: `useState(() => Date.now())` lazy initializer + a `setInterval` inside the effect that updates it. (last recurrence: 2026-08)
+
+**`page_size` over 200 is a 400, and every local check stays green**
+Cause: every list endpoint caps `page_size` at 200; the dashboard asked for 500 inside a `Promise.all`, so one rejected fetch took the whole screen down to an error alert — tsc, lint, unit tests and `next build` all pass because the limit lives on the server.
+Fix: keep bulk reads at ≤200 or loop pages with a hard page ceiling (dashboard expiry horizon: 200 × 3 pages). (last recurrence: 2026-08)
+
+**A fresh worktree typechecks against a fake `tsc`, and `frontend/AGENTS.md` is not in the repo**
+Cause: with no `node_modules`, `npx tsc` fetches an unrelated package instead of the project's TypeScript; even after `npm install`, Next's generated global types (`LayoutProps` and friends) exist only once `npx next typegen` has run; and `frontend/AGENTS.md` is gitignored with generation off (`agentRules: false`), so a delegation prompt that points at it sends the agent to a file a fresh checkout does not have.
+Fix: `npm install` → `npx next typegen` → `npx tsc --noEmit`, and treat `next build` as the authoritative typecheck. (last recurrence: 2026-08)
 
 **Next.js bakes `/api/*` rewrites at build time, and `next dev` poisons a production build tree**
 Cause: with `output: "standalone"`, `next start` freezes the rewrite target from the build-time `BACKEND_INTERNAL_URL`; and `next dev` in a tree holding a production build serves `_next/static/chunks/*` as 403, killing hydration.

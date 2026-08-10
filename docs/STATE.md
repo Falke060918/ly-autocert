@@ -4,45 +4,33 @@
 INHERIT_AutoCert — 폐쇄망·레거시 환경용 온프레미스 인증서 라이프사이클 관리(CLM) 플랫폼. (명세: docs/00-spec.md / 기획: docs/01-plan.md / 목표: docs/02-goals.md)
 
 ## 현재 상태
-**v1.0.0 기능은 그대로, 설치·반입 경험이 제품 수준으로 올라갔다.** 직전 상태는 "고객사 반입 가능"이었고 이번 세션은 그 반입을 **스크립트 하나로 끝나는 절차**로 바꾼 것이다. 기능(Phase 1 인벤토리 + Phase 3a 센서)에는 변화가 없다.
+**랩 첫 설치 실사용 피드백 6건을 전부 반영한 UI 전면 개선 작업 단위가 끝났다.** 직전 상태는 "설치·반입 경험이 제품 수준"이었고, 이번 세션은 **화면**을 같은 수준으로 끌어올린 것이다. Phase 1 인벤토리 + Phase 3a 센서라는 기능 범위 자체는 그대로이며 Phase 2(CA 연결·발급)는 여전히 미착수다.
 
 ### 이번 세션에 들어간 것
-- **대화형 설치 마법사** — `scripts/install.sh`(서버) + `scripts/lib/tui.sh`(방향키 TUI 공용). 모드 메뉴(install/https/reconfigure/status), 입력 3단 폴백(raw → 번호 입력 → 제어 터미널 없으면 전부 기본값). `POSTGRES_PASSWORD`·`SENSOR_CA_ENC_KEY` 자동 생성(화면 미출력, `.env` 600), NIC IP 자동 탐지 후 `SENSOR_ADVERTISED_HOSTS` 다중 선택, `ADMIN_IP_TRUSTED_PROXIES` 자동 주입(기동 후 실제 compose subnet으로 보정), 포트 충돌 검사, `/healthz` 120초 폴링. `--yes`·`--check-only`·`--non-interactive`·`--help`.
-- **센서 설치 마법사** — `scripts/install-sensor.sh`(Linux) / `install-sensor.ps1`(Windows, **PS 5.1·UTF-8 BOM 필수**). **콘솔의 enroll 명령을 통째로 붙여넣으면 서버주소·토큰·fingerprint를 자동 파싱**한다. 사전 점검 4종(관리자 권한·NTP·바이너리 무결성·게이트웨이 TCP 도달성), systemd 유닛 / 작업 스케줄러 자동 등록, 재실행 메뉴(재등록/서비스만 재설치/상태만/취소). 토큰은 미에코·마스킹.
-- **릴리즈 산출물 3종 분리** — 통합 번들 `autocert-offline-<v>.tar` **폐기**. `main_<v>.tar.gz` / `sensor_linux_<v>.tar.gz` / `sensor_windows_<v>.zip`(+각 `.sha256`, `--target all`일 때만 `dist/SHA256SUMS-<v>`). `bundle-offline.sh`에 `--target` 도입(`--skip-sensor`는 deprecated 별칭). **핵심 구조: 패키지 루트 = 설치 루트** — `install.sh`가 `load-offline.sh --no-next-steps` 호출 후 소스 아카이브를 `--strip-components=1`로 설치 루트에 전개(busybox tar 폴백 포함)해 사전 열람 사본이 동일 바이트로 덮인다.
-- **버전 정합 검사 6종**(기존 2종에서 확장) — **CHANGELOG는 실제로는 검사되지 않고 있었다**(die 메시지에서 언급만) → `## v<VERSION> (` 헤딩 검사 신규. compose 원시 매칭 수 ≥ 2 신규(서비스 하나에서 변수가 사라져도 통과하던 결함). 패키지 VERSION/MANIFEST·아카이브 파일명 사후 assert.
-- **`COMPOSE_PROJECT_NAME` 고정**(기본 `autocert`) — 패키지 루트=설치 루트라 신버전이 새 디렉터리에 깔리는데 compose 프로젝트명이 디렉터리명에서 파생되어 **업그레이드가 빈 DB로 뜨는 사고**를 막는다. `docker compose config`로 재현·검증. 기존 값은 보존하고, 값이 없는데 디렉터리명 기준 볼륨이 있으면 그 이름을 승계한다.
-- **센서 버전 스탬프** — `autocert-sensor --version`. 주입 순서 `AUTOCERT_VERSION` → 루트 `VERSION` → `dev`. 서버 전송 페이로드는 무변경.
-- **검증 결함 수정** — `load-offline.sh`가 MANIFEST에서 이미지 태그를 **0건 파싱해도 "적재 성공"으로 통과**하던 결함(검증 무력화 경로). 태그 파싱을 `docker load` 이전으로 앞당겨 부분 적재도 원천 차단. 회귀 테스트로 실제 검출 확인.
-- **패키지 무결성 게이트** — 센서 설치 스크립트가 패키지 레벨 `SHA256SUMS`를 **바이너리 배치 전에** 전건 대조. 내용 불일치는 `--force`로도 통과하지 못한다.
-- **매뉴얼 재작성** — INSTALL/SENSOR 상단에 **빠른 설치**(서버 3줄 / 센서 Linux 2줄·Windows 1줄) 신설, 기존 수동 절차는 정보 손실 없이 부록으로 이동. 업그레이드 절차 신설(5.1.4), 트러블슈팅 신설. **장 번호는 보존**했다 — OPERATIONS·TLS·compose 주석이 INSTALL 절 번호를 직접 참조한다. CHANGELOG에 `## Unreleased` 신설.
-- **복붙 실패 버그 2건** — SENSOR 문서가 `sudo` 없이 안내(스크립트는 root가 아니면 사전 점검 실패) / Windows에 `-ExecutionPolicy Bypass` 누락(서명 없는 ps1 차단). `Unblock-File`(MotW) 안내도 추가.
+- **'관제 콘솔' 테마 + 다크모드** — 심청 슬레이트 배경 + cert-blue 강조, 상태 3색(danger/warn/ok)을 badge tone 변형으로 고정(장식용 금지), 버튼에 위험 확정용 솔리드 `danger` 추가, 타이포 유틸리티. 다크모드는 의존성 없이 자작 배선(`ThemeProvider`·`ThemeToggle` + FOUC 방지 인라인 스크립트).
+- **대시보드 재구성** — 만료 지평선 히어로(자작 SVG: 이미 만료 블록 + 90일 주 단위 밀도 바, 구간 클릭 = 만료 필터 목록으로 이동)·KPI 밴드 8종(숫자마다 필터 목록 링크 — 02-goals 성공 기준 3)·발급기관 분포 도넛·스캔 현황·최근 등록. 집계 API 실패는 카드 단위로 격리한다(대시보드 전체가 죽지 않게).
+- **디스커버리 2카드 탭 재구성** — 카드 1 "검색 실행"([스캔|전 포트 스윕] 탭, 대상 입력 + 제안 칩 3종(최근 사용·알려진 호스트 /24·설치 감지), 실행기 선택은 탭 공용·전환 시 입력 보존), 카드 2 "작업 현황"([스캔|스윕|주기 재스캔] 탭, 서버 Job 목록이 정본이고 localStorage 추적은 폴백). **중복 발주 가드**(409 `duplicate_scan` → 기존 Job 강조·스크롤 이동)와 **실행 중 취소**(확인 다이얼로그, `canceled`는 실패가 아닌 중립 배지)가 여기 붙었다.
+- **인증서 발급자 축** — 목록에 발급자 열(`issuer_organization` 우선, 폴백 dnOrganization→dnCommonName) + 발급기관 필터 Select + 뷰 세그먼트 [목록|발급 기관](CA 루트→중간 2계층 트리, 보유 CA 클릭 시 `issued_by=` 필터로 목록 전환). 상세는 체인 카드를 **수직 레일**로 재구성(단계 점·커넥터·중간/루트 CA 뱃지·"이 CA가 발급한 N건 →" 링크).
+- **백엔드 마이그레이션 2건 + API** — `0016_issuer_organization`(컬럼·인덱스 + issuer_dn RFC2253 정규식 소급 백필, **같은 커밋에 신규 INSERT 경로도 수정** — 0015 origin 전례), `0017_scan_cancel_dedup`(status CHECK에 `canceled` + `dedup_hash` 부분 유니크). API는 발급기관 집계(`GET /certificates/issuers`)·스캔 Job 목록(`GET /discovery/scans`)·스캔 취소(`POST /discovery/scans/{id}/cancel`)·대상 제안(`GET /discovery/scan-suggestions`)·목록 필터 확장(`issuer_org`·`issued_by`) 5종.
+- **DN 파서 교체** — `frontend/lib/format.ts`의 정규식 분해를 RFC2253 이스케이프 인지 토크나이저 `parseDN`으로 교체(`\,`가 들어간 CN이 잘리던 버그). RFC1779 따옴표·`\2c` 16진 이스케이프·멀티밸류 RDN·openssl 슬래시 표기까지 테스트로 고정.
+- **리뷰 지적 6건 수정**(작업 단위 마지막) — ① 대시보드 만료 지평선이 `page_size=500`을 보내 실서버에서 400(=화면 전체 사망)이던 것을 200×최대 3페이지 루프로 교체 ② 루트 CA 리프 수 거짓 표기 → `subtree_leaf_count`를 응답에 추가하고 라벨을 "직접 발급 N건 · 하위 포함 M건"으로 분리 ③ 스캔 현황 목록을 `origin=manual`로 한정(스윕 청크·재스캔 Job에는 취소 버튼 미표시) ④ "조직 미상" URL 규약을 `__none__` 센티널로 통일(빈 값도 동일 취급) ⑤ 취소 409 문구를 상태별 분기(종료된 Job / 센서 실행 중) ⑥ MAP 갱신.
+
+### 목업 선행 검증
+`docs/mockups/ui-redesign.html`(4화면 단일 HTML)로 **사용자가 먼저 확정한 뒤** 구현에 들어갔다. 탑바의 "Phase 1 — 인증서 인벤토리" 문구는 사용자 지시로 삭제했고, **그 자리는 추후 섹션/테넌트 분리 탭 용도로 비워둔다**(다른 것으로 채우지 않는다).
 
 ### 버전
-`VERSION`·`docker-compose.yml` 기본 태그·`CHANGELOG.md` 세 곳이 **1.0.0**이고, 이제 세 곳 모두 실제로 검사된다(예전엔 CHANGELOG가 검사 대상이 아니었다). Phase 2(CA 연결·발급)와 오프라인 라이선스는 여전히 미포함 — CHANGELOG "알려진 제약"에 명시.
+`VERSION`·`docker-compose.yml` 기본 태그·`CHANGELOG.md` 세 곳 모두 **1.0.0**이고 세 곳 다 패키징 스크립트가 실제로 검사한다. 이번 UI 개선분은 `## Unreleased`에 쌓인다. 최신 마이그레이션은 **0017**.
 
 ### 검증
-설치 마법사·패키징은 실측 검증했다. 스크래치 픽스처로 3종 패키지 실제 생성(레이아웃·tar-bomb 부재·체크섬·zip docker 폴백), 소스 전개 전후 해시 동일 확인, `COMPOSE_PROJECT_NAME` 사고 재현·차단 확인, 센서 무결성 게이트 3케이스. `bash -n`·shellcheck·PowerShell AST 전부 통과. 백엔드는 `golang:1.25-alpine`에서 `go build`·`go vet` 통과(Go 테스트는 DB가 필요해 미실행). **실제 docker 기동 검증은 이 머신에서 불가**(리스너 바인딩 차단) — 고객사 첫 설치에서 확인해야 한다.
+프론트엔드 `npm install` → `npx next typegen` → `tsc --noEmit`·`npm run lint`·`npm test`(13건)·`next build` 전부 통과. 백엔드는 `golang:1.25-alpine` 컨테이너 + **호스트 포트를 열지 않은 postgres 컨테이너를 같은 docker 네트워크에** 띄우는 방식으로 `go build`·`go vet`·`internal/store`·`internal/api` 테스트 통과(subtree 합산 테스트 포함) — 예전의 "이 머신에선 Go 테스트 불가" 전제는 폐기됐다(GOTCHAS). **실제 docker compose 기동 검증은 여전히 불가**(리스너 바인딩 차단) — 고객사/랩 설치에서 확인한다.
 
 ## 다음 할 일 (우선순위 순)
-1. **발급 기관(CA) 표시·필터·집계** — 이전 세션 끝에 사용자가 다음으로 미룬 작업.
-   - 새 컬럼 `certificates.issuer_organization`(마이그레이션 **0016**) + **기존 데이터 소급 백필 가능** — 인증서 원문은 저장하지 않지만 `issuer_dn` 문자열에 `O=`가 들어 있다.
-   - 발급기관 필터 + 대시보드 분포 집계 + 목록 표시 개선.
-   - 함께 고칠 버그: `frontend/lib/format.ts`의 DN 파싱이 RFC2253 백슬래시 이스케이프를 몰라 CN에 `\,`가 있으면 잘린다.
-   - 주의: 백필로 검증이 통과해도 **앞으로 생기는 행의 INSERT 경로**를 같은 커밋에서 반드시 함께 고친다(0015 `scan_jobs.origin` 전례 — GOTCHAS).
-
-   **실사용 피드백 개선 백로그 (2026-08-10, 랩 첫 설치)** — 사용자가 랩 환경 첫 설치 실사용 중 낸 개선 요청 6건.
-   - **스캔 대상 IP 대역 입력 개선** — 수기 CIDR 입력이 번거롭다. 스마트한 선택지 필요(예: 서버 NIC/라우팅 테이블 기반 대역 자동 제안, 최근 사용 대역, 서브넷 선택 UI).
-   - **디스커버리 화면 구성** — "스캔 시작"과 "전 포트 스윕 시작" 섹션이 상하로 분리돼 스크롤이 필요하고 분리 이유도 불분명. 통합 또는 탭/모드 전환형으로 재구성 검토.
-   - **스캔 중복 실행·취소 부재** — 스캔 버튼 연타/더블클릭 시 큐에 중복으로 쌓여 동시에 돈다. 실행 중 중복 발주 방지(디바운스+서버측 중복 가드)와 스캔 취소 기능 필요.
-   - **스마트 스캔** — IP·포트를 더 지능적으로 고르는 스캔 옵션(예: 응답 있는 호스트 우선, 흔한 TLS 포트 프리셋, 이전 결과 기반 타겟팅).
-   - **UI 전반 개선 + 발급자 표시** — 화면이 복잡하고 색상이 단조롭다. 인증서 발급자를 리프만이 아니라 체인(중간 CA)·루트까지 표시. (위 1번 "발급 기관 표시·필터·집계"와 연계)
-   - **체인/루트 관점 탐색** — Common Name에 체인·루트 인증서도 노출되는 것으로 보이는데, 루트/중간 CA를 선택하면 그 아래 연결된 내 인증서(리프) 목록을 볼 수 있는 계층 뷰 필요.
-2. **멀티테넌시 대비**(이번 세션에 사용자와 논의 완료, 결론만 기록) — MSP/하이브리드 시장 대응으로 `tenant_id`를 심는 안. **옵션 B: 스키마 컬럼 + 쿼리 필터 강제 계층까지만**(UI·테넌트 전환기는 나중). 단일 테넌트는 멀티테넌트의 특수 케이스라 **역방향은 불가**하다. 착수 최적 시점은 **Phase 2(CA 연결·발급) 스키마 설계 직전** — Phase 2에서 테이블이 늘어난 뒤에 넣으면 두 번 일한다. 착수 전 planner에 비용 산정 위임(영향 테이블 수·쿼리 지점 수·필터 강제 계층 위치·권한 모델 2층화). 관리 페이지(테넌트 전환기·크로스 테넌트 대시보드)는 후속.
-3. **TLS 관련 후속**(사용자 "나중에" 지시) — 목록 화면 TLS 열·필터·정렬 / cipher suite 수집 / "서버 지원 버전 목록" 탐지. 마지막 것은 엔드포인트당 버전 고정 재핸드셰이크 N회가 필요해 **레이트 리미터·스윕 ETA와 충돌 검토가 선행**이다. cipher suite·지원버전은 **소급 불가** — 재스캔으로만 채워진다.
-4. **Phase 2(CA 연결과 발급)** + 동반 2건: Prometheus 메트릭 최소셋(`/metrics`), Helm 선행 항목(오프라인 이미지 번들은 완료).
-5. **센서 enroll 토큰이 프로세스 인자에 노출된다** — Go CLI가 `--token` 플래그만 받아 `ps`로 보인다. 설치 스크립트가 `--token-file`/환경변수로 완화했으나 근본 해결은 **센서 CLI에 stdin/파일 토큰 입력 추가**다. 1회용·24시간 토큰이라 치명도는 낮지만 인증서 제품이므로 정리 대상.
-6. **오프라인 라이선스 구현** — 설계 완료(docs/design/03-license.md), 착수 전 미해결 결정 2건: 에디션 체계와 기본 한도 수치 / 서명키 보관처와 kid 회전 주기. `backend/cmd/licensegen`은 아직 존재하지 않는다(설계 문서상의 계획 경로).
+1. **멀티테넌시 대비**(이전 세션에 사용자와 논의 완료, 결론만 기록) — MSP/하이브리드 시장 대응으로 `tenant_id`를 심는 안. **옵션 B: 스키마 컬럼 + 쿼리 필터 강제 계층까지만**(UI·테넌트 전환기는 나중). 단일 테넌트는 멀티테넌트의 특수 케이스라 **역방향은 불가**하다. 착수 최적 시점은 **Phase 2(CA 연결·발급) 스키마 설계 직전** — Phase 2에서 테이블이 늘어난 뒤에 넣으면 두 번 일한다. 착수 전 planner에 비용 산정 위임(영향 테이블 수·쿼리 지점 수·필터 강제 계층 위치·권한 모델 2층화). 탑바에 비워둔 공간이 이 작업의 UI 자리다.
+2. **TLS 관련 후속**(사용자 "나중에" 지시) — 목록 화면 TLS 열·필터·정렬 / cipher suite 수집 / "서버 지원 버전 목록" 탐지. 마지막 것은 엔드포인트당 버전 고정 재핸드셰이크 N회가 필요해 **레이트 리미터·스윕 ETA와 충돌 검토가 선행**이다. cipher suite·지원버전은 **소급 불가** — 재스캔으로만 채워진다.
+3. **Phase 2(CA 연결과 발급)** + 동반 2건: Prometheus 메트릭 최소셋(`/metrics`), Helm 선행 항목(오프라인 이미지 번들은 완료).
+4. **센서 enroll 토큰이 프로세스 인자에 노출된다** — Go CLI가 `--token` 플래그만 받아 `ps`로 보인다. 설치 스크립트가 `--token-file`/환경변수로 완화했으나 근본 해결은 **센서 CLI에 stdin/파일 토큰 입력 추가**다. 1회용·24시간 토큰이라 치명도는 낮지만 인증서 제품이므로 정리 대상.
+5. **오프라인 라이선스 구현** — 설계 완료(docs/design/03-license.md), 착수 전 미해결 결정 2건: 에디션 체계와 기본 한도 수치 / 서명키 보관처와 kid 회전 주기. `backend/cmd/licensegen`은 아직 존재하지 않는다(설계 문서상의 계획 경로).
+6. **실사용 피드백 잔여 관찰** — 6건은 이번 세션에 전부 반영됐다(대역 제안 칩 / 2카드 탭 / 중복 가드·취소 / 스마트 스캔 프리셋·최근 사용 타겟팅 / UI 개선·발급자 표시 / CA 계층 뷰). 랩에서 다시 돌려보고 **체감이 실제로 나아졌는지**를 확인한 뒤 다음 개선 항목을 받는다 — 특히 스캔 취소가 센서 스코프에서 어떻게 보이는지(센서 실행 중은 취소 불가이고 409 문구로만 안내된다).
 7. **잔여 갭**
    - **실제 docker 기동 검증 미수행** — 이 머신에서 리스너 바인딩이 막혀 라이브 헬스체크를 못 했다. 첫 실환경 설치에서 확인할 것.
    - `.env.example`에 `COMPOSE_PROJECT_NAME` 추가는 **사용자 수작업 필요**(권한 정책상 에이전트가 이 파일을 읽지도 쓰지도 못한다). 설정하지 않아도 `install.sh`가 채우므로 동작에는 지장 없다.
@@ -51,27 +39,30 @@ INHERIT_AutoCert — 폐쇄망·레거시 환경용 온프레미스 인증서 �
    - DB 연결이 `sslmode=disable`이다 — docs/manual/TLS.md 9장에 현황·방향만 있고 구현은 없다.
    - rootless Docker 환경 안내 부재. Docker 그룹 소속이 사실상 root 동등이라는 점도 문서에 없다.
    - Windows 센서의 개인키가 NTFS ACL로 보호되지 않는다(`os.Chmod`가 Windows에서 무력).
+   - 매뉴얼(INSTALL/OPERATIONS)에 이번 UI 변경 반영이 없다 — 화면 캡처 없는 텍스트 매뉴얼이라 치명적이진 않다.
 8. **잔여 low**
-   - 재스캔 수동 발주의 actor가 감사에 안 실린다 — 사람 발주와 자동 발주가 origin으로만 구분된다.
+   - 재스캔 수동 발주의 actor가 감사에 안 실린다 — 사람 발주와 자동 발주가 origin으로만 구분된다. 스캔 취소도 같은 형태다.
    - `handlers_users.go:48,192`·`handlers_notification_policies.go:485`·`handlers_setup.go`가 `err.Error()` 영문 원문을 사용자에게 노출한다.
    - `config.disableChannel`이 채널당 **첫 사유만** 기록한다.
    - `notify.netErrKind`가 `webhook.go`에 있다(원자리는 공용 `channels.go`).
    - API 계층이 `SendTest` nil을 무조건 `sent`로 표시한다("보낼 것이 없어 성공"을 `skipped`로 가르려면 인터페이스 변경 필요).
    - `useTicker`가 두 곳에서 중복 export된다.
-   - STARTTLS 포트 인증서 수집 미지원(설계상 확장점만) / enroll 엔드포인트 레이트리밋 없음 / 목록 "초기화" 시 검색 인풋 잔류 / 감사 정본 문자열 0x1F 경계 / Discovery Job 목록 API·감사 로그 조회 UI 부재.
+   - STARTTLS 포트 인증서 수집 미지원(설계상 확장점만) / enroll 엔드포인트 레이트리밋 없음 / 목록 "초기화" 시 검색 인풋 잔류 / 감사 정본 문자열 0x1F 경계 / 감사 로그 조회 UI 부재.
 
 ## 이번 세션 특이사항
-- **접근 IP 제한은 기본 compose에서 브라우저 IP 기준으로 동작하지 않는다** — 브라우저→frontend→backend 중계라 backend가 보는 출발지는 frontend 컨테이너다. `install.sh`가 기동 후 실제 compose subnet을 읽어 `ADMIN_IP_TRUSTED_PROXIES`에 넣지만, 수동 설치는 여전히 직접 넣어야 한다.
-- `.env`·`.env.example`은 권한 정책상 에이전트가 읽지도 쓰지도 못한다 — 신규 변수는 스크립트·문서로만 배선했다.
-- 이 머신엔 Go 툴체인이 없어 백엔드 검증은 Docker 컨테이너 경유다. 리스너 바인딩도 막혀 있어 라이브 기동 검증이 불가하다(docs/GOTCHAS.md).
+- **사용자 결정 2건** — ① 탑바에서 "Phase 1 — 인증서 인벤토리"를 지운 자리는 **추후 섹션/테넌트 분리 탭 용도로 비워둔다** ② UI 변경은 **목업(단일 HTML)으로 사용자가 먼저 확정한 뒤** 구현에 들어간다(이번 `docs/mockups/ui-redesign.html`이 그 절차의 첫 사례다).
+- 리스너 바인딩이 막힌 이 머신에서도 **DB 테스트는 돈다** — `-p` 없는 postgres 컨테이너를 사용자 정의 docker 네트워크에 띄우고 golang 컨테이너를 같은 네트워크에 붙이면 된다(GOTCHAS 등재, 검증용 컨테이너·네트워크는 매번 정리).
+- `page_size` 상한 200은 **로컬 검증 전부가 green이어도 실서버에서만 터진다** — 대시보드가 500을 보내 화면 전체가 죽을 뻔한 것을 리뷰가 잡았다(GOTCHAS 등재).
+- `.env`·`.env.example`은 권한 정책상 에이전트가 읽지도 쓰지도 못한다 — 신규 변수는 스크립트·문서로만 배선한다.
+- 세션 후반 API 한도로 에이전트가 한 번 끊겼다 — 중단 지점이 "코드 수정 완료, MAP 갱신 직전"이라 진단부터 하고 이어받았다. 작업 단위를 커밋으로 잘게 끊어둔 것이 복구를 쉽게 했다.
 - git author는 자동 추정값(markus@jjuui-MacBookAir.local) 그대로 두기로 **사용자가 결정**했다 — 더 이상 지적하지 않는다.
-- 워크트리 병렬 작업 중 같은 트리에 에이전트를 중복 투입해 커밋 경계가 섞인 사례가 있었다(GOTCHAS 등재). 이번 세션 워크트리는 전부 머지·정리 완료(남은 브랜치 없음).
 
 ## 주요 파일
-- `scripts/` — `install.sh`(서버 마법사) · `install-sensor.sh`/`install-sensor.ps1`(센서) · `lib/tui.sh` · `bundle-offline.sh`(`--target`) · `load-offline.sh` · `build-sensor-dist.sh`
-- `CHANGELOG.md`(v1.0.0 + `## Unreleased`) / `VERSION` / `docker-compose.yml`·`docker-compose.https.yml` / `deploy/nginx`·`deploy/tls`
-- `docs/00-spec.md`(15장 Phase 배정·16장 제외) / `docs/02-goals.md` / `docs/MAP.md` / `docs/GOTCHAS.md`
-- `docs/design/` — 03-license(설계만) / 04-port-autoscan(0013) / 05-notifications(0012) / 06-rescan-and-replacement(0015)
-- `docs/manual/` — INSTALL(빠른 설치·5.1 반입·5.1.4 업그레이드·5.2 환경변수·5.5 포트) · SENSOR(빠른 설치) · OPERATIONS(2.8~2.10) · TLS
-- `backend/internal/` — api·discovery·store·auth·notify·audit·sensor*·certparse·domain·db / `backend/cmd/` — server·sensor / `backend/migrations/`(최신 **0015**)
-- `frontend/app/` — (app)/discovery·certificates·notifications·settings/{access,notifications}·users·sensors + setup / `frontend/lib/`
+- `frontend/app/(app)/` — `page.tsx`(대시보드 히어로·KPI 밴드) · `certificates/`(page + `issuers-view.tsx` + `[id]` 체인 레일) · `discovery/`(2카드 탭 + `target-field.tsx`·`sweep-panel.tsx`·`rescan-card.tsx`·`scan-status-card.tsx`)
+- `frontend/lib/` — `issuers.ts`(집계·필터 계약 + `ISSUER_ORG_UNKNOWN`) · `scans.ts`(Job 목록·취소·대역 제안) · `format.ts`(RFC2253 `parseDN` + `format.test.mts`) · `api.ts`
+- `frontend/components/` — `charts/`(expiry-horizon·issuer-distribution·scan-status-card) · `ui/`(shadcn + badge tone·button danger) · theme provider/toggle
+- `backend/internal/store/` — `certificates_issuers.go`(분포·CA 트리·subtree 합산) · `discovery.go`(취소·중복 가드·`ScanJobStateError`) · `scan_suggestions.go`
+- `backend/internal/api/discovery.go`(취소 409 분기) · `backend/api/openapi.yaml` · `backend/migrations/`(최신 **0017**)
+- `docs/mockups/ui-redesign.html`(사용자 확정 목업) / `docs/MAP.md` / `docs/GOTCHAS.md` / `CHANGELOG.md`(`## Unreleased`)
+- `scripts/` — `install.sh` · `install-sensor.sh`/`.ps1` · `lib/tui.sh` · `bundle-offline.sh`(`--target`) · `load-offline.sh` · `build-sensor-dist.sh`
+- `docs/manual/` — INSTALL · SENSOR · OPERATIONS · TLS / `docs/design/` — 03-license(설계만) · 04-port-autoscan · 05-notifications · 06-rescan-and-replacement
