@@ -212,15 +212,15 @@ cd autocert-0.1.0
 cp .env.example .env
 ```
 
-`.env`를 열어 아래 값을 설정한다.
+`.env`를 열어 아래 값을 설정한다. **반드시 채워야 하는 값은 `POSTGRES_PASSWORD` 하나뿐이다.** 나머지는 기본값으로 두어도 제품이 정상 동작한다 — 관리자 계정은 설치 후 브라우저 첫 접속 화면에서 만든다 (6.1절).
 
 | 변수 | 기본값 | 설명 |
 | --- | --- | --- |
 | `POSTGRES_USER` | `autocert` | DB 사용자 |
-| `POSTGRES_PASSWORD` | (없음 — 필수 입력) | DB 비밀번호. **반드시 강한 값으로 변경한다.** 예시 값 그대로 운영 금지 |
+| `POSTGRES_PASSWORD` | (없음 — **유일한 필수 입력**) | DB 비밀번호. **반드시 강한 값으로 변경한다.** 예시 값 그대로 운영 금지 |
 | `POSTGRES_DB` | `autocert` | DB 이름 |
-| `BOOTSTRAP_ADMIN_USERNAME` | `admin` | 초기 관리자(System Administrator) 계정명 |
-| `BOOTSTRAP_ADMIN_PASSWORD` | (없음) | 초기 관리자 비밀번호. 최초 기동 시 사용자가 하나도 없으면 이 값으로 초기 관리자를 **1회** 생성한다. 미설정 시 계정이 생성되지 않고 경고 로그만 남는다 (6.1절) |
+| `BOOTSTRAP_ADMIN_USERNAME` | `admin` | 선택. 아래 `BOOTSTRAP_ADMIN_PASSWORD`를 쓸 때의 초기 관리자 계정명 |
+| `BOOTSTRAP_ADMIN_PASSWORD` | (없음) | 선택 — **무인 설치·자동화용이다.** 값을 넣으면 최초 기동 시 사용자가 하나도 없을 때 이 값으로 초기 관리자를 **1회** 생성한다. 비워 두는 것이 기본이며, 그 경우 첫 접속 시 브라우저에서 계정을 만든다 (6.1절) |
 | `SESSION_TTL` | `8h` | 로그인 세션 유효기간. Go duration 형식 (`8h`, `30m`, `12h30m` 등) |
 | `SESSION_COOKIE_SECURE` | `false` | 세션 쿠키에 `Secure` 플래그를 붙인다. **HTTPS 리버스 프록시로 TLS를 종단할 때만 `true`** — 평문 HTTP로 접속하면 브라우저가 쿠키를 버려 로그인이 조용히 실패한다. `docker-compose.https.yml`을 쓰면 자동으로 켜지므로 직접 넣을 필요는 없다 (TLS.md) |
 | `SENSOR_CA_ENC_KEY` | (없음) | 센서 사용 시에만. 센서 CA 개인키 암호화 키 — hex 64자, `openssl rand -hex 32`로 생성. 미설정이면 센서 게이트웨이(8443)가 열리지 않는다. 설정하면 `SENSOR_ADVERTISED_HOSTS`도 반드시 함께 채운다 (SENSOR.md 3.1절) |
@@ -366,7 +366,7 @@ docker compose up -d
 curl http://localhost:8080/healthz   # HTTP 200이면 정상 (BACKEND_PORT를 바꿨다면 그 포트로)
 ```
 
-브라우저에서 `http://<서버 IP>:3000` 접속 → 로그인 화면이 표시되면 설치 완료. 초기 계정은 6.1절. 포트를 바꿨다면 `FRONTEND_PORT` 값으로 접속한다 (5.5절).
+브라우저에서 `http://<서버 IP>:3000` 접속 → **초기 설정 화면**("관리자 계정 만들기")이 표시되면 설치 완료다. 여기서 첫 관리자 계정을 만든다 (6.1절). `BOOTSTRAP_ADMIN_PASSWORD`로 이미 계정을 만들었다면 이 화면 대신 로그인 화면이 나온다. 포트를 바꿨다면 `FRONTEND_PORT` 값으로 접속한다 (5.5절).
 
 ### 5.4 운영 환경 보강 (권장)
 
@@ -427,11 +427,21 @@ docker compose up -d
 
 ### 6.1 초기 관리자 계정과 로그인
 
-최초 기동 시 사용자가 하나도 없고 `BOOTSTRAP_ADMIN_PASSWORD`가 설정되어 있으면, backend가 `BOOTSTRAP_ADMIN_USERNAME`(기본 `admin`) 계정을 **System Administrator** 역할로 1회 생성한다.
+**기본 경로 — 브라우저에서 만든다.** 설치 직후에는 계정이 하나도 없다. `http://<서버 IP>:3000`에 접속하면 로그인 화면 대신 **초기 설정 화면**이 열린다.
 
-- `BOOTSTRAP_ADMIN_PASSWORD`를 설정하지 않으면 계정은 생성되지 않고 backend 로그에 경고만 남는다 — `no users exist and BOOTSTRAP_ADMIN_PASSWORD is not set; login is impossible until it is provided`. 이 경우 `.env`에 값을 넣고 `docker compose up -d backend`로 재기동하면 된다.
+1. 계정명(아이디)과 비밀번호, 비밀번호 확인을 입력하고 [관리자 계정 만들기]를 누른다.
+2. 만들어진 계정은 **System Administrator** 역할이다.
+3. 로그인 화면으로 이동한다 — 방금 정한 계정으로 로그인하면 설치가 끝난다.
+
+- **이 화면은 사용자가 0명일 때만 열린다.** 계정이 하나라도 생기는 순간 화면과 API(`POST /api/v1/setup/admin`)가 함께 닫히며, 이후 접근하면 로그인 화면으로 되돌아간다. 설정을 다시 열 수 있는 스위치는 없다.
+- **비밀번호 정책**: 최소 12자, 최대 72바이트, 계정명과 동일 금지. 위반하면 계정이 만들어지지 않는다.
+- 두 번째 이후의 계정은 웹 콘솔 [사용자] 화면에서 만든다 (6.2절).
+- 이 화면에 계정명·비밀번호 외의 설정은 없다. 메일 주소 등은 로그인 후 [사용자] 화면에서 채운다.
+
+**대안 경로 — 무인 설치(자동화).** 설치를 스크립트로 돌려 사람이 브라우저를 열지 않는 환경을 위해 환경변수 경로를 유지한다. `.env`에 `BOOTSTRAP_ADMIN_PASSWORD`를 넣어 두면, 최초 기동 시 사용자가 하나도 없을 때 backend가 `BOOTSTRAP_ADMIN_USERNAME`(기본 `admin`) 계정을 System Administrator로 **1회** 생성한다. 이 경우 첫 접속 시 초기 설정 화면 대신 로그인 화면이 나온다.
+
+- 값을 넣지 않으면 계정은 만들어지지 않고 backend 로그에 안내 한 줄만 남는다 — `no users exist; create the first administrator on the web setup screen …`. 오류가 아니다.
 - 사용자가 1명이라도 존재하면 이 변수는 무시된다(재기동해도 덮어쓰지 않는다). 초기 생성 후에는 `.env`에서 `BOOTSTRAP_ADMIN_PASSWORD`를 지우는 것을 권장한다 — 파일에 비밀번호가 남지 않게 한다.
-- **비밀번호 정책**: 최소 12자, 최대 72바이트, 계정명과 동일 금지. 정책 위반 비밀번호로는 계정이 생성되지 않는다.
 
 **로그인은 웹 콘솔에서 한다**: `http://<서버 IP>:3000` 접속 → 로그인 화면에서 계정명·비밀번호 입력. 미로그인 상태로 다른 화면에 접근하면 로그인 화면으로 이동된다.
 

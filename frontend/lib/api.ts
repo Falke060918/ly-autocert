@@ -575,6 +575,32 @@ export async function clearSessionCookie(): Promise<void> {
   }
 }
 
+// ── 초기 설정 (사용자 0명일 때만 열린다) ──────────────────────────────────
+
+/**
+ * 초기 설정 필요 여부. 계정이 1명이라도 생기면 영구히 false다
+ * (backend/internal/api/handlers_setup.go — 응답은 불리언 1개뿐이다).
+ */
+export interface SetupStatus {
+  setup_required: boolean;
+}
+
+export function fetchSetupStatus() {
+  return apiFetch<SetupStatus>("/api/v1/setup/status");
+}
+
+/**
+ * 최초 System Administrator 생성. 사용자가 0명일 때만 성공하고 그 외에는 409다 —
+ * 판정은 서버(DB)가 원자적으로 하므로 화면의 상태 조회는 안내용일 뿐이다.
+ * 서버가 모르는 필드를 400으로 거부하므로 username·password만 보낸다.
+ */
+export function createInitialAdmin(username: string, password: string) {
+  return apiFetch<User>("/api/v1/setup/admin", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+}
+
 // ── 사용자 관리 (System Administrator 전용 — 00-spec 7.11) ────────────────
 
 export function listUsers() {

@@ -3,13 +3,23 @@ import { NextResponse, type NextRequest } from "next/server";
 // 세션 쿠키 이름 — 백엔드 로그인 응답의 HttpOnly 쿠키와 일치해야 한다 (openapi cookieAuth).
 const SESSION_COOKIE = "autocert_session";
 
+/**
+ * 세션 없이 열리는 화면. /setup은 계정이 0명일 때의 초기 설정이며, 실제 개폐는
+ * 서버가 판정한다(setup_required=false면 페이지가 스스로 /login으로 되돌아간다).
+ */
+const PUBLIC_PATHS = new Set(["/login", "/setup"]);
+
 // 쿠키 존재만 검사하는 1차 관문이다. 만료·폐기된 세션은 페이지의 /auth/me 호출이
 // 401을 받아 로그인으로 보낸다 (lib/auth.tsx).
 export default function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
   const hasSession = request.cookies.has(SESSION_COOKIE);
 
-  if (!hasSession && pathname !== "/login") {
+  // 로그인한 사용자에게 초기 설정 화면은 의미가 없다 (설정은 이미 끝났다).
+  if (hasSession && pathname === "/setup") {
+    return NextResponse.redirect(new URL("/", request.url));
+  }
+  if (!hasSession && !PUBLIC_PATHS.has(pathname)) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.search =

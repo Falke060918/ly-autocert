@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ApiError, login } from "@/lib/api";
+import { ApiError, fetchSetupStatus, login } from "@/lib/api";
 
 function LoginForm() {
   const router = useRouter();
@@ -26,6 +26,25 @@ function LoginForm() {
   const [submitting, setSubmitting] = React.useState(false);
   // 세션이 폐기돼 튕겨나온 경우 이유를 알린다 (lib/auth.tsx의 401 처리).
   const bounced = searchParams.get("reason") === "session_expired";
+  // 초기 설정을 막 마치고 돌아온 경우 (app/setup).
+  const setupDone = searchParams.get("setup") === "complete";
+
+  // 계정이 0명이면 로그인할 수 있는 사람이 없다 — 초기 설정 화면으로 보낸다.
+  // 미인증 접근은 proxy.ts가 전부 /login으로 모으므로 이 한 곳이면 충분하다.
+  React.useEffect(() => {
+    if (setupDone) return;
+    let alive = true;
+    fetchSetupStatus()
+      .then((status) => {
+        if (alive && status.setup_required) router.replace("/setup");
+      })
+      .catch(() => {
+        // 상태를 못 읽으면 로그인 화면을 그대로 둔다 (로그인 시도가 사유를 알려준다).
+      });
+    return () => {
+      alive = false;
+    };
+  }, [router, setupDone]);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -68,6 +87,13 @@ function LoginForm() {
         <CardDescription>발급받은 로컬 계정으로 로그인하십시오.</CardDescription>
       </CardHeader>
       <CardContent>
+        {setupDone && !error && (
+          <Alert className="mb-4">
+            <AlertDescription>
+              관리자 계정이 만들어졌습니다. 방금 정한 계정으로 로그인하십시오.
+            </AlertDescription>
+          </Alert>
+        )}
         {bounced && !error && (
           <Alert className="mb-4">
             <AlertDescription>

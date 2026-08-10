@@ -405,7 +405,8 @@ docker compose exec db pg_restore -U autocert -d autocert --clean --if-exists /t
 | 웹 콘솔은 뜨는데 데이터 로드 실패 | frontend → backend 컨테이너 내부 통신 실패 | `docker compose ps`로 backend 기동 확인, `docker compose logs frontend backend` 점검. 브라우저는 3000번만 쓰므로 관리자 PC 방화벽은 무관하다 (INSTALL.md 3.3절). backend를 별도 호스트로 분리했다면 `BACKEND_INTERNAL_URL` 빌드 인자 확인 후 frontend 재빌드 |
 | 포트 충돌 (`address already in use`) | 3000/8443/8080을 다른 프로세스가 점유 | 점유 프로세스 정리, 또는 `.env`의 `FRONTEND_PORT`·`BACKEND_PORT`·`SENSOR_GATEWAY_PORT`로 호스트 포트 변경 후 `docker compose up -d` — 함께 고칠 항목(방화벽·센서 `--server`·`NOTIFY_BASE_URL`)은 INSTALL.md 5.5절 |
 | 업그레이드 후 backend 기동 실패, 로그에 마이그레이션 오류 | 스키마 적용 실패 | 로그의 실패 마이그레이션 확인 후 지원 채널에 보고. 임의로 테이블을 수정하지 말 것 |
-| 로그인할 계정이 없음 | 초기 관리자 미생성 — `BOOTSTRAP_ADMIN_PASSWORD` 미설정 상태로 최초 기동 | `docker compose logs backend`에서 `BOOTSTRAP_ADMIN_PASSWORD is not set` 경고 확인 → `.env`에 설정 후 backend 재기동. 초기 생성은 사용자가 0명일 때만 동작한다 (INSTALL.md 6.1절) |
+| 로그인할 계정이 없음 | 아직 초기 관리자를 만들지 않음 | 웹 콘솔(`http://<서버 IP>:3000`)에 접속하면 초기 설정 화면이 열린다 — 거기서 계정을 만든다 (INSTALL.md 6.1절). 화면 대신 로그인 화면이 나온다면 계정이 이미 있다는 뜻이므로, 잊은 계정은 다른 관리자가 [사용자] 화면에서 비밀번호를 재설정해 준다 |
+| 초기 설정 화면이 안 열리고 로그인 화면만 나옴 | 사용자가 이미 1명 이상 존재 (초기 설정은 0명일 때만 열린다) | 정상 동작이다. 계정을 새로 만들려면 기존 관리자로 로그인해 [사용자] 화면에서 생성한다 (2.6절). 초기 설정을 다시 여는 스위치는 없다 |
 | 로그인 화면으로 자꾸 돌아감 / API 401 | 미로그인 또는 세션 만료 (`SESSION_TTL` 기본 8시간) | 재로그인. API 직접 호출이면 `Authorization: Bearer <token>` 헤더(또는 세션 쿠키) 확인 |
 | API가 403 반환 / 웹 콘솔에 등록·스캔 버튼이 없음 | 계정 역할에 허용되지 않은 작업 (RBAC 정상 동작) | INSTALL.md 6.2절 역할 표 확인. 반복되면 `audit_events`의 `authz.denied` 이벤트로 누가 무엇을 시도했는지 추적 (3.1절) |
 | 인증서 업로드가 400 `private_key_rejected` | 업로드 파일에 개인키 포함 (의도된 거부) | 개인키를 제외하고 인증서(PEM·DER)만 업로드 (INSTALL.md 3.1절) |

@@ -106,9 +106,13 @@ func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorC
 		opt(s)
 	}
 
-	// 비보호 라우트: 헬스체크와 로그인뿐이다.
+	// 비보호 라우트: 헬스체크·로그인·초기 설정뿐이다.
 	s.public("GET /healthz", handleHealthz(pool))
 	s.public("POST /api/v1/auth/login", s.handleLogin)
+	// 초기 설정 — 사용자가 0명일 때만 열린다. 계정이 1명이라도 생기면 상태 조회는
+	// setup_required=false, 생성은 409가 되어 영구히 닫힌다 (handlers_setup.go).
+	s.public("GET /api/v1/setup/status", s.handleSetupStatus)
+	s.public("POST /api/v1/setup/admin", s.handleCreateInitialAdmin)
 
 	// 보호 라우트: 인증 + 역할 검사.
 	s.protected("POST /api/v1/auth/logout", s.handleLogout, domain.AllRoles...)

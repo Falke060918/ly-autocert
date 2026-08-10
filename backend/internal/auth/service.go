@@ -249,8 +249,9 @@ func (s *Service) ListUsers(ctx context.Context) ([]*domain.User, error) {
 }
 
 // BootstrapAdmin은 users가 비어 있을 때 초기 System Administrator를 만든다.
-// password가 비어 있으면 아무것도 하지 않고 경고만 남긴다 (secret 하드코딩 금지 —
-// 초기 비밀번호는 환경변수로만 주입한다).
+// 무인 설치·자동화용 경로다 — password가 비어 있으면 아무것도 하지 않고,
+// 첫 접속 시 웹 초기 설정 화면(POST /api/v1/setup/admin)으로 만들라는 안내만 남긴다
+// (secret 하드코딩 금지 — 이 경로의 초기 비밀번호는 환경변수로만 주입한다).
 func (s *Service) BootstrapAdmin(ctx context.Context, username, password string) error {
 	var n int
 	if err := s.pool.QueryRowContext(ctx, `SELECT count(*) FROM users`).Scan(&n); err != nil {
@@ -260,7 +261,7 @@ func (s *Service) BootstrapAdmin(ctx context.Context, username, password string)
 		return nil
 	}
 	if password == "" {
-		slog.Warn("no users exist and BOOTSTRAP_ADMIN_PASSWORD is not set; login is impossible until it is provided")
+		slog.Info("no users exist; create the first administrator on the web setup screen (BOOTSTRAP_ADMIN_PASSWORD is optional and only needed for unattended installs)")
 		return nil
 	}
 	u, err := s.CreateUser(ctx, username, password, nil, domain.RoleSystemAdministrator, nil, AuditMeta{})
