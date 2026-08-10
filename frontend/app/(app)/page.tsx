@@ -37,10 +37,43 @@ import { cn } from "@/lib/utils";
 
 interface DashboardData {
   summary: CertificateSummary;
-  /** 90일 이내 만료, not_after 오름차순 (최대 500건) — 히어로·임박 표 공용. */
+  /** 90일 이내 만료, not_after 오름차순 (최대 600건) — 히어로·임박 표 공용. */
   horizon: Certificate[];
   horizonTotal: number;
   recent: Certificate[];
+}
+
+/** 백엔드 page_size 상한(200) — 넘겨 보내면 400이라 페이지 루프로 모은다. */
+const HORIZON_PAGE_SIZE = 200;
+/** 히어로 그래프용 안전 상한 — 3페이지(600건)면 시각화에 충분하다. */
+const HORIZON_MAX_PAGES = 3;
+
+/**
+ * 만료 지평선 히어로용 90일 목록 — 30일 임박 표도 이 목록에서 앞부분을 자른다.
+ * 90일치가 상한을 넘을 수 있어 page_size=200으로 최대 3페이지까지 이어 받는다.
+ * total은 서버가 준 전체 건수라 잘린 경우에도 히어로가 실제 규모를 안다.
+ */
+async function fetchExpiryHorizon(): Promise<{
+  items: Certificate[];
+  total: number;
+}> {
+  const items: Certificate[] = [];
+  let total = 0;
+  for (let page = 1; page <= HORIZON_MAX_PAGES; page++) {
+    const res = await listCertificates(
+      new URLSearchParams({
+        expires_within_days: "90",
+        sort: "not_after",
+        order: "asc",
+        page: String(page),
+        page_size: String(HORIZON_PAGE_SIZE),
+      }),
+    );
+    items.push(...res.items);
+    total = res.total;
+    if (items.length >= res.total || res.items.length < HORIZON_PAGE_SIZE) break;
+  }
+  return { items, total };
 }
 
 export default function DashboardPage() {
@@ -51,15 +84,7 @@ export default function DashboardPage() {
     let cancelled = false;
     Promise.all([
       getCertificateSummary(),
-      // 만료 지평선 히어로용 — 30일 임박 표도 이 목록에서 앞부분을 자른다.
-      listCertificates(
-        new URLSearchParams({
-          expires_within_days: "90",
-          sort: "not_after",
-          order: "asc",
-          page_size: "500",
-        }),
-      ),
+      fetchExpiryHorizon(),
       listCertificates(
         new URLSearchParams({ sort: "created_at", order: "desc", page_size: "6" }),
       ),
