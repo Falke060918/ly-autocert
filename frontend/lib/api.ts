@@ -84,13 +84,33 @@ export interface Certificate {
   renewal_policy_id: string | null;
   subject_key_id: string | null;
   authority_key_id: string | null;
+  /**
+   * 교체 감지가 연결한 새 인증서(0015). status가 replaced일 때만 채워지며,
+   * 새 인증서가 삭제되면 null로 되돌아간다 — 옛 인증서의 replaced 상태는 남는다.
+   */
+  replaced_by_certificate_id: string | null;
+  /** 교체로 판정된 시각. 마지막 실관측 시각이 아니다. */
+  replaced_at: string | null;
   created_at: string;
   updated_at: string;
 }
 
+/**
+ * 목록 1행 = 인증서 + 목록 전용 파생 열.
+ * last_seen_at은 인증서의 속성이 아니라 설치 위치 집계라 상세 응답·CSV에는 없다.
+ */
+export interface CertificateListItem extends Certificate {
+  /**
+   * 이 인증서의 설치 위치 중 가장 최근 확인 시각
+   * (max(certificate_locations.last_verified_at)). 위치가 없거나 한 번도
+   * 확인되지 않았으면 null이다. 서버 정렬 화이트리스트에 없어 정렬은 불가하다.
+   */
+  last_seen_at: string | null;
+}
+
 export interface CertificateListResponse {
   request_id: string;
-  items: Certificate[];
+  items: CertificateListItem[];
   total: number;
   page: number;
   page_size: number;

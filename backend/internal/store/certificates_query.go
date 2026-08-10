@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/domain"
 )
@@ -43,8 +44,14 @@ func IsListSortField(name string) bool {
 
 // ListCertificatesInput은 목록 조회 조건이다. 제로값이면 전체를 기본 정렬로 반환한다.
 type ListCertificatesInput struct {
-	Search            string                     // CN·Subject·Issuer·Serial·Fingerprint·SAN 부분 일치 (대소문자 무시)
-	Statuses          []domain.CertificateStatus // 저장된 라이프사이클 상태 필터
+	Search   string                     // CN·Subject·Issuer·Serial·Fingerprint·SAN 부분 일치 (대소문자 무시)
+	Statuses []domain.CertificateStatus // 저장된 라이프사이클 상태 필터
+	// ExcludeStatuses는 결과에서 뺄 상태다(교체된 인증서 숨기기 등).
+	// **비어 있으면 아무것도 제외하지 않는다** — 서버 기본 동작을 바꾸지 않는 것이
+	// 이 필드의 전제다. 같은 입력을 CSV 내보내기가 공유하므로(certificates_export.go)
+	// 여기에 기본 제외를 넣으면 아무도 요청하지 않은 내보내기 내용 변경이 따라온다
+	// (설계 06 14.2 ⑥). 제외는 호출자가 명시적으로 요청한다.
+	ExcludeStatuses   []domain.CertificateStatus
 	Types             []domain.CertificateType
 	Expired           *bool  // 파생 상태: not_after 기준 만료 여부
 	ExpiresWithinDays *int   // 파생 상태: 오늘부터 N일 이내 만료(이미 만료된 것 제외)
@@ -56,9 +63,23 @@ type ListCertificatesInput struct {
 	PageSize          int // 1..maxPageSize
 }
 
+// CertificateListItem은 목록 1행이다 — 인증서 + 목록 전용 파생 열.
+//
+// LastSeenAt을 domain.Certificate에 넣지 않는 이유는 그것이 인증서의 속성이
+// 아니라 설치 위치 집계이기 때문이다. 상세 응답은 위치 배열을 통째로 내려주므로
+// 이 파생 열이 필요 없고, CSV 내보내기도 인증서 열만 담는다.
+type CertificateListItem struct {
+	domain.Certificate
+	// LastSeenAt은 이 인증서의 설치 위치 중 가장 최근 확인 시각이다
+	// (max(certificate_locations.last_verified_at)). 위치가 없거나 한 번도
+	// 확인되지 않았으면 nil이다. **정렬 화이트리스트에는 넣지 않는다** —
+	// 집계 파생값이라 ORDER BY 컬럼으로 안전하게 끼워 넣을 수 없다(설계 06 11.3).
+	LastSeenAt *time.Time `json:"last_seen_at"`
+}
+
 // CertificateList는 목록 조회 결과다.
 type CertificateList struct {
-	Items    []domain.Certificate
+	Items    []CertificateListItem
 	Total    int
 	Page     int
 	PageSize int
@@ -110,28 +131,53 @@ const certificateColumns = `
 	array_to_string(sans, chr(31)),
 	not_before, not_after, public_key_algorithm, public_key_size, signature_algorithm,
 	certificate_type, status, ca_id, owner_id, department_id, environment,
-	auto_renew, renewal_policy_id, subject_key_id, authority_key_id, created_at, updated_at`
+	auto_renew, renewal_policy_id, subject_key_id, authority_key_id,
+	replaced_by_certificate_id, replaced_at, created_at, updated_at`
 
-func scanCertificate(sc interface{ Scan(...any) error }) (domain.Certificate, error) {
-	var c domain.Certificate
-	var sans, ctype, status string
-	err := sc.Scan(
+// certificateScanDest는 certificateColumns 순서와 1:1인 Scan 대상 목록이다.
+// 컬럼을 늘리면 여기도 같은 자리에 늘린다.
+func certificateScanDest(c *domain.Certificate, sans, ctype, status *string) []any {
+	return []any{
 		&c.ID, &c.FingerprintSHA256, &c.SerialNumber, &c.SubjectDN, &c.IssuerDN, &c.CommonName,
-		&sans,
+		sans,
 		&c.NotBefore, &c.NotAfter, &c.PublicKeyAlgorithm, &c.PublicKeySize, &c.SignatureAlgorithm,
-		&ctype, &status, &c.CAID, &c.OwnerID, &c.DepartmentID, &c.Environment,
+		ctype, status, &c.CAID, &c.OwnerID, &c.DepartmentID, &c.Environment,
 		&c.AutoRenew, &c.RenewalPolicyID, &c.SubjectKeyID, &c.AuthorityKeyID,
+		&c.ReplacedByCertificateID, &c.ReplacedAt,
 		&c.CreatedAt, &c.UpdatedAt,
-	)
-	if err != nil {
-		return c, err
 	}
+}
+
+// finishCertificate는 SQL 표현으로 받은 필드를 도메인 타입으로 되돌린다.
+func finishCertificate(c *domain.Certificate, sans, ctype, status string) {
 	c.CertificateType = domain.CertificateType(ctype)
 	c.Status = domain.CertificateStatus(status)
 	c.SANs = []string{}
 	if sans != "" {
 		c.SANs = strings.Split(sans, sansSep)
 	}
+}
+
+func scanCertificate(sc interface{ Scan(...any) error }) (domain.Certificate, error) {
+	var c domain.Certificate
+	var sans, ctype, status string
+	if err := sc.Scan(certificateScanDest(&c, &sans, &ctype, &status)...); err != nil {
+		return c, err
+	}
+	finishCertificate(&c, sans, ctype, status)
+	return c, nil
+}
+
+// scanCertificateWithLastSeen은 certificateColumns 뒤에 last_seen_at 파생 열이
+// 하나 더 붙은 행을 읽는다(목록 전용).
+func scanCertificateWithLastSeen(sc interface{ Scan(...any) error }, lastSeen **time.Time) (domain.Certificate, error) {
+	var c domain.Certificate
+	var sans, ctype, status string
+	dest := append(certificateScanDest(&c, &sans, &ctype, &status), lastSeen)
+	if err := sc.Scan(dest...); err != nil {
+		return c, err
+	}
+	finishCertificate(&c, sans, ctype, status)
 	return c, nil
 }
 
@@ -165,6 +211,16 @@ func buildListWhere(in ListCertificatesInput) (conds []string, args []any) {
 			vals[i] = string(s)
 		}
 		conds = append(conds, fmt.Sprintf("status = ANY(string_to_array(%s, chr(31)))",
+			arg(strings.Join(vals, sansSep))))
+	}
+	// 제외 필터는 포함 필터와 독립이다(둘 다 지정하면 AND로 겹친다).
+	// 빈 슬라이스면 조건 자체를 만들지 않는다 — 기본 동작 불변이 이 필드의 계약이다.
+	if len(in.ExcludeStatuses) > 0 {
+		vals := make([]string, len(in.ExcludeStatuses))
+		for i, s := range in.ExcludeStatuses {
+			vals[i] = string(s)
+		}
+		conds = append(conds, fmt.Sprintf("status <> ALL(string_to_array(%s, chr(31)))",
 			arg(strings.Join(vals, sansSep))))
 	}
 	if len(in.Types) > 0 {
@@ -244,7 +300,11 @@ func (s *Store) ListCertificates(ctx context.Context, in ListCertificatesInput) 
 	}
 
 	// id 보조 정렬로 페이지 경계를 안정화한다.
-	query := fmt.Sprintf("SELECT %s FROM certificates%s ORDER BY %s %s, id ASC LIMIT $%d OFFSET $%d",
+	// last_seen_at은 상관 서브쿼리 1개로 붙인다(정렬·필터에는 쓰지 않는다).
+	query := fmt.Sprintf(`SELECT %s,
+			(SELECT max(l.last_verified_at) FROM certificate_locations l
+			  WHERE l.certificate_id = certificates.id)
+		 FROM certificates%s ORDER BY %s %s, id ASC LIMIT $%d OFFSET $%d`,
 		certificateColumns, where, col, dir, len(args)+1, len(args)+2)
 	rows, err := s.db.QueryContext(ctx, query, append(args, size, (page-1)*size)...)
 	if err != nil {
@@ -252,13 +312,15 @@ func (s *Store) ListCertificates(ctx context.Context, in ListCertificatesInput) 
 	}
 	defer rows.Close() //nolint:errcheck
 
-	items := []domain.Certificate{} // 빈 결과도 JSON []로 나가도록 nil이 아닌 슬라이스
+	items := []CertificateListItem{} // 빈 결과도 JSON []로 나가도록 nil이 아닌 슬라이스
 	for rows.Next() {
-		c, err := scanCertificate(rows)
+		var item CertificateListItem
+		c, err := scanCertificateWithLastSeen(rows, &item.LastSeenAt)
 		if err != nil {
 			return nil, fmt.Errorf("store: scan certificate: %w", err)
 		}
-		items = append(items, c)
+		item.Certificate = c
+		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate certificates: %w", err)

@@ -39,6 +39,7 @@ import {
 // 포트 입력·경과 시각 헬퍼는 스캔 폼과 스윕 폼이 함께 쓴다. 이 페이지가 패널을
 // import하므로 공용 조각은 반대 방향(패널 → 페이지)이 아니라 패널 쪽에 둔다.
 import { PortSpecField, SweepPanel, useTicker } from "./sweep-panel";
+import { RescanCard } from "./rescan-card";
 
 /** 이 브라우저에서 시작한 스캔 Job id 목록 (서버에는 목록 API가 없다 — Phase 1 범위). */
 const STORAGE_KEY = "autocert.scan_job_ids";
@@ -220,6 +221,8 @@ export default function DiscoveryPage() {
           )}
         </Card>
       </div>
+
+      <RescanCard canManage={canManage} />
 
       <SweepPanel sensors={sensors} presets={presets} canManage={canManage} />
     </div>

@@ -18,6 +18,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { CertStatusBadge, DdayText } from "@/components/cert-badges";
+import { FreshnessText } from "@/components/freshness";
+import { useTicker } from "@/components/notification-bell";
 import {
   ApiError,
   getCertificate,
@@ -59,6 +61,9 @@ export default function CertificateDetailPage() {
   const [data, setData] = React.useState<CertificateDetailResponse | null>(null);
   const [notFound, setNotFound] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  // 제거된 위치는 기본으로 접는다 — 지금 어디에 깔려 있는지가 먼저다.
+  const [showRemoved, setShowRemoved] = React.useState(false);
+  const now = useTicker(60_000);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -129,6 +134,17 @@ export default function CertificateDetailPage() {
     (new Date(c.not_after).getTime() - new Date(c.not_before).getTime()) /
       (24 * 60 * 60 * 1000),
   );
+  // 제거된 위치는 지우지 않고 남겨 둔다 — "이 인증서가 어디서 언제까지 서비스됐나"는
+  // 인증서 제품이 답해야 하는 질문이다. 다만 현재 상태를 가리지 않게 접어 둔다.
+  const liveLocations = data.locations.filter(
+    (l) => l.deployment_status !== "removed",
+  );
+  const removedLocations = data.locations.filter(
+    (l) => l.deployment_status === "removed",
+  );
+  const visibleLocations = showRemoved
+    ? [...liveLocations, ...removedLocations]
+    : liveLocations;
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-4">
@@ -145,14 +161,49 @@ export default function CertificateDetailPage() {
         {isSelfSigned(c.subject_dn, c.issuer_dn) && (
           <Badge variant="secondary">자체 서명</Badge>
         )}
+        {/*
+          상태 뱃지는 만료 임박을 우선 표시하므로 replaced가 가려질 수 있다.
+          교체 여부는 "이 알림·집계를 무시해도 되는가"를 가르는 사실이라 따로 세운다.
+        */}
+        {c.status === "replaced" && (
+          <Badge className="border border-slate-200 bg-slate-100 text-slate-600">
+            교체됨
+          </Badge>
+        )}
         <DdayText notAfter={c.not_after} />
       </div>
+
+      {c.status === "replaced" && (
+        <Alert>
+          <AlertDescription>
+            <span className="text-foreground">
+              같은 엔드포인트에서 다른 인증서로 교체된 것으로 확인되었습니다
+              {c.replaced_at ? ` (${formatDateTime(c.replaced_at)})` : ""}.
+            </span>{" "}
+            만료 알림과 대시보드 집계에서는 제외됩니다.
+            {c.replaced_by_certificate_id ? (
+              <>
+                {" "}
+                <Link
+                  href={`/certificates/${c.replaced_by_certificate_id}`}
+                  className="font-medium hover:underline hover:underline-offset-3"
+                >
+                  교체한 인증서 →
+                </Link>
+              </>
+            ) : (
+              " 교체한 인증서는 인벤토리에서 삭제되었습니다."
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-[13px] text-muted-foreground">
         <span>
           등록 <b className="font-medium text-foreground">{formatDateTime(c.created_at)}</b>
         </span>
         <span>
-          설치 위치 <b className="font-medium text-foreground">{data.locations.length}</b>곳
+          설치 위치 <b className="font-medium text-foreground">{liveLocations.length}</b>곳
+          {removedLocations.length > 0 && ` (이전 ${removedLocations.length}곳)`}
         </span>
         <span>
           자동 갱신{" "}
@@ -315,15 +366,28 @@ export default function CertificateDetailPage() {
           </Card>
 
           <Card className="gap-0 overflow-hidden py-0">
-            <div className="flex items-baseline gap-2 border-b px-4 py-3">
+            <div className="flex flex-wrap items-baseline gap-2 border-b px-4 py-3">
               <h2 className="text-sm font-semibold tracking-tight">설치 위치</h2>
             <span className="text-xs text-muted-foreground">
-              {data.locations.length}곳
+              {liveLocations.length}곳
             </span>
+            {removedLocations.length > 0 && (
+              <button
+                type="button"
+                className="ml-auto text-xs text-muted-foreground hover:text-foreground hover:underline hover:underline-offset-3"
+                onClick={() => setShowRemoved((v) => !v)}
+              >
+                {showRemoved
+                  ? "이전 위치 숨기기"
+                  : `이전 위치 보기 (${removedLocations.length})`}
+              </button>
+            )}
           </div>
-          {data.locations.length === 0 ? (
+          {visibleLocations.length === 0 ? (
             <p className="px-4 py-6 text-center text-sm text-muted-foreground">
-              확인된 설치 위치가 없습니다. Discovery 스캔으로 위치를 찾을 수 있습니다.
+              {removedLocations.length > 0
+                ? "현재 서비스 중인 위치가 없습니다. 이전 위치만 남아 있습니다."
+                : "확인된 설치 위치가 없습니다. Discovery 스캔으로 위치를 찾을 수 있습니다."}
             </p>
           ) : (
             <Table>
@@ -338,10 +402,15 @@ export default function CertificateDetailPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data.locations.map((l) => {
+                {visibleLocations.map((l) => {
                   const dep = DEPLOYMENT_LABELS[l.deployment_status];
+                  const removed = l.deployment_status === "removed";
                   return (
-                    <TableRow key={l.id}>
+                    <TableRow
+                      key={l.id}
+                      // 제거된 위치는 이력이지 현황이 아니다 — 회색으로 낮춘다.
+                      className={removed ? "text-muted-foreground/60" : undefined}
+                    >
                       <TableCell>
                         <div className="text-[13px] font-medium">{l.target.name}</div>
                         <div className="font-mono text-xs text-muted-foreground/70">
@@ -362,8 +431,27 @@ export default function CertificateDetailPage() {
                       <TableCell className="font-mono text-xs">
                         {l.tls_version ?? "—"}
                       </TableCell>
-                      <TableCell className="font-mono text-xs tabular-nums">
-                        {l.last_verified_at ? formatDateTime(l.last_verified_at) : "—"}
+                      <TableCell className="whitespace-nowrap">
+                        {/*
+                          제거된 위치의 last_verified_at은 "언제까지 실제로 서비스
+                          중이었나"라 신선도 경고 대상이 아니다 — 절대 시각만 보인다.
+                        */}
+                        {removed ? (
+                          <span className="font-mono text-xs tabular-nums">
+                            {l.last_verified_at
+                              ? formatDateTime(l.last_verified_at)
+                              : "—"}
+                          </span>
+                        ) : (
+                          <>
+                            <FreshnessText iso={l.last_verified_at} now={now} />
+                            {l.last_verified_at && (
+                              <div className="font-mono text-[11px] text-muted-foreground/60 tabular-nums">
+                                {formatDateTime(l.last_verified_at)}
+                              </div>
+                            )}
+                          </>
+                        )}
                       </TableCell>
                       <TableCell>
                         <Badge variant="outline" className={dep.className}>

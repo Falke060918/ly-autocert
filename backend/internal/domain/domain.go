@@ -56,8 +56,13 @@ type Certificate struct {
 	Environment        *string           `json:"environment"`
 	AutoRenew          bool              `json:"auto_renew"`
 	RenewalPolicyID    *string           `json:"renewal_policy_id"`
-	CreatedAt          time.Time         `json:"created_at"`
-	UpdatedAt          time.Time         `json:"updated_at"`
+	// ReplacedByCertificateID·ReplacedAt은 교체 감지(0015)가 채우는 링크다.
+	// 같은 엔드포인트에서 이 인증서를 대신한 새 인증서를 가리킨다. Status가
+	// replaced가 아니면 둘 다 nil이다.
+	ReplacedByCertificateID *string    `json:"replaced_by_certificate_id"`
+	ReplacedAt              *time.Time `json:"replaced_at"`
+	CreatedAt               time.Time  `json:"created_at"`
+	UpdatedAt               time.Time  `json:"updated_at"`
 }
 
 // LocationType은 인증서가 설치된 위치의 종류다. Phase 1은 network_endpoint가 주.
