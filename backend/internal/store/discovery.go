@@ -187,7 +187,14 @@ func (s *Store) RecordEndpointResult(ctx context.Context, jobID string, obs Endp
 // applyEndpointObservation은 관측 1건을 인벤토리에 반영한다(도달 시 체인 upsert).
 // scope는 targets.executor_scope 값 — 서버 'server' / 센서 'sensor:<uuid>'.
 // 반영 결과의 카운터 증분(도달, 발견, 신규)을 반환한다.
+//
+// 이 함수는 서버 직접 스캔과 센서 관측 배치가 공유하는 단일 진입점이다 —
+// 재스캔 모니터 갱신(0015)도 여기 한 곳에서만 일어난다.
 func applyEndpointObservation(ctx context.Context, tx *sql.Tx, scope string, obs EndpointObservation) (reachable, certsFound, certsNew int, err error) {
+	// 도달 실패도 관측이다(consecutive_misses) — 아래 조기 반환보다 앞에 둔다.
+	if err := recordEndpointMonitorProbe(ctx, tx, scope, obs); err != nil {
+		return 0, 0, 0, err
+	}
 	if !obs.Reachable {
 		return 0, 0, 0, nil
 	}
