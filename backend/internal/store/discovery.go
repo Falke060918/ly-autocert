@@ -105,6 +105,20 @@ var ErrScanJobNotFound = errors.New("store: scan job not found")
 // ErrScanJobState는 상태 머신이 허용하지 않는 전이 요청에 반환한다.
 var ErrScanJobState = errors.New("store: scan job state conflict")
 
+// ScanJobStateError는 ErrScanJobState에 거부 시점의 상태 문맥을 실은 형태다 —
+// 핸들러가 "이미 종료된 Job"과 "센서 실행 중"을 다른 안내로 가른다.
+// errors.Is(err, ErrScanJobState)는 계속 참이다(기존 호출부·테스트 규약 유지).
+type ScanJobStateError struct {
+	Status       string
+	ExecutorType string
+}
+
+func (e *ScanJobStateError) Error() string {
+	return "store: scan job state conflict: " + e.Status + " (" + e.ExecutorType + ")"
+}
+
+func (e *ScanJobStateError) Is(target error) bool { return target == ErrScanJobState }
+
 // ErrScanJobSweepChunk는 스윕 자식 청크에 대한 개별 취소 요청에 반환한다.
 // 청크를 여기서 canceled로 만들면 스윕 집계에서 그 seq가 live로 남아 재발주도
 // 안 되고(부분 유니크는 failed만 비켜간다) 스윕은 그 구간을 조용히 건너뛴
@@ -291,7 +305,7 @@ func (s *Store) CancelScanJob(ctx context.Context, jobID string, in ScanCancelIn
 	cancelable := status == ScanStatusPending ||
 		(status == ScanStatusRunning && executorType == string(domain.ExecutorServer))
 	if !cancelable {
-		return nil, ErrScanJobState
+		return nil, &ScanJobStateError{Status: status, ExecutorType: executorType}
 	}
 
 	if _, err := tx.ExecContext(ctx, `

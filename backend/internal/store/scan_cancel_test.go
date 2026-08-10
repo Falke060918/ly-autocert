@@ -100,9 +100,15 @@ func TestCancelScanJobPendingAndStateGuard(t *testing.T) {
 		t.Errorf("cancel audit events = %d, want 1", auditCount)
 	}
 
-	// 이미 종료된 Job은 다시 취소할 수 없다.
-	if _, err := st.CancelScanJob(ctx, id, ScanCancelInput{RequestID: &reqID}); !errors.Is(err, ErrScanJobState) {
+	// 이미 종료된 Job은 다시 취소할 수 없다. 오류엔 거부 시점 상태가 실려야
+	// 핸들러가 "이미 종료됨"과 "센서 실행 중"을 다른 409 문구로 가른다.
+	_, err = st.CancelScanJob(ctx, id, ScanCancelInput{RequestID: &reqID})
+	if !errors.Is(err, ErrScanJobState) {
 		t.Errorf("second cancel err = %v, want ErrScanJobState", err)
+	}
+	var stateErr *ScanJobStateError
+	if !errors.As(err, &stateErr) || stateErr.Status != ScanStatusCanceled {
+		t.Errorf("second cancel err = %#v, want *ScanJobStateError{Status: canceled}", err)
 	}
 	// 없는 Job은 not found다.
 	if _, err := st.CancelScanJob(ctx, "00000000-0000-0000-0000-000000000000",
@@ -149,8 +155,15 @@ func TestCancelScanJobRejectsSweepChunkAndSensorRun(t *testing.T) {
 		t.Errorf("cancel sweep chunk err = %v, want ErrScanJobSweepChunk", err)
 	}
 	// 센서가 실행 중인 Job은 취소 범위 외다 — "취소됐는데 계속 도는" 상태 금지.
-	if _, err := st.CancelScanJob(ctx, sensorJobID, ScanCancelInput{RequestID: &reqID}); !errors.Is(err, ErrScanJobState) {
+	// 상태 문맥(running + sensor)이 실려야 409 문구가 원인을 짚는다.
+	_, err = st.CancelScanJob(ctx, sensorJobID, ScanCancelInput{RequestID: &reqID})
+	if !errors.Is(err, ErrScanJobState) {
 		t.Errorf("cancel sensor running err = %v, want ErrScanJobState", err)
+	}
+	var stateErr *ScanJobStateError
+	if !errors.As(err, &stateErr) || stateErr.Status != ScanStatusRunning ||
+		stateErr.ExecutorType != string(domain.ExecutorSensor) {
+		t.Errorf("cancel sensor running err = %#v, want *ScanJobStateError{running, sensor}", err)
 	}
 }
 

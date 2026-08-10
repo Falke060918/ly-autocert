@@ -389,8 +389,7 @@ func handleCancelScan(mgr *discovery.Manager, st *store.Store) http.HandlerFunc 
 				"스윕이 발주한 작업입니다. 스윕 일시정지/취소로 제어하십시오.")
 			return
 		case errors.Is(err, store.ErrScanJobState):
-			writeError(w, r, http.StatusConflict, "scan_state",
-				"현재 상태에서는 취소할 수 없습니다. 센서가 실행 중인 작업은 취소를 지원하지 않습니다.")
+			writeError(w, r, http.StatusConflict, "scan_state", cancelConflictMessage(err))
 			return
 		case err != nil:
 			slog.Error("discovery: cancel scan failed", "error", err.Error(),
@@ -404,6 +403,25 @@ func handleCancelScan(mgr *discovery.Manager, st *store.Store) http.HandlerFunc 
 		mgr.CancelScan(id)
 		writeJSON(w, http.StatusOK, toScanJobResponse(job))
 	}
+}
+
+// cancelConflictMessage는 취소 409(scan_state)의 상태별 안내 문구다 —
+// "이미 끝난 Job"(새로고침하면 해소)과 "센서 실행 중"(기다리는 수밖에 없음)은
+// 사용자가 취할 행동이 달라 한 문장으로 뭉뚱그리지 않는다. 스윕 청크는
+// 별도 코드(sweep_chunk)로 이 함수에 오지 않는다.
+func cancelConflictMessage(err error) string {
+	var st *store.ScanJobStateError
+	if errors.As(err, &st) {
+		switch st.Status {
+		case store.ScanStatusCompleted, store.ScanStatusFailed, store.ScanStatusCanceled:
+			return "이미 종료된 작업이라 취소할 수 없습니다. 목록을 새로고침하십시오."
+		case store.ScanStatusLeased, store.ScanStatusRunning:
+			if st.ExecutorType == string(domain.ExecutorSensor) {
+				return "센서가 실행 중인 작업은 취소를 지원하지 않습니다. 완료까지 기다리십시오."
+			}
+		}
+	}
+	return "현재 상태에서는 취소할 수 없습니다."
 }
 
 // checkActiveSensor는 sensor_id가 존재하고 active인지 확인한다.
