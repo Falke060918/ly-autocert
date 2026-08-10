@@ -1,5 +1,5 @@
 # MAP — 코드베이스 구조·명령 캐시
-확인일: 2026-08-09
+확인일: 2026-08-10
 
 ## 저장소 구조
 - `backend/` — Go 백엔드
@@ -42,6 +42,7 @@
     - `0011_scan_job_endpoint_results` — scan_job_endpoints에 reachable·certificates_found 추가. 센서 Job 진행률을 관측 행에서 절대값으로 재계산하는 근거(하트비트 GREATEST 병합과의 이중 계상 방지)
     - `0012_notifications` — users.email(nullable, '@' 위치 CHECK) + notification_policies(channels 폐쇄 CHECK 4종·thresholds 기본 {90,60,30,7,1}·filter_* NULL=전체) / notification_events(dedup_key UNIQUE 멱등) / notification_deliveries(리스+재시도, UNIQUE(event_id,channel,recipient) — recipient는 NOT NULL DEFAULT ''(NULL이면 Postgres UNIQUE가 무력화되어 webhook·syslog 중복 발송) + 부분 인덱스 next_attempt_at WHERE pending) / notification_inbox(UNIQUE(user_id,event_id)·미읽음 부분 인덱스). seed: '기본 만료 알림' 정책 1건(inbox 채널, system_administrator 역할 수신 — zero-config)
     - `0013_scan_sweeps` — 전 포트 백그라운드 스윕 부모 테이블 scan_sweeps(상태 queued/running/paused/completed/failed/canceled·port_spec 원문 보존·executor_scope·total_endpoints bigint·total_chunks·next_seq·stalled_since) + scan_jobs에 sweep_id/sweep_seq/rate_pps/port_spec 4컬럼 + 부분 유니크 `uq_scan_jobs_sweep_seq_active`(sweep_id, sweep_seq) WHERE status<>'failed' — 실패 청크만 같은 seq 재발주 허용. **추가만 하고 기존 유니크 인덱스·ON CONFLICT 아비터는 건드리지 않는다**(0010 42P10 전례). 진행률 카운터 컬럼 없음 — 자식 scan_jobs 집계로 매번 파생(0011 이중 계상 전례), 가변 필드는 status·next_seq·total_chunks·stalled_since뿐
+    - `0015_endpoint_rescan` — 재스캔·교체 감지 기반. `endpoint_monitors`((target_id, port) UNIQUE·지문 2개(current/previous)+current_streak·consecutive_misses·enabled·interval_seconds NULL=전역기본·retired_at, 부분 인덱스 `idx_endpoint_monitors_due (last_probe_at) WHERE enabled AND retired_at IS NULL`) + certificates에 replaced_by_certificate_id/replaced_at + scan_jobs.origin('manual'|'sweep'|'rescan', sweep_id 있는 기존 행은 'sweep' 백필). 기존 `location_type='network_endpoint'` 위치에서 모니터 시딩하되 **current_fingerprint는 비운다** — 엔드포인트당 위치 행이 여러 개일 수 있어 "지금 붙은 것"을 SQL로 단정할 수 없고, NULL이면 previous가 NULL로 남아 허위 교체가 생기지 않는다. 0013과 같은 규약으로 **추가만** 한다(기존 아비터 무변경). 0014는 병렬 작업이 예약
   - `api/sensor-openapi.yaml` — 센서 게이트웨이(/sensor/v1/*) OpenAPI 3 명세. `api/embed_sensor.go`가 임베드하고 internal/sensorgw의 정합 테스트가 라우트와 양방향 대조 — 게이트웨이 라우트 변경 시 같은 커밋에서 갱신
   - `api/openapi.yaml` — OpenAPI 3 명세 (certificates 목록/summary/상세/import/export·auth·users(목록/생성/{id} PATCH/disable/enable/password)·discovery/scans·discovery/sweeps(+pause|resume|cancel)·discovery/port-presets·notifications(알림함 5종)·notification-policies(+{id}/test)·notification-channels·notification-deliveries·audit/events·audit/verify·openapi.yaml 경로, bearer+cookie 보안 스킴 포함. `security:` 블록은 `paths:` **밖·뒤**에 유지한다 — 안으로 들어가면 경로가 조용히 사라진다). `api/embed.go`(package apispec)가 go:embed로 바이너리에 포함 — 서버가 그대로 제공하고 정합 테스트도 같은 바이트를 파싱. 라우트 추가/제거 시 명세를 같은 커밋에서 고쳐야 테스트가 통과
 - `frontend/` — Next.js (App Router) + TypeScript. 전 화면 클라이언트 fetch (이슈 #8·#9 구현)
