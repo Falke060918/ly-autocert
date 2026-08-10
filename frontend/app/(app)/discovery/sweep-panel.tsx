@@ -5,18 +5,9 @@ import * as React from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
 import { ApiError, type Sensor } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import {
@@ -41,9 +32,6 @@ import {
 
 /** 스캔 작업 표와 같은 폴링 주기를 쓴다(page.tsx의 POLL_MS와 같은 값). */
 const SWEEP_POLL_MS = 2000;
-
-/** 실행기 선택에서 "서버 직접"을 뜻하는 값 — SelectItem은 빈 문자열을 못 쓴다. */
-const EXECUTOR_SERVER = "server";
 
 /**
  * 주기적으로 갱신되는 현재 시각(ms). 렌더 중 `Date.now()`를 직접 부르면
@@ -157,8 +145,8 @@ export function PortSpecField({
       </p>
       {hasAll && singleScan && (
         <p className="text-xs text-amber-700">
-          전 포트(all)는 단발 스캔에서 쓸 수 없습니다 — 아래 “전 포트 백그라운드
-          스윕”으로 시작하십시오.
+          전 포트(all)는 단발 스캔에서 쓸 수 없습니다 — “전 포트 스윕” 탭에서
+          시작하십시오.
         </p>
       )}
       {hasAll && (
@@ -168,20 +156,21 @@ export function PortSpecField({
   );
 }
 
-// ── 스윕 패널 ─────────────────────────────────────────────────────────────
+// ── 스윕 목록 ─────────────────────────────────────────────────────────────
 
 /**
- * 전 포트 백그라운드 스윕 패널.
- * 스캔 Job과 달리 서버에 목록 API가 있으므로 localStorage 추적이 필요 없다.
+ * 전 포트 백그라운드 스윕 목록 — "작업 현황" 카드의 스윕 탭 콘텐츠.
+ * 스캔 Job과 달리 서버에 목록 API가 처음부터 있었으므로 localStorage 추적이 없다.
  */
-export function SweepPanel({
+export function SweepList({
   sensors,
-  presets,
   canManage,
+  reloadToken = 0,
 }: {
   sensors: Sensor[];
-  presets: PortPreset[];
   canManage: boolean;
+  /** 값이 바뀌면 즉시 재조회한다 — 생성 폼이 탭 밖(검색 실행 카드)에 있어서다. */
+  reloadToken?: number;
 }) {
   const [sweeps, setSweeps] = React.useState<Sweep[] | null>(null);
   const [listError, setListError] = React.useState<string | null>(null);
@@ -216,7 +205,7 @@ export function SweepPanel({
 
   React.useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, [refresh, reloadToken]);
 
   // 진행 중인 스윕이 있을 때만 폴링한다(스캔 표와 같은 규칙).
   const hasActive = (sweeps ?? []).some(
@@ -246,99 +235,67 @@ export function SweepPanel({
   }, []);
 
   return (
-    <div className="grid items-start gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
-      {canManage ? (
-        <SweepForm presets={presets} sensors={sensors} onCreated={refresh} />
-      ) : (
-        <Card className="gap-0 py-0">
-          <div className="border-b px-4 py-3">
-            <h2 className="text-sm font-semibold tracking-tight">전 포트 스윕</h2>
-          </div>
-          <p className="p-4 text-sm text-muted-foreground">
-            스윕 시작 권한이 없습니다. 시스템 관리자·PKI 관리자·운영자만 스윕을
-            만들거나 제어할 수 있습니다.
-          </p>
-        </Card>
+    <div className="space-y-3 p-4">
+      {actionError && (
+        <Alert variant="destructive">
+          <AlertDescription>{actionError}</AlertDescription>
+        </Alert>
       )}
-
-      <Card className="gap-0 py-0">
-        <div className="flex items-baseline gap-2 border-b px-4 py-3">
-          <h2 className="text-sm font-semibold tracking-tight">스윕</h2>
-          <span className="text-xs text-muted-foreground">
-            며칠에 걸쳐 낮은 속도로 도는 백그라운드 스캔입니다
-          </span>
-        </div>
-        <div className="space-y-3 p-4">
-          {actionError && (
-            <Alert variant="destructive">
-              <AlertDescription>{actionError}</AlertDescription>
-            </Alert>
-          )}
-          {listError && (
-            <Alert variant="destructive">
-              <AlertDescription>{listError}</AlertDescription>
-            </Alert>
-          )}
-          {sweeps == null ? (
-            <p className="py-8 text-center text-sm text-muted-foreground">
-              스윕 목록을 불러오는 중…
-            </p>
-          ) : sweeps.length === 0 ? (
-            <p className="py-8 text-center text-sm text-muted-foreground">
-              아직 실행한 스윕이 없습니다.
-              {canManage && " 왼쪽에서 대역과 포트 범위를 정해 시작하십시오."}
-            </p>
-          ) : (
-            sweeps.map((s) => (
-              <SweepCard
-                key={s.id}
-                sweep={s}
-                sensorById={sensorById}
-                canManage={canManage}
-                busy={busyID === s.id}
-                onAction={act}
-              />
-            ))
-          )}
-        </div>
-      </Card>
+      {listError && (
+        <Alert variant="destructive">
+          <AlertDescription>{listError}</AlertDescription>
+        </Alert>
+      )}
+      {sweeps == null ? (
+        <p className="py-8 text-center text-sm text-muted-foreground">
+          스윕 목록을 불러오는 중…
+        </p>
+      ) : sweeps.length === 0 ? (
+        <p className="py-8 text-center text-sm text-muted-foreground">
+          아직 실행한 스윕이 없습니다.
+          {canManage && " 검색 실행의 “전 포트 스윕” 탭에서 시작하십시오."}
+        </p>
+      ) : (
+        sweeps.map((s) => (
+          <SweepCard
+            key={s.id}
+            sweep={s}
+            sensorById={sensorById}
+            canManage={canManage}
+            busy={busyID === s.id}
+            onAction={act}
+          />
+        ))
+      )}
     </div>
   );
 }
 
 // ── 생성 폼 ───────────────────────────────────────────────────────────────
 
-function SweepForm({
+/**
+ * 스윕 생성 폼 — "검색 실행" 카드의 전 포트 스윕 탭 콘텐츠.
+ * 대상 목록·실행기는 스캔 탭과 공용이라 부모(page.tsx)가 들고 내려준다.
+ */
+export function SweepForm({
   presets,
-  sensors,
+  targetList,
+  sensorId,
   onCreated,
 }: {
   presets: PortPreset[];
-  sensors: Sensor[];
+  /** 공용 대상 입력을 줄 목록으로 정리한 값 — 원문 그대로 서버에 보낸다. */
+  targetList: string[];
+  /** 실행을 위임할 센서 id. null이면 서버 직접 실행이다. */
+  sensorId: string | null;
   onCreated: () => Promise<void> | void;
 }) {
   const [name, setName] = React.useState("");
-  const [targets, setTargets] = React.useState("");
   const [portSpec, setPortSpec] = React.useState("all");
-  const [executor, setExecutor] = React.useState(EXECUTOR_SERVER);
   const [ratePPS, setRatePPS] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
   const [tooLong, setTooLong] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
-
-  const activeSensors = React.useMemo(
-    () => sensors.filter((s) => s.status === "active"),
-    [sensors],
-  );
-
-  const targetList = React.useMemo(
-    () =>
-      targets
-        .split("\n")
-        .map((s) => s.trim())
-        .filter(Boolean),
-    [targets],
-  );
 
   const rate = Number.parseInt(ratePPS, 10);
   const estimate = estimateSweep(
@@ -362,7 +319,7 @@ function SweepForm({
       const req: SweepRequest = { targets: targetList };
       if (name.trim()) req.name = name.trim();
       if (portSpec.trim()) req.port_spec = portSpec.trim();
-      if (executor !== EXECUTOR_SERVER) req.sensor_id = executor;
+      if (sensorId) req.sensor_id = sensorId;
       if (Number.isFinite(rate) && rate > 0) req.rate_pps = rate;
       await createSweep(req);
       await onCreated();
@@ -380,100 +337,58 @@ function SweepForm({
   }
 
   return (
-    <Card className="gap-0 py-0">
-      <div className="border-b px-4 py-3">
-        <h2 className="text-sm font-semibold tracking-tight">전 포트 스윕 시작</h2>
+    <form onSubmit={submit} className="space-y-4">
+      <div className="space-y-2">
+        <Label htmlFor="sweep-name">이름</Label>
+        <Input
+          id="sweep-name"
+          placeholder="예: DMZ 전수 조사"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
       </div>
-      <form onSubmit={submit}>
-        <div className="space-y-4 p-4">
-          <div className="space-y-2">
-            <Label htmlFor="sweep-name">이름</Label>
-            <Input
-              id="sweep-name"
-              placeholder="예: DMZ 전수 조사"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="sweep-targets">
-              IP / CIDR 대역 <span className="text-red-600">*</span>
-            </Label>
-            <Textarea
-              id="sweep-targets"
-              required
-              spellCheck={false}
-              className="min-h-20 font-mono text-xs"
-              placeholder={"10.0.0.0/24\n10.0.1.0/24"}
-              value={targets}
-              onChange={(e) => setTargets(e.target.value)}
-            />
-            <p className="text-xs text-muted-foreground">
-              한 줄에 하나씩 · CIDR 또는 단일 IP
-            </p>
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="sweep-executor">실행기</Label>
-            <Select value={executor} onValueChange={setExecutor}>
-              <SelectTrigger id="sweep-executor" className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={EXECUTOR_SERVER}>서버 직접</SelectItem>
-                {activeSensors.map((s) => (
-                  <SelectItem key={s.id} value={s.id}>
-                    센서 · {s.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <PortSpecField
-            id="sweep-ports"
-            value={portSpec}
-            onChange={setPortSpec}
-            presets={presets}
-          />
-          <div className="space-y-2">
-            <Label htmlFor="sweep-rate">스캔 속도 (초당 프로브)</Label>
-            <Input
-              id="sweep-rate"
-              type="number"
-              min={1}
-              max={1000}
-              className="font-mono text-xs"
-              placeholder={`서버 기본값 (${DEFAULT_SWEEP_RATE_PPS})`}
-              value={ratePPS}
-              onChange={(e) => setRatePPS(e.target.value)}
-            />
-          </div>
+      <PortSpecField
+        id="sweep-ports"
+        value={portSpec}
+        onChange={setPortSpec}
+        presets={presets}
+      />
+      <div className="space-y-2">
+        <Label htmlFor="sweep-rate">스캔 속도 (초당 프로브)</Label>
+        <Input
+          id="sweep-rate"
+          type="number"
+          min={1}
+          max={1000}
+          className="font-mono text-xs"
+          placeholder={`서버 기본값 (${DEFAULT_SWEEP_RATE_PPS})`}
+          value={ratePPS}
+          onChange={(e) => setRatePPS(e.target.value)}
+        />
+      </div>
 
-          <SweepEstimateBox estimate={estimate} />
+      <SweepEstimateBox estimate={estimate} />
 
-          {tooLong && (
-            <Alert className="border-amber-200 bg-amber-50 text-amber-800">
-              <AlertDescription className="text-amber-800">
-                {tooLong}
-                <span className="mt-1 block">
-                  대역을 줄이거나(예: /24 하나씩) 포트 사양을 좁혀 다시
-                  시도하십시오.
-                </span>
-              </AlertDescription>
-            </Alert>
-          )}
-          {error && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
-        </div>
-        <div className="border-t p-4">
-          <Button type="submit" className="w-full" disabled={busy}>
-            {busy ? "스윕 생성 중…" : "스윕 시작"}
-          </Button>
-        </div>
-      </form>
-    </Card>
+      {tooLong && (
+        <Alert className="border-amber-200 bg-amber-50 text-amber-800">
+          <AlertDescription className="text-amber-800">
+            {tooLong}
+            <span className="mt-1 block">
+              대역을 줄이거나(예: /24 하나씩) 포트 사양을 좁혀 다시
+              시도하십시오.
+            </span>
+          </AlertDescription>
+        </Alert>
+      )}
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+      <Button type="submit" className="w-full" disabled={busy}>
+        {busy ? "스윕 생성 중…" : "스윕 시작"}
+      </Button>
+    </form>
   );
 }
 
