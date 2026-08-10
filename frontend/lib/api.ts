@@ -67,6 +67,11 @@ export interface Certificate {
   serial_number: string;
   subject_dn: string;
   issuer_dn: string;
+  /**
+   * issuer_dn의 O=(조직) 값 (마이그레이션 0016). 조직이 없는 DN·백필 전 행은
+   * null이다. 백엔드 배선 전 응답에는 키 자체가 없을 수 있어 optional이다.
+   */
+  issuer_organization?: string | null;
   common_name: string;
   sans: string[];
   not_before: string;
@@ -224,13 +229,17 @@ export interface ScanAccepted {
   request_id?: string;
 }
 
-/** leased = 센서가 Job을 수령했고 아직 실행 보고 전인 상태 (00-spec 7.8). */
+/**
+ * leased = 센서가 Job을 수령했고 아직 실행 보고 전인 상태 (00-spec 7.8).
+ * canceled = 발주자 취소(lib/scans.ts cancelScan) — 실패가 아닌 종료 상태다.
+ */
 export type ScanJobStatus =
   | "pending"
   | "leased"
   | "running"
   | "completed"
-  | "failed";
+  | "failed"
+  | "canceled";
 
 /** Job 실행 주체 — server = 서버 직접 실행, sensor = 센서 위임(pull 리스). */
 export type ScanExecutorType = "server" | "sensor";
@@ -487,27 +496,41 @@ export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
   readonly requestId?: string;
+  /**
+   * error 객체의 code·message 외 부가 필드. 대부분의 오류에는 없고,
+   * duplicate_scan(409)의 job_id처럼 계약이 명시한 경우에만 실린다.
+   */
+  readonly details?: Record<string, unknown>;
 
-  constructor(status: number, code: string, message: string, requestId?: string) {
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    requestId?: string,
+    details?: Record<string, unknown>,
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
     this.requestId = requestId;
+    this.details = details;
   }
 }
 
 async function toApiError(res: Response): Promise<ApiError> {
   try {
     const body = (await res.json()) as {
-      error?: { code?: string; message?: string };
+      error?: { code?: string; message?: string } & Record<string, unknown>;
       request_id?: string;
     };
+    const { code, message, ...rest } = body.error ?? {};
     return new ApiError(
       res.status,
-      body.error?.code ?? "unknown",
-      body.error?.message ?? `요청이 실패했습니다 (HTTP ${res.status}).`,
+      code ?? "unknown",
+      message ?? `요청이 실패했습니다 (HTTP ${res.status}).`,
       body.request_id,
+      Object.keys(rest).length > 0 ? rest : undefined,
     );
   } catch {
     return new ApiError(res.status, "unknown", `요청이 실패했습니다 (HTTP ${res.status}).`);
