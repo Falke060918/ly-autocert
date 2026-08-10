@@ -115,6 +115,13 @@ export async function getIssuerAggregation(): Promise<IssuerAggregationResponse>
 /** 조직(O=) 정확 일치 필터. 값 ""(빈 문자열)은 "조직 미상(null)" 행을 뜻한다. */
 export const ISSUER_ORG_PARAM = "issuer_org";
 
+/**
+ * URL 쿼리에서 "조직 미상(null)"을 가리키는 센티널. API 계약은 빈 문자열이지만
+ * URL·Radix Select는 빈 값을 담지 못해(트리거가 공백으로 보인다) 화면 쪽만
+ * 이 값을 쓰고 API 호출 직전에 ""로 되돌린다. 링크 생성처는 모두 이 값을 쓴다.
+ */
+export const ISSUER_ORG_UNKNOWN = "__none__";
+
 /** 발급 CA 필터 — 값은 인벤토리 보유 CA의 certificate_id(트리 노드 선택). */
 export const ISSUED_BY_PARAM = "issued_by";
 

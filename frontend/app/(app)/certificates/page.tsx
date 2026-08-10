@@ -46,6 +46,7 @@ import {
   getIssuerAggregation,
   ISSUED_BY_PARAM,
   ISSUER_ORG_PARAM,
+  ISSUER_ORG_UNKNOWN,
   type IssuerAggregationResponse,
 } from "@/lib/issuers";
 import { dnCommonName, dnOrganization, formatDate, isSelfSigned } from "@/lib/format";
@@ -85,11 +86,17 @@ const SORTABLE: Record<string, string> = {
 };
 
 /**
- * URL의 issuer_org 값 중 "조직 미상(null)"의 표기.
- * API 계약(lib/issuers.ts)은 빈 문자열이지만 URL 쿼리·Radix Select는 빈 값을
- * 못 담아 URL 쪽만 센티널을 쓰고 API 호출 직전에 ""로 되돌린다.
+ * URL의 issuer_org 값을 정규화한다 — "조직 미상"은 __none__ 센티널
+ * (lib/issuers.ts ISSUER_ORG_UNKNOWN)이 정본 표기이고, 링크 생성처가 빈 값
+ * (issuer_org=)을 실어도 동일 취급한다(Select 트리거 공백·빈 항목 방지).
+ * 반환값이 null이면 필터 없음이다.
  */
-const ISSUER_ORG_UNKNOWN = "__none__";
+function issuerOrgFromSearch(searchParams: {
+  get(name: string): string | null;
+}): string | null {
+  const raw = searchParams.get(ISSUER_ORG_PARAM);
+  return raw === "" ? ISSUER_ORG_UNKNOWN : raw;
+}
 
 export default function CertificatesPage() {
   return (
@@ -155,9 +162,9 @@ function CertificatesBody() {
     if (!includeReplaced && !statusFilter.split(",").includes("replaced")) {
       out.set("exclude_status", "replaced");
     }
-    const rawOrg = searchParams.get(ISSUER_ORG_PARAM);
+    const org = issuerOrgFromSearch(searchParams);
     applyIssuerFilter(out, {
-      issuerOrg: rawOrg === ISSUER_ORG_UNKNOWN ? "" : rawOrg,
+      issuerOrg: org === ISSUER_ORG_UNKNOWN ? "" : org,
       issuedBy: searchParams.get(ISSUED_BY_PARAM),
     });
     return out;
@@ -200,10 +207,14 @@ function CertificatesBody() {
     ? "expired"
     : searchParams.get("expires_within_days") ?? "all";
 
-  const hasFilter = [
-    "q", "status", "type", "expired", "expires_within_days", "self_signed", "unowned",
-    "include_replaced", ISSUER_ORG_PARAM, ISSUED_BY_PARAM,
-  ].some((k) => searchParams.get(k));
+  // issuer_org는 빈 값도 필터(조직 미상)라 정규화 값의 존재로 따로 판정한다.
+  const issuerOrgValue = issuerOrgFromSearch(searchParams);
+  const hasFilter =
+    issuerOrgValue != null ||
+    [
+      "q", "status", "type", "expired", "expires_within_days", "self_signed", "unowned",
+      "include_replaced", ISSUED_BY_PARAM,
+    ].some((k) => searchParams.get(k));
 
   const includeReplaced = searchParams.get("include_replaced") === "true";
 
@@ -213,7 +224,6 @@ function CertificatesBody() {
   const canExport = canExportInventory(user);
 
   const view = searchParams.get("view") === "issuers" ? "issuers" : "list";
-  const issuerOrgValue = searchParams.get(ISSUER_ORG_PARAM);
   const issuedById = searchParams.get(ISSUED_BY_PARAM);
   // 발급 CA 칩 라벨 — 집계 트리에서 이름을 찾고, 못 찾으면 일반 문구로 남긴다.
   const issuedByNode = findCANode(issuerAgg, issuedById);
@@ -372,11 +382,16 @@ function CertificatesBody() {
               )}
               {/* URL로 들어온 값이 집계에 없어도 Select가 비지 않게 살린다. */}
               {issuerOrgValue != null &&
-                issuerOrgValue !== ISSUER_ORG_UNKNOWN &&
-                !issuerAgg.organizations.some(
-                  (o) => o.organization === issuerOrgValue,
+                !issuerAgg.organizations.some((o) =>
+                  issuerOrgValue === ISSUER_ORG_UNKNOWN
+                    ? o.organization === null
+                    : o.organization === issuerOrgValue,
                 ) && (
-                  <SelectItem value={issuerOrgValue}>{issuerOrgValue}</SelectItem>
+                  <SelectItem value={issuerOrgValue}>
+                    {issuerOrgValue === ISSUER_ORG_UNKNOWN
+                      ? "조직 미상"
+                      : issuerOrgValue}
+                  </SelectItem>
                 )}
             </SelectContent>
           </Select>

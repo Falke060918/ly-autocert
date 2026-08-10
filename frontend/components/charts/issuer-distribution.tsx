@@ -24,8 +24,9 @@ import {
 } from "@/components/ui/chart";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  applyIssuerFilter,
   getIssuerAggregation,
+  ISSUER_ORG_PARAM,
+  ISSUER_ORG_UNKNOWN,
   type IssuerOrgCount,
 } from "@/lib/issuers";
 import { cn } from "@/lib/utils";
@@ -61,9 +62,10 @@ const DOT_CLASSES = [
 ];
 
 function orgHref(organization: string | null): string {
-  // 빈 문자열이 "조직 미상" 필터다 (lib/issuers.ts 계약).
-  const params = applyIssuerFilter(new URLSearchParams(), {
-    issuerOrg: organization ?? "",
+  // 조직 미상은 URL 센티널(__none__)로 싣는다 — 목록 페이지의 URL 규약과
+  // 통일한다. 빈 값(issuer_org=)을 실으면 Select 트리거가 공백으로 보인다.
+  const params = new URLSearchParams({
+    [ISSUER_ORG_PARAM]: organization ?? ISSUER_ORG_UNKNOWN,
   });
   return `/certificates?${params.toString()}`;
 }
