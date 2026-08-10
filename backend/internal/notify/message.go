@@ -66,7 +66,12 @@ func BuildCertExpiryMessage(f CertExpiryFacts) Message {
 	link := scrubSensitive(f.DeepLink)
 	id := scrubSensitive(f.CertificateID)
 
-	expired := f.DaysRemaining <= 0
+	// 만료 여부는 DaysRemaining 부호가 아니라 NotAfter와 현재 시각으로 판정한다.
+	// DaysRemaining은 탐지 쿼리의 floor(잔여 초/86400)이라 잔여 12시간이면 0이 되는데,
+	// 부호로 판정하면 아직 유효한 인증서에 "만료되었습니다"가 나간다.
+	// 경계는 탐지 쿼리(not_after >= now() = 임박 / not_after < now() = 만료)와 같다.
+	now := time.Now()
+	expired := now.After(f.NotAfter)
 	title := fmt.Sprintf("[인증서 만료 D-%d] %s", f.DaysRemaining, cn)
 	event := EventCertExpiring
 	if expired {
@@ -85,7 +90,13 @@ func BuildCertExpiryMessage(f CertExpiryFacts) Message {
 	fmt.Fprintf(&b, "- 인증서 ID: %s\n", id)
 	fmt.Fprintf(&b, "- 만료 일시(UTC): %s\n", notAfter)
 	if expired {
-		fmt.Fprintf(&b, "- 만료 경과: %d일\n", -f.DaysRemaining)
+		// 경과 일수도 -DaysRemaining이 아니다 — 6시간 경과면 floor(-0.25) = -1이라 "1일"이 된다.
+		elapsed := now.Sub(f.NotAfter)
+		if d := int(elapsed / (24 * time.Hour)); d >= 1 {
+			fmt.Fprintf(&b, "- 만료 경과: %d일\n", d)
+		} else {
+			fmt.Fprintf(&b, "- 만료 경과: %d시간\n", int(elapsed/time.Hour))
+		}
 	} else {
 		fmt.Fprintf(&b, "- 남은 일수: %d일\n", f.DaysRemaining)
 	}
