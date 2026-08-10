@@ -1,7 +1,8 @@
 "use client";
 
 /**
- * 주기 재스캔 현황 카드 — **읽기 전용**이다(06-rescan-and-replacement 11.5).
+ * 주기 재스캔 현황 — **읽기 전용**이다(06-rescan-and-replacement 11.5).
+ * "작업 현황" 카드의 주기 재스캔 탭 콘텐츠라 자체 Card 껍데기는 없다.
  *
  * 주기·임계값을 화면에서 편집 가능하게 만들면 정책 테이블·CRUD API·감사 이벤트·
  * 권한 게이트가 줄줄이 따라온다. 운영자가 실제로 조정하는 빈도는 설치당 0~1회이므로
@@ -15,7 +16,6 @@ import { RefreshCw } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { relativeTime } from "@/components/notification-bell";
 import {
@@ -72,9 +72,8 @@ export function RescanCard({ canManage }: { canManage: boolean }) {
   }, [refresh]);
 
   return (
-    <Card className="gap-0 overflow-hidden py-0">
+    <div>
       <div className="flex flex-wrap items-center gap-2 border-b px-4 py-3">
-        <h2 className="text-sm font-semibold tracking-tight">주기 재스캔</h2>
         <span className="text-xs text-muted-foreground">
           이미 아는 엔드포인트를 다시 확인해 신선도를 유지하고 인증서 교체를 감지합니다
         </span>
@@ -149,7 +148,7 @@ export function RescanCard({ canManage }: { canManage: boolean }) {
           </Alert>
         </div>
       )}
-    </Card>
+    </div>
   );
 }
 
