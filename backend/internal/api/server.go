@@ -33,10 +33,13 @@ type Server struct {
 	audit  *audit.Recorder
 	routes []string
 
-	// 아래 넷은 배선(cmd/server)이 있어야 채워지는 선택 의존성이다.
+	// 아래 다섯은 배선(cmd/server)이 있어야 채워지는 선택 의존성이다.
 	// 비어 있어도 코어 API는 정상 동작한다 (05-notifications 10.1 실패 격리).
 	channels      NotificationChannels
 	sweepDefaults SweepDefaults
+	// rescan은 주기 재스캔 스케줄러다. nil이면 상태 조회가 "미배선"으로 답하고
+	// 수동 1배치 실행은 503이다 (06-rescan-and-replacement 11.2).
+	rescan RescanController
 	// sensorGatewayPort는 센서 등록 명령 예시에 넣을 게이트웨이 포트다.
 	// 기본값은 defaultSensorGatewayPort이고 WithSensorGatewayPort가 덮어쓴다.
 	sensorGatewayPort string
@@ -60,6 +63,13 @@ func WithNotificationChannels(ch NotificationChannels) Option {
 // 0 필드는 store의 기본값으로 폴백한다.
 func WithSweepDefaults(d SweepDefaults) Option {
 	return func(s *Server) { s.sweepDefaults = d }
+}
+
+// WithRescanController는 주기 재스캔 스케줄러를 주입한다.
+// 주입하지 않으면 GET /discovery/rescan/status가 "미배선"으로 답하고
+// POST /discovery/rescan/run은 503이다 — 코어 API는 그대로 뜬다.
+func WithRescanController(c RescanController) Option {
+	return func(s *Server) { s.rescan = c }
 }
 
 // WithSensorGatewayPort는 SENSOR_LISTEN_ADDR에서 파생한 실제 게이트웨이 포트를 주입한다.
@@ -151,6 +161,11 @@ func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorC
 	s.protected("POST /api/v1/discovery/sweeps/{id}/resume", s.handleResumeSweep,
 		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
 	s.protected("POST /api/v1/discovery/sweeps/{id}/cancel", s.handleCancelSweep,
+		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
+	// 주기 재스캔 (06-rescan-and-replacement 11.2). 현황은 읽기 전용이라 전 역할,
+	// 수동 1배치 발주는 스캔 발주와 같은 3역할 — 새 역할 집합을 만들지 않는다.
+	s.protected("GET /api/v1/discovery/rescan/status", s.handleGetRescanStatus, domain.AllRoles...)
+	s.protected("POST /api/v1/discovery/rescan/run", s.handleRunRescan,
 		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
 	// 알림함 (05-notifications 9.1) — 전 역할. 본인 것만 강제 필터하며 남의 행은 404다.
 	// 읽음·보관은 감사 이벤트를 남기지 않는다 (설계 12 ① — handlers_notifications.go 참조).

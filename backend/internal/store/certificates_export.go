@@ -90,11 +90,17 @@ func (s *Store) ExportCertificates(ctx context.Context, in ExportInput) ([]domai
 		Truncated bool     `json:"truncated"` // maxExportRows 도달 여부
 		Search    string   `json:"search,omitempty"`
 		Statuses  []string `json:"statuses,omitempty"`
-		Types     []string `json:"types,omitempty"`
+		// ExcludeStatuses는 "무엇을 빼고 내보냈나"다. 제외 조건이 감사에 안 남으면
+		// 같은 조건이라고 적힌 두 CSV의 행 수가 달라진다(설계 06 14.2 ⑥).
+		ExcludeStatuses []string `json:"exclude_statuses,omitempty"`
+		Types           []string `json:"types,omitempty"`
 	}{Format: "csv", RowCount: len(items), Truncated: len(items) == maxExportRows,
 		Search: in.List.Search}
 	for _, st := range in.List.Statuses {
 		after.Statuses = append(after.Statuses, string(st))
+	}
+	for _, st := range in.List.ExcludeStatuses {
+		after.ExcludeStatuses = append(after.ExcludeStatuses, string(st))
 	}
 	for _, ct := range in.List.Types {
 		after.Types = append(after.Types, string(ct))

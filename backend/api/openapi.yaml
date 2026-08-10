@@ -110,6 +110,16 @@ paths:
           schema:
             type: string
             enum: [active, expired, revoked, replaced, unknown]
+        - name: exclude_status
+          in: query
+          description: >
+            결과에서 뺄 상태. 반복 지정 또는 쉼표 구분 다중 값 허용.
+            **지정하지 않으면 아무것도 제외하지 않는다** — 서버 기본 동작은 그대로다.
+            교체된 인증서 숨기기(exclude_status=replaced)는 호출자가 명시적으로 요청한다
+            (06-rescan-and-replacement 11.2).
+          schema:
+            type: string
+            enum: [active, expired, revoked, replaced, unknown]
         - name: type
           in: query
           description: 인증서 유형 필터. 반복 지정 또는 쉼표 구분 다중 값 허용.
@@ -205,6 +215,15 @@ paths:
         - name: status
           in: query
           description: 상태 필터. 반복 지정 또는 쉼표 구분 다중 값 허용.
+          schema:
+            type: string
+            enum: [active, expired, revoked, replaced, unknown]
+        - name: exclude_status
+          in: query
+          description: >
+            결과에서 뺄 상태(목록과 같은 의미). 지정하지 않으면 아무것도 제외하지 않는다 —
+            내보내기 기본 내용은 바뀌지 않는다. 지정하면 그 조건이 certificate.export
+            감사 이벤트의 exclude_statuses에 함께 기록된다.
           schema:
             type: string
             enum: [active, expired, revoked, replaced, unknown]
@@ -838,6 +857,59 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "409":
           description: 현재 상태에서 허용되지 않는 전이
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/discovery/rescan/status:
+    get:
+      operationId: getRescanStatus
+      summary: 주기 재스캔 현황 (활성 여부·간격·감시 엔드포인트·적체)
+      description: >
+        이미 아는 엔드포인트를 주기적으로 다시 확인하는 재스캔의 현황이다
+        (06-rescan-and-replacement 11.2). 설정은 환경변수 zero-config이므로 이 API는
+        읽기 전용이며 정책 편집 엔드포인트는 없다. 감시 수·적체 수는 저장 컬럼이 아니라
+        매 호출마다 파생 집계한다. 읽기 전용이라 감사 이벤트를 남기지 않는다.
+        스케줄러가 배선되지 않은 서버에서도 200으로 답하며 wired=false·enabled=false다.
+      tags: [discovery]
+      responses:
+        "200":
+          description: 재스캔 현황
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RescanStatus" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/discovery/rescan/run:
+    post:
+      operationId: runRescanBatch
+      summary: 재스캔 1배치 즉시 발주 (due 무시)
+      description: >
+        주기를 기다리지 않고 지금 1배치를 발주한다. 스캔 발주와 같은 3역할
+        (System Administrator·PKI Administrator·Operator)만 호출할 수 있고, 발주된
+        스캔 Job마다 discovery.scan 감사 이벤트가 남는다(after_value의 origin=rescan으로
+        구분 — 새 이벤트 타입을 만들지 않는다). 요청 본문은 없다.
+      tags: [discovery]
+      responses:
+        "202":
+          description: >
+            발주 완료. dispatched_* 가 0이면 지금 재확인할 엔드포인트가 없다는 뜻이며
+            오류가 아니다.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RescanRunResult" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: 재스캔이 설정으로 비활성화됨 (code=rescan_disabled)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: 재스캔 스케줄러가 이 서버에 배선되지 않음 (code=rescan_unavailable)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1485,8 +1557,38 @@ components:
           nullable: true
           pattern: "^[0-9a-f]+$"
           description: AKI 소문자 hex. 확장 없는 인증서·0008 이전 데이터는 null
+        replaced_by_certificate_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            교체 감지가 연결한 새 인증서(0015). status가 replaced일 때만 채워지며,
+            새 인증서가 삭제되면 null로 되돌아간다(ON DELETE SET NULL — 옛 인증서의
+            replaced 상태는 남는다).
+        replaced_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 교체로 판정된 시각. 마지막 실관측 시각이 아니다.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+    CertificateListItem:
+      description: >
+        목록 1행 = 인증서 + 목록 전용 파생 열. last_seen_at은 인증서의 속성이 아니라
+        설치 위치 집계라 상세 응답·CSV 내보내기에는 없다.
+      allOf:
+        - $ref: "#/components/schemas/Certificate"
+        - type: object
+          properties:
+            last_seen_at:
+              type: string
+              format: date-time
+              nullable: true
+              description: >
+                이 인증서의 설치 위치 중 가장 최근 확인 시각
+                (max(certificate_locations.last_verified_at)). 위치가 없거나 한 번도
+                확인되지 않았으면 null이다. **정렬(sort) 대상이 아니다** — 집계
+                파생값이라 정렬 화이트리스트에 넣지 않는다.
     CertificateList:
       type: object
       required: [request_id, items, total, page, page_size]
@@ -1494,13 +1596,71 @@ components:
         request_id: { type: string }
         items:
           type: array
-          items: { $ref: "#/components/schemas/Certificate" }
+          items: { $ref: "#/components/schemas/CertificateListItem" }
         total: { type: integer, description: 필터 적용 후 전체 건수 }
         page: { type: integer }
         page_size: { type: integer }
+    RescanStatus:
+      type: object
+      description: >
+        주기 재스캔 현황(06-rescan-and-replacement 11.2). 모든 수치는 파생 집계이며
+        저장 컬럼이 아니다.
+      required:
+        [request_id, enabled, wired, interval_seconds, monitored_endpoints,
+         retired_endpoints, due_endpoints]
+      properties:
+        request_id: { type: string }
+        enabled:
+          type: boolean
+          description: 지금 자동으로 도는가. 배선이 없거나 RESCAN_ENABLED=false면 false다.
+        wired:
+          type: boolean
+          description: >
+            스케줄러 배선 자체의 유무. enabled=false의 두 원인(배선 없음 / 설정으로 끔)을
+            화면이 구분할 수 있어야 하므로 별도 필드다.
+        interval_seconds:
+          type: integer
+          description: >
+            monitor별 override가 없을 때의 전역 재확인 주기(초). 배선이 없으면 기본값을
+            표시용으로 내려준다. 만료 임박 가속 티어는 서버가 내부에서 적용한다.
+        reason:
+          type: string
+          description: >
+            enabled=false의 사유. 변수 이름과 상태만 담고 설정값은 담지 않는다
+            (알림 채널 상태와 같은 규약).
+        monitored_endpoints:
+          type: integer
+          description: 발주 대상 모니터 수(활성 + 미은퇴)
+        retired_endpoints:
+          type: integer
+          description: 연속 미관측으로 은퇴한 모니터 수. 행은 이력으로 남는다.
+        due_endpoints:
+          type: integer
+          description: >
+            주기가 지났는데 아직 발주되지 않은 수 = 적체. 0이 정상이며, 계속 쌓이면
+            스케줄러 미가동이나 배치 상한 부족을 의심한다.
+        last_run_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: origin=rescan 스캔 Job이 마지막으로 발주된 시각. 한 번도 없으면 null.
+    RescanRunResult:
+      type: object
+      required: [request_id, dispatched_jobs, dispatched_endpoints]
+      properties:
+        request_id: { type: string }
+        dispatched_jobs:
+          type: integer
+          description: 만들어진 스캔 Job 수. 포트별 그룹 발주라 보통 소수다.
+        dispatched_endpoints:
+          type: integer
+          description: 이번 배치가 claim한 엔드포인트 수. 0이면 지금 재확인할 것이 없다.
     CertificateSummary:
       type: object
-      description: 대시보드 요약 집계. expiring_* 값은 누적(30d는 7d 포함)이며 만료분 제외.
+      description: >
+        대시보드 요약 집계. expiring_* 값은 누적(30d는 7d 포함)이며 만료분 제외.
+        status=replaced인 인증서는 전 구간에서 제외한다 — 만료 알림에서 이미 빠져 있어
+        남겨 두면 두 화면이 서로를 부정한다(06-rescan-and-replacement 11.4).
       required:
         [request_id, total, expiring_7d, expiring_30d, expiring_60d, expiring_90d,
          expired, self_signed, unowned]

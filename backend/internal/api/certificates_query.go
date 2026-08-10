@@ -21,11 +21,12 @@ import (
 const maxSearchLen = 200
 
 type certificateListResponse struct {
-	RequestID string               `json:"request_id"`
-	Items     []domain.Certificate `json:"items"`
-	Total     int                  `json:"total"`
-	Page      int                  `json:"page"`
-	PageSize  int                  `json:"page_size"`
+	RequestID string `json:"request_id"`
+	// 목록 원소는 인증서 + last_seen_at 파생 열이다(상세·CSV에는 없다).
+	Items    []store.CertificateListItem `json:"items"`
+	Total    int                         `json:"total"`
+	Page     int                         `json:"page"`
+	PageSize int                         `json:"page_size"`
 }
 
 type certificateDetailResponse struct {
@@ -57,9 +58,31 @@ func splitMulti(vals []string) []string {
 	return out
 }
 
+// parseCertStatuses는 status 계열 파라미터 값을 검증해 상태 목록으로 편다.
+// 반복 지정·쉼표 구분을 모두 받는다(splitMulti). param은 오류 코드·문구에 쓴다.
+func parseCertStatuses(vals []string, param string) ([]domain.CertificateStatus, *paramError) {
+	var out []domain.CertificateStatus
+	for _, v := range splitMulti(vals) {
+		s := domain.CertificateStatus(v)
+		switch s {
+		case domain.CertStatusActive, domain.CertStatusExpired, domain.CertStatusRevoked,
+			domain.CertStatusReplaced, domain.CertStatusUnknown:
+			out = append(out, s)
+		default:
+			return nil, &paramError{"invalid_" + param,
+				param + "는 active/expired/revoked/replaced/unknown 중 하나여야 합니다."}
+		}
+	}
+	return out, nil
+}
+
 // parseListParams는 목록 쿼리 파라미터를 검증해 store 입력으로 변환한다.
-// 파라미터: q, status, type, expired, expires_within_days, self_signed, unowned,
-// sort, order, page, page_size.
+// 파라미터: q, status, exclude_status, type, expired, expires_within_days,
+// self_signed, unowned, sort, order, page, page_size.
+//
+// exclude_status를 주지 않으면 제외는 일어나지 않는다 — 이 함수는 CSV 내보내기와
+// 공유되므로 서버 기본값을 바꾸면 아무도 요청하지 않은 내보내기 내용 변경이
+// 따라온다(설계 06 14.2 ⑥). 교체된 인증서 숨기기는 프론트가 명시적으로 요청한다.
 func parseListParams(r *http.Request) (store.ListCertificatesInput, *paramError) {
 	q := r.URL.Query()
 	in := store.ListCertificatesInput{Page: 1, PageSize: 50}
@@ -68,17 +91,16 @@ func parseListParams(r *http.Request) (store.ListCertificatesInput, *paramError)
 	if utf8.RuneCountInString(in.Search) > maxSearchLen {
 		return in, &paramError{"invalid_search", "검색어는 200자 이하여야 합니다."}
 	}
-	for _, v := range splitMulti(q["status"]) {
-		s := domain.CertificateStatus(v)
-		switch s {
-		case domain.CertStatusActive, domain.CertStatusExpired, domain.CertStatusRevoked,
-			domain.CertStatusReplaced, domain.CertStatusUnknown:
-			in.Statuses = append(in.Statuses, s)
-		default:
-			return in, &paramError{"invalid_status",
-				"status는 active/expired/revoked/replaced/unknown 중 하나여야 합니다."}
-		}
+	statuses, perr := parseCertStatuses(q["status"], "status")
+	if perr != nil {
+		return in, perr
 	}
+	in.Statuses = statuses
+	excluded, perr := parseCertStatuses(q["exclude_status"], "exclude_status")
+	if perr != nil {
+		return in, perr
+	}
+	in.ExcludeStatuses = excluded
 	for _, v := range splitMulti(q["type"]) {
 		ct := domain.CertificateType(v)
 		switch ct {
