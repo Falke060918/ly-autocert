@@ -6,13 +6,14 @@
 
 INHERIT AutoCert는 폐쇄망·레거시 환경을 위한 온프레미스 인증서 라이프사이클 관리(CLM) 플랫폼이다. 외부 SaaS 연결을 요구하지 않으며, 모든 인증서 정보와 감사 로그는 고객 내부에 저장된다.
 
-구성 요소는 3개 컨테이너다.
+구성 요소는 3개 컨테이너이며, HTTPS로 종단하는 경우에만 프록시 1개가 더 붙는다.
 
 | 구성 요소 | 역할 | 기본 포트 |
 | --- | --- | --- |
 | frontend | 웹 콘솔 (Next.js) — 브라우저의 API 호출을 backend로 중계하는 동일 출처 프록시 겸용 | 3000 |
 | backend | REST API 서버 (Go) | 8080, 센서 게이트웨이 8443 (센서 사용 시에만) |
 | db | PostgreSQL 16 데이터베이스 | 5432 — **호스트에 노출하지 않는다** (5.5절) |
+| proxy | (선택) HTTPS 리버스 프록시 — TLS 종단 (nginx). 적용 시에만 뜬다 (5.4절, TLS.md) | 443, 80 |
 
 **포트는 전부 바꿀 수 있다.** 위 값은 `.env`를 건드리지 않았을 때의 기본값이며, 변경 절차는 **5.5절**에 한 표로 모아 두었다.
 
@@ -88,6 +89,7 @@ INHERIT AutoCert는 폐쇄망·레거시 환경을 위한 온프레미스 인증
 - 브라우저 → backend 직접 연결이 없으므로 **CORS 설정이 필요 없다.**
 - 세션은 HttpOnly 쿠키(`autocert_session`)로 유지된다.
 - 따라서 방화벽에서 관리자 PC에 열어야 할 포트는 **3000 하나뿐**이다 (4.1절).
+- HTTPS 리버스 프록시(선택, TLS.md)를 얹으면 이 구조 앞에 프록시가 하나 더 붙어 관리자가 여는 포트는 **443** 하나가 되고, 3000·8080은 호스트 루프백으로만 남는다. 브라우저 → backend 직결이 없다는 점은 그대로다.
 
 ## 4. 네트워크 / 방화벽 요구사항
 
@@ -105,7 +107,8 @@ AutoCert 서버를 어느 네트워크 세그먼트에 둘지는 아래 세 기�
 
 | 출발지 | 목적지 포트 (기본) | 프로토콜 | 용도 | 비고 |
 | --- | --- | --- | --- | --- |
-| 관리자 브라우저 | 3000/TCP (`FRONTEND_PORT`) | HTTP | 웹 콘솔 (API 중계 포함) | **필수** — 웹 콘솔 사용에는 이 포트만 필요하다 (3.3절) |
+| 관리자 브라우저 | 3000/TCP (`FRONTEND_PORT`) | HTTP | 웹 콘솔 (API 중계 포함) | **필수** — 웹 콘솔 사용에는 이 포트만 필요하다 (3.3절). HTTPS 구성에서는 이 포트를 열지 않는다 |
+| 관리자 브라우저 | 443/TCP (+80) | HTTPS | 리버스 프록시 (TLS 종단) | 선택 — HTTPS 구성일 때만. 이때 관리자에게 여는 포트는 이것뿐이다 (5.4절, TLS.md). 80은 443으로 리다이렉트 전용 |
 | API 클라이언트 (curl·스크립트 등) | 8080/TCP (`BACKEND_PORT`) | HTTP | REST API 직접 호출 | 선택 — 웹 콘솔만 쓰면 외부 개방 불필요. 자동화·연동 시에만 개방 |
 | 센서(원격 수집기) 호스트 | 8443/TCP (`SENSOR_GATEWAY_PORT`) | HTTPS (mTLS) | 센서 게이트웨이 | 선택 — 센서 사용 시에만. `SENSOR_CA_ENC_KEY` 미설정이면 이 포트는 아예 열리지 않는다 (SENSOR.md 3장) |
 | (없음) | 5432/TCP | — | PostgreSQL | **호스트에 노출하지 않는다** — 기본 compose 구성에 `ports`가 없다. DB는 backend 컨테이너만 접근하면 된다 (5.5절) |
@@ -145,6 +148,7 @@ cp .env.example .env
 | `BOOTSTRAP_ADMIN_USERNAME` | `admin` | 초기 관리자(System Administrator) 계정명 |
 | `BOOTSTRAP_ADMIN_PASSWORD` | (없음) | 초기 관리자 비밀번호. 최초 기동 시 사용자가 하나도 없으면 이 값으로 초기 관리자를 **1회** 생성한다. 미설정 시 계정이 생성되지 않고 경고 로그만 남는다 (6.1절) |
 | `SESSION_TTL` | `8h` | 로그인 세션 유효기간. Go duration 형식 (`8h`, `30m`, `12h30m` 등) |
+| `SESSION_COOKIE_SECURE` | `false` | 세션 쿠키에 `Secure` 플래그를 붙인다. **HTTPS 리버스 프록시로 TLS를 종단할 때만 `true`** — 평문 HTTP로 접속하면 브라우저가 쿠키를 버려 로그인이 조용히 실패한다. `docker-compose.https.yml`을 쓰면 자동으로 켜지므로 직접 넣을 필요는 없다 (TLS.md) |
 | `SENSOR_CA_ENC_KEY` | (없음) | 센서 사용 시에만. 센서 CA 개인키 암호화 키 — hex 64자, `openssl rand -hex 32`로 생성. 미설정이면 센서 게이트웨이(8443)가 열리지 않는다. 설정하면 `SENSOR_ADVERTISED_HOSTS`도 반드시 함께 채운다 (SENSOR.md 3.1절) |
 | `SENSOR_ADVERTISED_HOSTS` | (없음) | 센서 사용 시에만. 센서가 서버 접속에 쓸 **실제** DNS/IP 목록(쉼표 구분, 예: `10.20.0.5,autocert.internal`) — 게이트웨이 서버 인증서 SAN. 위 키를 설정했는데 이 값이 비면 센서 게이트웨이(8443)가 뜨지 않는다 — 8080 웹/API는 정상 기동한다 (SENSOR.md 3.1절). **포트를 적지 않는다** (`10.20.0.5:9443` ✗) — 포트가 붙은 항목은 기동 시 경고와 함께 무시된다 |
 | 포트 변경용 변수 | (5.5절) | `FRONTEND_PORT`·`BACKEND_PORT`·`SENSOR_GATEWAY_PORT` 등. 기본값을 쓸 것이면 넣지 않아도 된다 — 절차와 함께 봐야 하므로 **5.5절**에 모아 두었다 |
@@ -169,7 +173,7 @@ cp .env.example .env
 | `NOTIFY_SCAN_INTERVAL` | `1h` | 만료 임박 판정 주기. Go duration 형식(`1h`, `30m`, `6h` 등). 임계값이 일 단위이므로 1시간보다 촘촘하게 둘 이유는 없다 |
 | `NOTIFY_FIRST_RUN` | `seed` | 최초 판정 처리 방식. `seed` = 이미 지난 임계값은 **발송하지 않고 침묵 처리**(기준선만 잡는다) / `send` = 전부 발송. 아래 주의사항 참조 |
 | `NOTIFY_RETENTION_DAYS` | `180` | 종료된 발송 이력(성공·실패·건너뜀) 보존 일수. 진행 중 건은 나이와 무관하게 남는다 |
-| `NOTIFY_BASE_URL` | (없음) | 알림 본문에 넣을 웹 콘솔 기준 URL (예: `http://10.20.0.5:3000`). 비우면 본문에 인증서 딥링크가 붙지 않는다 — 알림 자체는 정상 발송된다 |
+| `NOTIFY_BASE_URL` | (없음) | 알림 본문에 넣을 웹 콘솔 기준 URL (예: `http://10.20.0.5:3000`). 비우면 본문에 인증서 딥링크가 붙지 않는다 — 알림 자체는 정상 발송된다. **HTTPS 구성이면 `https://autocert.example.internal`처럼 프록시 주소로 바꾼다**(포트 443은 표기 생략) — 안 바꾸면 메일 링크만 평문 주소로 나간다 (TLS.md 5장) |
 
 **메일 (SMTP)** — `SMTP_HOST`가 비면 메일 채널 비활성.
 
@@ -261,7 +265,12 @@ curl http://localhost:8080/healthz   # HTTP 200이면 정상 (BACKEND_PORT를 �
 - **PostgreSQL 포트 비노출**: 기본 compose 구성은 DB를 호스트에 **노출하지 않는다**(`db` 서비스에 `ports` 없음). 백업·점검으로 잠깐 열어야 하면 5.5절의 오버레이 파일을 쓰고, 끝나면 되돌린다.
 - **API 포트 비노출**: 웹 콘솔만 사용한다면 `backend`의 `ports`(8080)도 호스트 노출을 제한할 수 있다 — 웹 콘솔은 컨테이너 내부 네트워크로 backend에 접근하므로 영향이 없다 (3.3절). `.env`에 `BACKEND_PORT=127.0.0.1:8080` 같은 값은 넣을 수 없으므로, 제한이 필요하면 `docker-compose.yml`의 해당 줄을 `"127.0.0.1:${BACKEND_PORT:-8080}:${BACKEND_INTERNAL_PORT:-8080}"`으로 고친다.
 - **API 중계 주소**: frontend가 중계할 backend 주소는 **빌드 시점**에 `BACKEND_INTERNAL_URL` 빌드 인자로 고정된다 (compose 기본 `http://backend:8080` — 컨테이너 내부 주소). 브라우저의 접속 주소와 무관하므로, 관리자가 어떤 IP/도메인으로 접속하든 **바꿀 필요 없다.** backend를 별도 호스트로 분리하거나 컨테이너 내부 포트를 바꾸는 경우에만 값이 달라지며, 이때는 frontend **재빌드**가 필수다 (5.5절).
-- **TLS 종단** (예정): 웹 콘솔 앞단의 HTTPS 리버스 프록시 구성 가이드는 추후 제공한다.
+- **TLS 종단(HTTPS)**: 웹 콘솔 앞단에 nginx 리버스 프록시를 얹어 HTTPS로 종단할 수 있다. 사내 CA 발급 인증서나 자체 서명 인증서를 파일로 반입해 쓰며(폐쇄망이라 외부 ACME는 쓰지 않는다), 오버레이 파일 하나로 켜고 끈다 — 적용하지 않으면 기존 HTTP 구성 그대로다. 절차·인증서 준비·갱신·트러블슈팅은 **TLS.md** 참조.
+
+```sh
+# HTTPS 구성으로 기동 (deploy/tls/ 에 server.crt·server.key를 먼저 둔다)
+docker compose -f docker-compose.yml -f docker-compose.https.yml up -d --build
+```
 
 ### 5.5 포트 변경 절차
 

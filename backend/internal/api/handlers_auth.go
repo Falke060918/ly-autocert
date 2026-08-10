@@ -53,16 +53,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}
-	// 브라우저 클라이언트용 쿠키. 폐쇄망 개발환경은 http이므로 Secure는 두지 않는다
-	// (TLS 종단 도입 시 Secure 추가).
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    token,
-		Path:     "/",
-		Expires:  expiresAt,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
+	s.setSessionCookie(w, token, expiresAt)
 	writeJSON(w, http.StatusOK, loginResponse{Token: token, ExpiresAt: expiresAt, User: user})
 }
 
@@ -76,16 +67,37 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}
-	// 쿠키 제거
+	s.clearSessionCookie(w)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// setSessionCookie는 브라우저 클라이언트용 세션 쿠키를 내려준다.
+// Secure는 SESSION_COOKIE_SECURE 배선(WithSecureCookies)을 따른다 — 백엔드는
+// 리버스 프록시 뒤에서 평문 HTTP를 받으므로 요청만 보고 HTTPS 여부를 알 수 없다.
+func (s *Server) setSessionCookie(w http.ResponseWriter, token string, expiresAt time.Time) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    token,
+		Path:     "/",
+		Expires:  expiresAt,
+		HttpOnly: true,
+		Secure:   s.secureCookies,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+// clearSessionCookie는 세션 쿠키를 즉시 만료시킨다. 속성(Path·Secure·SameSite)은
+// 발급 시와 같아야 브라우저가 같은 쿠키로 인식해 지운다.
+func (s *Server) clearSessionCookie(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
+		Secure:   s.secureCookies,
 		SameSite: http.SameSiteLaxMode,
 	})
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleMe는 GET /api/v1/auth/me다. 현재 인증된 사용자를 반환한다.

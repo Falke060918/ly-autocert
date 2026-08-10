@@ -37,6 +37,9 @@ services:
       HTTP_ADDR: ":${BACKEND_INTERNAL_PORT:-8080}"
       DATABASE_URL: postgres://${POSTGRES_USER:-autocert}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-autocert}?sslmode=disable
       SESSION_TTL: ${SESSION_TTL:-8h}
+      # 세션 쿠키 Secure 플래그. 기본 false(평문 HTTP 배포) — HTTPS 리버스 프록시로
+      # TLS를 종단할 때만 true다. docker-compose.https.yml이 자동으로 켠다(docs/manual/TLS.md).
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
       # users 테이블이 비어 있을 때만 초기 System Administrator를 만든다.
       BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-admin}
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}

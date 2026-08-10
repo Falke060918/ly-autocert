@@ -46,6 +46,40 @@ func TestLoadSensorListenAddrOverride(t *testing.T) {
 	}
 }
 
+// TestLoadSessionCookieSecure는 SESSION_COOKIE_SECURE의 기본값(평문 HTTP 기본 설치를
+// 깨지 않도록 false)과 명시 설정, 오값 폴백을 검증한다.
+func TestLoadSessionCookieSecure(t *testing.T) {
+	tests := []struct {
+		name        string
+		value       string
+		want        bool
+		wantWarning bool
+	}{
+		{name: "default is off", value: "", want: false},
+		{name: "explicit on", value: "true", want: true},
+		{name: "explicit off", value: "false", want: false},
+		{name: "invalid falls back with warning", value: "https", want: false, wantWarning: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("SESSION_COOKIE_SECURE", tt.value)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.SessionCookieSecure != tt.want {
+				t.Fatalf("SessionCookieSecure = %v, want %v", cfg.SessionCookieSecure, tt.want)
+			}
+			warned := strings.Contains(strings.Join(cfg.Warnings, "\n"), "SESSION_COOKIE_SECURE")
+			if warned != tt.wantWarning {
+				t.Fatalf("warning about SESSION_COOKIE_SECURE = %v, want %v (warnings: %v)",
+					warned, tt.wantWarning, cfg.Warnings)
+			}
+		})
+	}
+}
+
 func TestLoadSensorAdvertisedHosts(t *testing.T) {
 	setRequired(t)
 	// 콤마 구분, 공백 허용, DNS와 IP 혼합 — IP는 SAN IP로, 나머지는 DNS로 분류.

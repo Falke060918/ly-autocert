@@ -25,6 +25,12 @@ type Config struct {
 	DatabaseURL string
 	// SessionTTL은 로그인 세션 유효기간이다 (SESSION_TTL, Go duration 형식).
 	SessionTTL time.Duration
+	// SessionCookieSecure는 세션 쿠키에 Secure 플래그를 붙일지다
+	// (SESSION_COOKIE_SECURE, 기본 false). HTTPS 리버스 프록시로 TLS를 종단할 때만
+	// true로 둔다 — 평문 HTTP 접속에서 켜면 브라우저가 쿠키를 버려 로그인이 조용히
+	// 실패한다 (docs/manual/TLS.md). 백엔드는 프록시 뒤에서 평문 HTTP를 받으므로
+	// 요청만 보고는 판별할 수 없어 설정으로 받는다.
+	SessionCookieSecure bool
 	// BootstrapAdminUsername/Password는 users가 비어 있을 때 만들 초기
 	// System Administrator 계정이다. 비밀번호는 환경변수로만 주입한다 —
 	// 코드·설정 파일에 하드코딩 금지. 로그에 출력하지 않는다.
@@ -159,6 +165,8 @@ func Load() (Config, error) {
 	cfg.SensorGatewayPort = l.listenPort("SENSOR_LISTEN_ADDR", cfg.SensorListenAddr, defaultSensorPort)
 	cfg.SensorAdvertisedDNS, cfg.SensorAdvertisedIPs =
 		l.advertisedHosts("SENSOR_ADVERTISED_HOSTS", os.Getenv("SENSOR_ADVERTISED_HOSTS"))
+	// 오값이어도 기동을 막지 않는다 — 폴백은 false(평문 HTTP 기본 설치)다.
+	cfg.SessionCookieSecure = l.boolVal("SESSION_COOKIE_SECURE", false)
 	// 알림·스윕 설정은 값이 잘못돼도 기동을 막지 않는다: 경고 후 기본값 폴백이거나
 	// 해당 채널만 비활성이다 (센서 게이트웨이 선례).
 	cfg.Notify = l.notify()
