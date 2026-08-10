@@ -106,7 +106,8 @@ func run(logger *slog.Logger) error {
 
 	rec := audit.NewRecorder(pool)
 	authSvc := auth.NewService(pool, cfg.SessionTTL, rec)
-	// users가 비어 있으면 초기 관리자를 만든다 (BOOTSTRAP_ADMIN_PASSWORD 필요).
+	// users가 비어 있고 BOOTSTRAP_ADMIN_PASSWORD가 설정돼 있으면 초기 관리자를 만든다
+	// (무인 설치용 경로 — 유지). 미설정이면 첫 접속 시 웹 초기 설정 화면에서 만든다.
 	if err := authSvc.BootstrapAdmin(ctx, cfg.BootstrapAdminUsername, cfg.BootstrapAdminPassword); err != nil {
 		return err
 	}

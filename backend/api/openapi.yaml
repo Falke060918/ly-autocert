@@ -290,6 +290,65 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/setup/status:
+    get:
+      operationId: getSetupStatus
+      summary: 초기 설정 필요 여부
+      description: >
+        사용자가 0명이면 setup_required=true다. 계정이 1명이라도 있으면 false가 되고
+        이후 영구히 false다 — 초기 설정 화면·엔드포인트가 닫혔다는 뜻이다.
+        인증 없이 호출되므로 응답에는 불리언 1개만 담는다(계정 수·계정명 비노출).
+      tags: [setup]
+      security: []
+      responses:
+        "200":
+          description: 초기 설정 필요 여부
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [setup_required]
+                properties:
+                  setup_required: { type: boolean }
+  /api/v1/setup/admin:
+    post:
+      operationId: createInitialAdmin
+      summary: 최초 System Administrator 생성 (초기 설정)
+      description: >
+        첫 접속 시 브라우저에서 관리자 계정을 만든다. 사용자가 0명일 때만 동작하며
+        생성 여부는 DB가 원자적으로 판정한다 (advisory lock 직렬화 +
+        INSERT … WHERE NOT EXISTS). 이미 계정이 있으면 409다.
+        비밀번호 정책은 일반 사용자 생성과 동일하고(최소 12자·최대 72바이트·계정명과 상이),
+        생성은 감사 이벤트(user.created, source=initial_setup)를 남긴다.
+        무인 설치용 BOOTSTRAP_ADMIN_PASSWORD 경로는 그대로 유지된다.
+      tags: [setup]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+      responses:
+        "201":
+          description: 최초 관리자 생성됨 (role은 항상 system_administrator)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400":
+          description: 본문 오류·계정명 누락·비밀번호 정책 위반
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 이미 사용자가 존재해 초기 설정이 닫혔음
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /api/v1/auth/login:
     post:
       operationId: login
