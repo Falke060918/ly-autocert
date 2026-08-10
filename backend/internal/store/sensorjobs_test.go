@@ -14,6 +14,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -97,7 +98,9 @@ func TestLeaseNextSensorJobConcurrent(t *testing.T) {
 
 	jobIDs := make([]string, 3)
 	for i := range jobIDs {
-		jobIDs[i] = newSensorScanJob(t, st, pool, sensorID, "192.0.2.20", "test-req-sensor-lease")
+		// 대상을 다르게 준다 — 동일 요청의 활성 중복은 0017 dedup 가드가 막는다.
+		jobIDs[i] = newSensorScanJob(t, st, pool, sensorID,
+			fmt.Sprintf("192.0.2.2%d", i), "test-req-sensor-lease")
 		// FIFO 검증을 위해 생성 시각을 강제로 벌린다(같은 마이크로초 동률 방지).
 		if _, err := pool.Exec(
 			`UPDATE scan_jobs SET created_at = now() - make_interval(secs => $2) WHERE id = $1::uuid`,
@@ -429,7 +432,8 @@ func TestHeartbeatProgressIsClampedToTotalEndpoints(t *testing.T) {
 	}
 
 	// 상한 이하의 보고는 그대로 통과한다(클램프가 정상값을 깎지 않는다).
-	other := newSensorScanJob(t, st, pool, sensorID, ip, "test-req-sensor-hb-clamp-2")
+	// 대상은 첫 Job과 다르게 — 동일 요청의 활성 중복은 0017 dedup 가드가 막는다.
+	other := newSensorScanJob(t, st, pool, sensorID, "192.0.2.35", "test-req-sensor-hb-clamp-2")
 	if _, err := st.LeaseNextSensorJob(ctx, sensorID); err != nil {
 		t.Fatalf("lease second: %v", err)
 	}

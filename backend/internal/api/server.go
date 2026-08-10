@@ -174,6 +174,9 @@ func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorC
 	s.protected("GET /api/v1/discovery/scans", s.handleListScans, domain.AllRoles...)
 	s.protected("GET /api/v1/discovery/scan-suggestions", s.handleScanSuggestions, domain.AllRoles...)
 	s.protected("GET /api/v1/discovery/scans/{id}", handleGetScan(st), domain.AllRoles...)
+	// 취소는 발주와 같은 3역할. 전이 + discovery.scan.cancel 감사는 store가 동일 tx로.
+	s.protected("POST /api/v1/discovery/scans/{id}/cancel", handleCancelScan(disc, st),
+		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
 	// 전 포트 백그라운드 스윕 (04-port-autoscan 9.2). 발주·제어는 스캔과 같은 3역할,
 	// 조회는 읽기 전용이라 전 역할. 상태 전이는 discovery.sweep 감사를 남긴다(store).
 	s.protected("POST /api/v1/discovery/sweeps", s.handleCreateSweep,

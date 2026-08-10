@@ -35,6 +35,13 @@ type Manager struct {
 	// 실행도 스케줄러의 stop 대기에 함께 잡히게 한다. 대입은 기동 시 1회뿐이고
 	// HTTP 서버는 그 뒤에 뜬다(cmd/server/main.go 순서) — 이후로는 읽기 전용이다.
 	rescanSched *rescanScheduler
+
+	// cancelMu/cancels는 수동 단발 스캔(Start의 서버 실행 경로)의 Job별 취소
+	// 레지스트리다. 취소 API가 CancelScan으로 실행 중 goroutine의 ctx를 끊는다.
+	// 스윕 청크·재스캔 발주 Job은 등록하지 않는다 — 스윕은 스윕 API로 제어하고,
+	// 재스캔 running은 짧아(1배치 상한) 상태 전이(canceled)만으로 충분하다.
+	cancelMu sync.Mutex
+	cancels  map[string]context.CancelFunc
 }
 
 // NewManager는 Manager를 만든다.
@@ -89,10 +96,52 @@ func (m *Manager) Start(ctx context.Context, in store.ScanInput) (*StartResult, 
 	}
 
 	// 백그라운드 실행은 요청 컨텍스트와 무관하게 살아야 하므로 Background를 쓴다.
+	// 취소 API가 끊을 수 있게 Job별 cancel을 레지스트리에 등록한다.
 	// 단발 스캔은 기존 기본값(50pps/동시성 20)으로 돈다 — 스윕은 이보다 더 느리다(설계 7.3).
-	go m.run(context.Background(), jobID, endpoints, concurrency, timeout, NewRateLimiter(DefaultScanRatePPS))
+	runCtx, cancel := context.WithCancel(context.Background())
+	m.registerCancel(jobID, cancel)
+	go func() {
+		defer m.releaseCancel(jobID)
+		m.run(runCtx, jobID, endpoints, concurrency, timeout, NewRateLimiter(DefaultScanRatePPS))
+	}()
 
 	return &StartResult{JobID: jobID, TotalEndpoints: len(endpoints)}, nil
+}
+
+// registerCancel은 Job의 취소 함수를 등록한다.
+func (m *Manager) registerCancel(jobID string, cancel context.CancelFunc) {
+	m.cancelMu.Lock()
+	defer m.cancelMu.Unlock()
+	if m.cancels == nil {
+		m.cancels = map[string]context.CancelFunc{}
+	}
+	m.cancels[jobID] = cancel
+}
+
+// releaseCancel은 등록을 해제하고 cancel을 호출해 ctx 리소스를 회수한다(멱등).
+func (m *Manager) releaseCancel(jobID string) {
+	m.cancelMu.Lock()
+	cancel := m.cancels[jobID]
+	delete(m.cancels, jobID)
+	m.cancelMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// CancelScan은 실행 중인 서버 스캔 goroutine의 ctx를 끊는다. 등록이 없으면
+// false다(이미 종료됐거나 이 프로세스가 실행 주체가 아닌 Job) — 상태 전이는
+// store.CancelScanJob이 이미 끝냈으므로 false여도 오류가 아니다.
+// ctx가 끊긴 goroutine은 종료 상태를 찍지 않고 물러난다(run의 ctx.Err() 분기) —
+// 행은 이미 canceled이고, MarkScanFinished의 미종결 가드가 경합 덮어쓰기를 막는다.
+func (m *Manager) CancelScan(jobID string) bool {
+	m.cancelMu.Lock()
+	cancel, ok := m.cancels[jobID]
+	m.cancelMu.Unlock()
+	if ok {
+		cancel()
+	}
+	return ok
 }
 
 // run은 Job의 상태 머신을 진행한다: running → 엔드포인트 스캔 → completed/failed.

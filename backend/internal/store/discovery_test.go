@@ -94,10 +94,14 @@ func TestReapOrphanedServerScanJobs(t *testing.T) {
 		cleanupAuditByRequestID(pool, reqID)
 	})
 
+	// 포트를 호출마다 바꾼다 — 동일 정규화 요청(실행기·대상·포트)의 활성 중복은
+	// 0017 dedup 가드가 막으므로 픽스처는 서로 다른 요청이어야 한다.
+	port := 8440
 	newJob := func(sensor *string) string {
 		t.Helper()
+		port++
 		id, err := st.CreateScanJob(ctx, ScanInput{
-			Targets: []string{ip}, Ports: []int{8443}, TimeoutMs: 1000, Concurrency: 1,
+			Targets: []string{ip}, Ports: []int{port}, TimeoutMs: 1000, Concurrency: 1,
 			TotalEndpoints: 1, SensorID: sensor, RequestID: &reqID,
 		})
 		if err != nil {

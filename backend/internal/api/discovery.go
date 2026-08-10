@@ -151,6 +151,18 @@ func handleCreateScan(mgr *discovery.Manager, st *store.Store) http.HandlerFunc 
 				writeScanInputError(w, r, err)
 				return
 			}
+			var dup *store.DuplicateScanError
+			if errors.As(err, &dup) {
+				// 버튼 연타·더블클릭 — 이미 도는 Job을 알려줘 화면이 그쪽으로
+				// 붙게 한다(0017 중복 가드).
+				writeJSON(w, http.StatusConflict, duplicateScanResponse{
+					Error: errorBody{Code: "duplicate_scan",
+						Message: "같은 대상·포트의 스캔이 이미 진행 중입니다."},
+					JobID:     dup.JobID,
+					RequestID: reqIDStr,
+				})
+				return
+			}
 			slog.Error("discovery: start scan failed", "error", err.Error(), "request_id", reqIDStr)
 			writeError(w, r, http.StatusInternalServerError, "internal_error",
 				"스캔 작업을 시작할 수 없습니다.")
@@ -164,6 +176,16 @@ func handleCreateScan(mgr *discovery.Manager, st *store.Store) http.HandlerFunc 
 			RequestID:      reqIDStr,
 		})
 	}
+}
+
+// duplicateScanResponse는 409 duplicate_scan 응답이다 — 표준 오류 형식에
+// 기존 활성 Job id를 더해 화면이 그 Job으로 이동할 수 있게 한다.
+type duplicateScanResponse struct {
+	Error errorBody `json:"error"`
+	// JobID는 이미 활성(pending/leased/running)인 동일 요청 Job이다.
+	// 극단 경합으로 특정하지 못하면 빈 문자열이다(재시도하면 된다).
+	JobID     string `json:"job_id"`
+	RequestID string `json:"request_id,omitempty"`
 }
 
 type scanJobResponse struct {
@@ -252,11 +274,11 @@ func (s *Server) handleListScans(w http.ResponseWriter, r *http.Request) {
 	for _, v := range splitMulti(r.URL.Query()["status"]) {
 		switch v {
 		case store.ScanStatusPending, store.ScanStatusLeased, store.ScanStatusRunning,
-			store.ScanStatusCompleted, store.ScanStatusFailed:
+			store.ScanStatusCompleted, store.ScanStatusFailed, store.ScanStatusCanceled:
 			in.Statuses = append(in.Statuses, v)
 		default:
 			writeError(w, r, http.StatusBadRequest, "invalid_status",
-				"status는 pending/leased/running/completed/failed 중 하나여야 합니다.")
+				"status는 pending/leased/running/completed/failed/canceled 중 하나여야 합니다.")
 			return
 		}
 	}
@@ -334,6 +356,54 @@ func (s *Server) handleScanSuggestions(w http.ResponseWriter, r *http.Request) {
 		DerivedNetworks:    sug.DerivedNetworks,
 		ConfiguredNetworks: configured,
 	})
+}
+
+// handleCancelScan은 POST /api/v1/discovery/scans/{id}/cancel이다.
+// MVP 범위: pending 즉시 취소 + 서버 실행 running의 goroutine ctx 취소.
+// 센서 leased/running은 409다 — 센서를 실제로 멈출 수 없는데 canceled로 찍으면
+// "취소됐는데 계속 도는" 거짓 상태가 된다. 스윕 자식 청크도 409 — 스윕 API로만
+// 제어한다(canceled 청크는 재발주가 막혀 스윕이 그 구간을 조용히 건너뛴다).
+// 상태 전이 + discovery.scan.cancel 감사는 store가 같은 트랜잭션으로 남긴다.
+func handleCancelScan(mgr *discovery.Manager, st *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if !isUUID(id) {
+			writeError(w, r, http.StatusNotFound, "not_found", "스캔 작업을 찾을 수 없습니다.")
+			return
+		}
+		var actorID *string
+		if u := userFrom(r.Context()); u != nil {
+			actorID = &u.ID
+		}
+		job, err := st.CancelScanJob(r.Context(), id, store.ScanCancelInput{
+			ActorID:   actorID,
+			RequestID: requestIDFrom(r.Context()),
+			SourceIP:  clientIP(r),
+		})
+		switch {
+		case errors.Is(err, store.ErrScanJobNotFound):
+			writeError(w, r, http.StatusNotFound, "not_found", "스캔 작업을 찾을 수 없습니다.")
+			return
+		case errors.Is(err, store.ErrScanJobSweepChunk):
+			writeError(w, r, http.StatusConflict, "sweep_chunk",
+				"스윕이 발주한 작업입니다. 스윕 일시정지/취소로 제어하십시오.")
+			return
+		case errors.Is(err, store.ErrScanJobState):
+			writeError(w, r, http.StatusConflict, "scan_state",
+				"현재 상태에서는 취소할 수 없습니다. 센서가 실행 중인 작업은 취소를 지원하지 않습니다.")
+			return
+		case err != nil:
+			slog.Error("discovery: cancel scan failed", "error", err.Error(),
+				"request_id", deref(requestIDFrom(r.Context())))
+			writeError(w, r, http.StatusInternalServerError, "internal_error",
+				"스캔 작업을 취소할 수 없습니다.")
+			return
+		}
+		// 상태 전이가 끝난 뒤에 goroutine을 끊는다 — run의 ctx.Err() 분기가
+		// canceled 행을 그대로 두고 물러난다. 등록이 없어도(이미 종료 등) 오류가 아니다.
+		mgr.CancelScan(id)
+		writeJSON(w, http.StatusOK, toScanJobResponse(job))
+	}
 }
 
 // checkActiveSensor는 sensor_id가 존재하고 active인지 확인한다.

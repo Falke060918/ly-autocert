@@ -727,6 +727,13 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "409":
+          description: >
+            동일 정규화 요청(실행기·대상·포트)이 이미 활성(pending/leased/running)이다
+            (duplicate_scan — 버튼 연타 가드). job_id가 기존 활성 Job을 가리킨다.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DuplicateScan" }
         "422":
           description: sensor_id가 존재하지 않거나 active 상태가 아닌 센서
           content:
@@ -742,7 +749,7 @@ paths:
       parameters:
         - name: status
           in: query
-          description: pending/leased/running/completed/failed (반복·쉼표 구분 허용)
+          description: pending/leased/running/completed/failed/canceled (반복·쉼표 구분 허용)
           schema: { type: string }
         - name: origin
           in: query
@@ -811,6 +818,45 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           description: 존재하지 않는 Job
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/discovery/scans/{id}/cancel:
+    post:
+      operationId: cancelDiscoveryScan
+      summary: 스캔 Job 취소
+      description: >
+        pending은 즉시 취소하고, 서버 실행 running은 실행 goroutine의 ctx를 끊는다.
+        센서가 이미 집어간 작업(leased/running)은 409다 — 센서를 실제로 멈출 수 없어
+        "취소됐는데 계속 도는" 거짓 상태를 만들지 않는다. 스윕이 발주한 청크도 409 —
+        스윕 pause/cancel로만 제어한다. discovery.scan.cancel 감사 이벤트를 상태
+        전이와 같은 트랜잭션으로 남긴다. 허용 역할은
+        system_administrator·pki_administrator·operator다.
+      tags: [discovery]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 취소된 스캔 Job
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScanJob" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: 존재하지 않는 Job
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: >
+            취소할 수 없는 상태(scan_state — 종료됨·센서 실행 중) 또는 스윕 자식
+            청크(sweep_chunk)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -2192,6 +2238,21 @@ components:
           description: >
             지정하면 서버 직접 실행 대신 해당 센서가 스캔한다 (Phase 3a).
             active 센서만 허용 — 아니면 422. pending Job만 만들어지고 센서가 pull 리스로 가져간다.
+    DuplicateScan:
+      type: object
+      description: 409 duplicate_scan 응답 — 표준 오류 + 기존 활성 Job id.
+      required: [error, job_id]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, enum: [duplicate_scan] }
+            message: { type: string }
+        job_id:
+          type: string
+          description: 이미 활성인 동일 요청 Job id. 극단 경합으로 특정하지 못하면 빈 문자열.
+        request_id: { type: string }
     ScanJobList:
       type: object
       required: [request_id, items, total, page, page_size]
@@ -2246,10 +2307,11 @@ components:
         id: { type: string, format: uuid }
         status:
           type: string
-          enum: [pending, leased, running, completed, failed]
+          enum: [pending, leased, running, completed, failed, canceled]
           description: >
             leased = 센서가 Job을 수령했고 아직 실행 보고(running 하트비트) 전인 상태 (00-spec 7.8).
             리스 만료까지 running 전이가 없으면 서버가 failed로 회수한다.
+            canceled = 취소 API로 종료된 상태 (0017 — pending 또는 서버 실행 running만 취소 가능).
         origin:
           type: string
           enum: [manual, sweep, rescan]
