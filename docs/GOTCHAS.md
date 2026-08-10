@@ -14,9 +14,17 @@ Fix: write files binary — `open(path,'wb').write(s.encode('utf-8'))`; write Ko
 Cause: MSYS rewrites absolute POSIX-looking arguments into Windows paths before docker sees them, so `-w`, `-v` targets and in-container paths are mangled and the run fails with a confusing "no such file".
 Fix: prefix the whole command with `MSYS_NO_PATHCONV=1`, and pass the host side of `-v` as `$(pwd -W)`. (Windows / last recurrence: 2026-08)
 
-**`gofmt -l .` lists all 147 files on a Windows checkout**
-Cause: the working tree is CRLF, and gofmt reports every CRLF file as unformatted — the output carries no signal about actual formatting drift.
-Fix: do not use `gofmt -l` as a gate here; if you must check, run it on a copy stripped with `sed 's/\r$//'`. (Windows / last recurrence: 2026-08)
+**`openssl rand -hex 32` can emit CRLF, so a 64-char secret is written as 65 bytes**
+Cause: some builds terminate output with `\r\n`; the stray `\r` rides into `.env` and the value fails the hex-64 check at startup with nothing on screen hinting at an invisible byte.
+Fix: pipe every generated secret through `tr -d '\n\r'` before writing it (`SENSOR_CA_ENC_KEY`, `POSTGRES_PASSWORD` in `scripts/install.sh`). (Windows / last recurrence: 2026-08)
+
+**Archives built on Windows lose the exec bit and flip text files to CRLF**
+Cause: MSYS cannot store `chmod +x` on an ELF file (only PE/shebang count as executable) so tar records mode 644; and `git archive` honours `* text=auto`, exporting `VERSION` and friends as CRLF — when the source archive overwrites a package copy written as LF the bytes differ and SHA256SUMS / image-tag checks drift silently.
+Fix: fix permissions at archive time with tar `--mode`, and assert byte-identity after extraction for any file present in both the package and the source archive. (Windows / last recurrence: 2026-08)
+
+**`Write-Host -NoNewline` breaks lines apart when PowerShell output is redirected**
+Cause: each `Write-Host` call is one information-stream record, so a screen line assembled from several calls is split across records and reassembles as several broken lines in a log file or captured transcript.
+Fix: build the string first and emit one screen line with exactly one `Write-Host` call (`scripts/install-sensor.ps1` is PS 5.1 + UTF-8 BOM). (Windows / last recurrence: 2026-08)
 
 ## Permissions & settings
 
@@ -26,7 +34,7 @@ Fix: check markers **before** the user's request; state the user-approval basis 
 
 **`.env.*` files are blocked from Read/Edit, so agents cannot add new env var placeholders**
 Cause: the permission deny rule for secret-leak prevention covers `.env.example` too, not just live `.env`.
-Fix: document new variables in docs/manual/INSTALL.md·SENSOR.md and have the user add them to `.env.example` by hand. (last recurrence: 2026-08)
+Fix: document new variables in docs/manual/INSTALL.md·SENSOR.md, wire them through scripts, and have the user add them to `.env.example` by hand. (last recurrence: 2026-08)
 
 ## Agents & delegation
 
@@ -34,15 +42,15 @@ Fix: document new variables in docs/manual/INSTALL.md·SENSOR.md and have the us
 Cause: named spawns (background AND sync) route through the teammate mailbox and never receive their instructions; separately tool_result always reports `"status":"async_launched"` and `isSidechain:true` never appears.
 Fix: spawn subagents unnamed and verify outputs (files/commits) instead of trusting idle notifications; judge parallelism only by overlapping async_launched→notification intervals. (last recurrence: 2026-08)
 
+**Two agents in one working tree smear the commit boundaries**
+Cause: an unfinished edit from agent A is sitting in the tree when agent B stages and commits, so B's commit carries A's half-done change — neither commit is reviewable or revertable on its own.
+Fix: isolate any parallel work that could touch the same files in its own git worktree; keep same-tree delegation strictly sequential. (last recurrence: 2026-08)
+
 ## Backend, DB & tests
 
-**Backend verification may have no local Go toolchain, and parallel `go test ./...` wipes the test schema**
-Cause: `go`/`gofmt` are not guaranteed to exist on a dev machine (this one has none); the db package runs up/down/up against TEST_DATABASE_URL, so package-level parallelism lets its down step drop tables mid-run.
-Fix: run in `golang:1.25-alpine` mounted at `backend/` with a reachable postgres in `TEST_DATABASE_URL`; always `-p 1` against a disposable per-run DB, never a shared one. (last recurrence: 2026-08)
-
-**Notification tests fail on state they did not create — run the suite whole, never per package**
-Cause: migration 0012 seeds `기본 만료 알림` (inbox, all certs) so detection assertions pick up its events, and a bootstrap admin left behind by an earlier package joins the fan-out recipient set — `-p 1` alone does not isolate either.
-Fix: run `go test -p 1 -count=1 ./...` as a whole; in store tests disable every enabled policy at setup and restore it afterwards. (last recurrence: 2026-08)
+**Backend tests: no local Go toolchain, parallel packages wipe the schema, and cross-package state leaks in**
+Cause: `go`/`gofmt` are not guaranteed to exist on a dev machine (this one has none); the db package runs up/down/up against TEST_DATABASE_URL so package parallelism drops tables mid-run; and migration 0012's seeded `기본 만료 알림` policy plus a bootstrap admin left by an earlier package join notification assertions — running a single package hides all three.
+Fix: run in `golang:1.25-alpine` mounted at `backend/` with a disposable per-run postgres, always `go test -p 1 -count=1 ./...` as a whole; in store tests disable every enabled policy at setup and restore it afterwards. (last recurrence: 2026-08)
 
 **Audit insert must be the last statement in its transaction**
 Cause: implicit convention — the global advisory lock taken by the audit hash chain is held until tx end; inserting earlier widens lock contention and breaks chain-ordering assumptions.
@@ -56,40 +64,32 @@ Fix: number new migrations max+1 (never fill gaps); ship an index swap and every
 Cause: an uncast `$1` defaults to text in those contexts, and using the same `$1` as both text and `::inet` in one INSERT yields "inconsistent types deduced"; Go compiles and vets clean either way.
 Fix: cast every parameter at its use site (`$1::int`, `$1::inet`) and exercise the query in a DB test — nothing before runtime catches it. (last recurrence: 2026-08)
 
-**A "N concurrent requests" race test passes even with the guard removed**
-Cause: the window on an unauthenticated create path (initial admin setup) is microseconds, so plain fan-out never collides and the test proves nothing about the lock.
-Fix: hold the same advisory lock/row in a parallel transaction and assert the request blocks until it commits (`TestInitialSetupWaitsForConcurrentSetupTransaction`). (last recurrence: 2026-08)
-
-**Legacy TLS 1.0/1.1 hosts are silently missing from scan results**
-Cause: Go's client default `MinVersion` is TLS 1.2, so those endpoints fail the handshake and are recorded as unreachable — indistinguishable from a firewall drop, and no error names TLS.
-Fix: set `MinVersion: tls.VersionTLS10` on the collection-path `tls.Config` only (`ScanEndpoint`); every other TLS path stays at 1.2 (`TestScanEndpointCollectsLegacyTLSVersions`). (last recurrence: 2026-08)
-
 **Contract drift: openapi.yaml corrupts silently, and a new status enum freezes UI polling**
 Cause: paths appended below the top-level `security:` block fall outside the `paths:` map; a status value missing from the frontend union type is absent from the poll-target filter and falls through to the else branch (rendered as "실패").
 Fix: keep `security:` outside/after `paths:`; change the domain enum, backend/api/openapi.yaml and frontend/lib/api.ts in the SAME commit — `TestOpenAPISpecMatchesRoutes` fails at parse time. (last recurrence: 2026-08)
 
-**A request DTO without `DisallowUnknownFields` turns a new column into a silently unfillable one**
-Cause: encoding/json drops unknown keys, so the API answers 201 while discarding the field — `users.email` had a column, a CHECK and recipient logic, yet no way to set it.
-Fix: when adding a field, start at the decoder (`decodeUserRequest` is the single entry point) and keep `DisallowUnknownFields` on it; verify a round-trip read, not just the 2xx. (last recurrence: 2026-08)
-
-**A `*json.RawMessage` field cannot tell "key absent" from an explicit JSON `null`**
-Cause: encoding/json leaves the pointer nil in both cases, so a PATCH handler silently ignores a caller clearing a field.
-Fix: for partial-update DTOs use a non-pointer `json.RawMessage` — it stays nil only when the key is absent. (last recurrence: 2026-08)
+**JSON decoding drops new fields silently, and `*json.RawMessage` cannot see an explicit `null`**
+Cause: encoding/json discards unknown keys, so the API answers 201 while throwing the value away (`users.email` had a column, a CHECK and recipient logic yet no way to set it); and a pointer field stays nil both for "key absent" and for JSON `null`, so a PATCH quietly ignores a caller clearing a field.
+Fix: keep `DisallowUnknownFields` on the single decoder (`decodeUserRequest`), use a non-pointer `json.RawMessage` in partial-update DTOs, and verify a round-trip read rather than the 2xx. (last recurrence: 2026-08)
 
 ## Frontend & deployment
 
-**`SESSION_COOKIE_SECURE=true` over plain HTTP looks like a login failure**
-Cause: the API returns 200 with Set-Cookie and only the browser silently drops the cookie, so the screen bounces back to /login while every server log says success.
-Fix: keep it `false` unless a TLS terminator actually fronts the console — flip the proxy and this flag together. (last recurrence: 2026-08)
+**Compose derives the project name from the directory, so an upgrade comes up with an empty database**
+Cause: volumes are named `<project>_pgdata` and the project defaults to the install directory name — installing a new version into a new directory creates a fresh volume while the old data sits there invisible, indistinguishable from data loss.
+Fix: pin `COMPOSE_PROJECT_NAME` (default `autocert`) in `.env`, inherit the directory-derived name when adopting an existing install, and verify with `docker compose config`. (last recurrence: 2026-08)
 
-**Enabling HSTS while the certificate is still untrusted locks the console out**
-Cause: HSTS removes the browser's "proceed anyway" escape hatch for a self-signed/internal cert, and the pin outlives the config change (max-age).
-Fix: turn HSTS on only after the customer's own trusted certificate is installed; otherwise recovery needs a per-browser HSTS reset. (last recurrence: 2026-08)
+**Install scripts run from two layouts, so `$SCRIPT_DIR/..` is not the install root**
+Cause: `scripts/install.sh` executes both from the git checkout (in `scripts/`) and from the extracted package (at the root); a copy of `load-offline.sh` lives in the repo's `scripts/` too, so its presence cannot tell the two layouts apart.
+Fix: locate the root by walking up for `docker-compose.yml` and branch on that marker only. (last recurrence: 2026-08)
+
+**TLS flags lock you out: `SESSION_COOKIE_SECURE` over plain HTTP, HSTS before a trusted cert**
+Cause: with Secure set on HTTP the API returns 200 with Set-Cookie and only the browser drops it, so the screen bounces back to /login while every server log says success; HSTS removes the "proceed anyway" escape hatch for a self-signed cert and the pin outlives the config change (max-age).
+Fix: flip the reverse proxy and `SESSION_COOKIE_SECURE` together; enable HSTS only after the customer's own trusted certificate is installed. (last recurrence: 2026-08)
 
 **eslint `react-hooks/purity` + `set-state-in-effect` block the usual "elapsed time" tick**
 Cause: the config rejects `Date.now()` during render AND a bare `setState` inside an effect body, so both obvious ways to keep a ticking clock fail `npm run lint`.
 Fix: `useState(() => Date.now())` lazy initializer + a `setInterval` inside the effect that updates it. (last recurrence: 2026-08)
 
-**Frontend e2e must run the production server, and its `/api/*` target is frozen at build time**
-Cause: with `output: "standalone"`, `next start` bakes the rewrite target from the build-time `BACKEND_INTERNAL_URL`; and `next dev` in a tree holding a production build serves `_next/static/chunks/*` as 403, killing hydration.
+**Next.js bakes `/api/*` rewrites at build time, and `next dev` poisons a production build tree**
+Cause: with `output: "standalone"`, `next start` freezes the rewrite target from the build-time `BACKEND_INTERNAL_URL`; and `next dev` in a tree holding a production build serves `_next/static/chunks/*` as 403, killing hydration.
 Fix: rebuild after changing `BACKEND_INTERNAL_URL`, and never mix `next dev` into a tree used for a production build. (last recurrence: 2026-08)
