@@ -113,15 +113,17 @@ func TestExportCertificatesCSV(t *testing.T) {
 		}
 	}
 
-	// 최소 권한 역할(viewer)도 목록과 동일하게 내보낼 수 있다 — 단 전건 감사된다.
-	viewerPW := randomPassword(t)
-	viewer, err := env.svc.CreateUser(ctx, "exp-viewer", viewerPW, nil, domain.RoleViewer, nil, auth.AuditMeta{})
+	// 내보내기는 인벤토리 전체 반출 경로라 관리자급 2역할만 호출할 수 있다
+	// (server.go 등록 주석 / 00-spec 7.11). PKI Administrator로 성공 경로를 확인한다.
+	pkiPW := randomPassword(t)
+	pkiAdmin, err := env.svc.CreateUser(ctx, "exp-pki-admin", pkiPW, nil,
+		domain.RolePKIAdministrator, nil, auth.AuditMeta{})
 	if err != nil {
-		t.Fatalf("create viewer: %v", err)
+		t.Fatalf("create pki administrator: %v", err)
 	}
-	viewerToken, status := env.login(t, "exp-viewer", viewerPW)
+	pkiToken, status := env.login(t, "exp-pki-admin", pkiPW)
 	if status != http.StatusOK {
-		t.Fatalf("viewer login = %d, want 200", status)
+		t.Fatalf("pki administrator login = %d, want 200", status)
 	}
 
 	seedCert(t, env, "exp-active", "export-active.example.test", "active",
@@ -137,7 +139,7 @@ func TestExportCertificatesCSV(t *testing.T) {
 	})
 
 	t.Run("invalid filter param returns 400", func(t *testing.T) {
-		resp := env.doBytes(t, http.MethodGet, "/api/v1/certificates/export?status=evil", viewerToken, "", nil, "")
+		resp := env.doBytes(t, http.MethodGet, "/api/v1/certificates/export?status=evil", pkiToken, "", nil, "")
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("export = %d, want 400", resp.StatusCode)
 		}
@@ -146,7 +148,7 @@ func TestExportCertificatesCSV(t *testing.T) {
 	t.Run("filtered CSV export leaves audit event with actor", func(t *testing.T) {
 		reqID := "test-req-export-csv"
 		resp := env.doBytes(t, http.MethodGet,
-			"/api/v1/certificates/export?status=active&q=export-", viewerToken, "", nil, reqID)
+			"/api/v1/certificates/export?status=active&q=export-", pkiToken, "", nil, reqID)
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("export = %d, want 200", resp.StatusCode)
 		}
@@ -193,8 +195,8 @@ func TestExportCertificatesCSV(t *testing.T) {
 			reqID).Scan(&actorID, &rowCount); err != nil {
 			t.Fatalf("read export audit event: %v", err)
 		}
-		if actorID == nil || *actorID != viewer.ID {
-			t.Errorf("export audit actor_id = %v, want %s", actorID, viewer.ID)
+		if actorID == nil || *actorID != pkiAdmin.ID {
+			t.Errorf("export audit actor_id = %v, want %s", actorID, pkiAdmin.ID)
 		}
 		if rowCount != 1 {
 			t.Errorf("export audit row_count = %d, want 1", rowCount)
@@ -202,7 +204,7 @@ func TestExportCertificatesCSV(t *testing.T) {
 	})
 
 	t.Run("unfiltered export returns all rows", func(t *testing.T) {
-		resp := env.doBytes(t, http.MethodGet, "/api/v1/certificates/export", viewerToken, "", nil, "")
+		resp := env.doBytes(t, http.MethodGet, "/api/v1/certificates/export", pkiToken, "", nil, "")
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("export = %d, want 200", resp.StatusCode)
 		}
@@ -219,6 +221,71 @@ func TestExportCertificatesCSV(t *testing.T) {
 			t.Errorf("csv records = %d, want 3", len(records))
 		}
 	})
+}
+
+// TestExportCertificatesRoleGate는 내보내기 권한 축소의 회귀 테스트다.
+// 인벤토리 전체(최대 50000행) 반출이라 System Administrator·PKI Administrator만
+// 허용하고, 나머지 4역할은 403 + authz.denied 감사를 남긴다 (00-spec 7.11).
+func TestExportCertificatesRoleGate(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		role domain.Role
+		want int
+	}{
+		{domain.RoleSystemAdministrator, http.StatusOK},
+		{domain.RolePKIAdministrator, http.StatusOK},
+		{domain.RoleOperator, http.StatusForbidden},
+		{domain.RoleSecurityAdministrator, http.StatusForbidden},
+		{domain.RoleAuditor, http.StatusForbidden},
+		{domain.RoleViewer, http.StatusForbidden},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.role), func(t *testing.T) {
+			username := "exp-gate-" + string(tc.role)
+			pw := randomPassword(t)
+			user, err := env.svc.CreateUser(ctx, username, pw, nil, tc.role, nil, auth.AuditMeta{})
+			if err != nil {
+				t.Fatalf("create %s: %v", tc.role, err)
+			}
+			token, status := env.login(t, username, pw)
+			if status != http.StatusOK {
+				t.Fatalf("%s login = %d, want 200", tc.role, status)
+			}
+
+			reqID := "test-req-export-gate-" + string(tc.role)
+			resp := env.doBytes(t, http.MethodGet, "/api/v1/certificates/export", token, "", nil, reqID)
+			if resp.StatusCode != tc.want {
+				t.Fatalf("export as %s = %d, want %d", tc.role, resp.StatusCode, tc.want)
+			}
+			if tc.want != http.StatusForbidden {
+				return
+			}
+			// 거부도 감사 대상이다 (middleware.requireRoles).
+			var actorID *string
+			if err := env.pool.QueryRow(`
+				SELECT actor_id FROM audit_events
+				WHERE event_type = 'authz.denied' AND request_id = $1`,
+				reqID).Scan(&actorID); err != nil {
+				t.Fatalf("read authz.denied audit event: %v", err)
+			}
+			if actorID == nil || *actorID != user.ID {
+				t.Errorf("authz.denied actor_id = %v, want %s", actorID, user.ID)
+			}
+			// 거부된 요청은 내보내기 감사를 남기지 않는다.
+			var exported int
+			if err := env.pool.QueryRow(`
+				SELECT count(*) FROM audit_events
+				WHERE event_type = 'certificate.export' AND request_id = $1`,
+				reqID).Scan(&exported); err != nil {
+				t.Fatalf("count export audit events: %v", err)
+			}
+			if exported != 0 {
+				t.Errorf("certificate.export audit events = %d, want 0", exported)
+			}
+		})
+	}
 }
 
 // TestImportAuditRecordsActorID는 로그인 사용자의 업로드가 certificate.import

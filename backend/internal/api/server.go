@@ -96,9 +96,16 @@ func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorC
 	s.protected("GET /api/v1/certificates", handleListCertificates(st), domain.AllRoles...)
 	// 리터럴 세그먼트가 {id} 와일드카드보다 우선 매칭된다 (Go 1.22+ ServeMux 규칙).
 	s.protected("GET /api/v1/certificates/summary", handleCertificateSummary(st), domain.AllRoles...)
-	// 내보내기는 목록과 같은 조회 범위(전 역할)지만 데이터 유출 경로이므로
-	// 예외 없이 certificate.export 감사 이벤트를 남긴다 (00-spec 7.12 "데이터 내보내기").
-	s.protected("GET /api/v1/certificates/export", handleExportCertificates(st), domain.AllRoles...)
+	// 내보내기는 화면 한 페이지가 아니라 인벤토리 전체(최대 50000행 — 도메인·지문·
+	// 유효기간)를 파일로 반출하는 경로다. 목록 조회와 달리 인증서 관리 책임이 있는
+	// 관리자급 2역할로 제한한다 — 7.11에서 "모든 인증서 관리"(System Administrator)와
+	// 인증서 발급·폐기(PKI Administrator)뿐이고, Operator·Auditor·Viewer의 권한은
+	// 조회(읽기 전용)까지다. 업로드(import)와 역할 집합이 다른 이유는 위험 방향이
+	// 반대이기 때문이다(반입 vs 반출).
+	// 허용 역할이어도 예외 없이 certificate.export 감사 이벤트를 남긴다
+	// (00-spec 7.12 "데이터 내보내기").
+	s.protected("GET /api/v1/certificates/export", handleExportCertificates(st),
+		domain.RoleSystemAdministrator, domain.RolePKIAdministrator)
 	s.protected("GET /api/v1/certificates/{id}", handleGetCertificate(st), domain.AllRoles...)
 	// 스캔 생성은 인벤토리를 바꾸므로 관리자·운영자급만. 상태 조회는 읽기 전용이라 전 역할.
 	s.protected("POST /api/v1/discovery/scans", handleCreateScan(disc, st),

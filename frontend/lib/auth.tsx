@@ -30,6 +30,17 @@ export function canManageInventory(user: User | null): boolean {
   return user != null && MANAGE_ROLES.includes(user.role);
 }
 
+/**
+ * 인벤토리 전체 CSV 반출이 허용되는 역할 — 백엔드 protected 등록과 일치.
+ * 목록 조회(전 역할)보다 좁다: 한 페이지가 아니라 인벤토리 전체를 파일로 빼내는
+ * 경로라 인증서 관리 책임이 있는 관리자급만 허용한다 (00-spec 7.11).
+ */
+const EXPORT_ROLES: readonly Role[] = ["system_administrator", "pki_administrator"];
+
+export function canExportInventory(user: User | null): boolean {
+  return user != null && EXPORT_ROLES.includes(user.role);
+}
+
 /** 센서 비활성화 등 시스템 관리자 전용 작업 여부. */
 export function isSystemAdministrator(user: User | null): boolean {
   return user?.role === "system_administrator";
