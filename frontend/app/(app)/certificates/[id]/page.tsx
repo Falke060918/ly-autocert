@@ -26,7 +26,14 @@ import {
   type CertificateDetailResponse,
   type CertificateLocation,
 } from "@/lib/api";
+import {
+  getIssuerAggregation,
+  ISSUED_BY_PARAM,
+  type IssuerAggregationResponse,
+} from "@/lib/issuers";
 import { dnCommonName, formatDate, formatDateTime, isSelfSigned } from "@/lib/format";
+import { cn } from "@/lib/utils";
+import { findCANode } from "../issuers-view";
 
 const TYPE_LABELS: Record<string, string> = {
   server: "서버 인증서",
@@ -63,7 +70,25 @@ export default function CertificateDetailPage() {
   const [error, setError] = React.useState<string | null>(null);
   // 제거된 위치는 기본으로 접는다 — 지금 어디에 깔려 있는지가 먼저다.
   const [showRemoved, setShowRemoved] = React.useState(false);
+  // 체인의 CA 단계에 "이 CA가 발급한 N건" 링크를 달기 위한 집계.
+  // 실패(백엔드 미배선 포함)하면 링크만 조용히 빠진다 — 상세 자체는 무관.
+  const [issuerAgg, setIssuerAgg] =
+    React.useState<IssuerAggregationResponse | null>(null);
   const now = useTicker(60_000);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    getIssuerAggregation()
+      .then((res) => {
+        if (!cancelled) setIssuerAgg(res);
+      })
+      .catch(() => {
+        /* 링크 생략 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -116,7 +141,8 @@ export default function CertificateDetailPage() {
   }
 
   const c = data.certificate;
-  const cn = c.common_name || dnCommonName(c.subject_dn);
+  // cn은 클래스 유틸(@/lib/utils cn)과 겹쳐 cnLabel로 둔다.
+  const cnLabel = c.common_name || dnCommonName(c.subject_dn);
   // 소유자는 owner_id(UUID)가 아니라 사람이 읽는 이름으로 표시한다.
   // 표시 이름이 없으면 계정명만 쓰고, owner_id는 있는데 계정이 사라진 경우에도
   // UUID를 노출하지 않는다(화면이 깨지지 않게 문구로 대체).
@@ -152,11 +178,11 @@ export default function CertificateDetailPage() {
         <Link href="/certificates" className="hover:underline hover:underline-offset-3">
           인증서
         </Link>{" "}
-        / <span className="text-foreground">{cn}</span>
+        / <span className="text-foreground">{cnLabel}</span>
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <h1 className="font-mono text-lg font-semibold tracking-tight">{cn}</h1>
+        <h1 className="font-mono text-lg font-semibold tracking-tight">{cnLabel}</h1>
         <CertStatusBadge status={c.status} notAfter={c.not_after} />
         {isSelfSigned(c.subject_dn, c.issuer_dn) && (
           <Badge variant="secondary">자체 서명</Badge>
@@ -291,8 +317,13 @@ export default function CertificateDetailPage() {
                 {data.chain.length}단계
               </span>
             </div>
-            {/* 자신→상위→루트 순. 저장된 상위는 클릭 시 해당 상세로 이동한다. */}
-            <div className="p-2">
+            {/*
+              자신→상위→루트 순의 수직 레일 — 단계마다 상태·만료를 병기하고,
+              CA 단계에는 그 CA가 발급한 인증서 목록으로 가는 링크를 단다.
+              행 전체를 링크로 감싸지 않는다(발급 링크와 중첩 <a> 방지) —
+              이름이 상세 링크, 발급 건수가 목록 링크다.
+            */}
+            <div className="p-4">
               {data.chain.map((item, i) => {
                 const label =
                   item.common_name ||
@@ -300,33 +331,54 @@ export default function CertificateDetailPage() {
                   item.subject_dn ||
                   "(불명)";
                 const isCurrent = i === 0;
-                const clickable = !isCurrent && item.stored && item.id;
-                const row = (
-                  <div className="flex min-w-0 items-start gap-1.5">
-                    {i > 0 && (
+                const isLast = i === data.chain.length - 1;
+                // 집계 트리에 있으면 CA다 — 발급 건수 링크의 근거(N)도 여기서 온다.
+                const caNode = item.stored ? findCANode(issuerAgg, item.id) : null;
+                return (
+                  <div key={`${item.id ?? item.subject_dn}-${i}`} className="flex gap-3">
+                    <div className="flex w-3 shrink-0 flex-col items-center">
                       <span
                         aria-hidden
-                        className="shrink-0 font-mono text-xs leading-5 text-muted-foreground/50"
-                        style={{ paddingLeft: (i - 1) * 14 }}
-                      >
-                        └
-                      </span>
-                    )}
-                    <div className="min-w-0 flex-1">
+                        className={cn(
+                          "mt-1.5 size-2 shrink-0 rounded-full",
+                          isCurrent
+                            ? "bg-primary"
+                            : item.stored
+                              ? "bg-muted-foreground/50"
+                              : "border border-dashed border-muted-foreground/60",
+                        )}
+                      />
+                      {!isLast && <span aria-hidden className="mt-1 w-px flex-1 bg-border" />}
+                    </div>
+                    <div className={cn("min-w-0 flex-1", !isLast && "pb-4")}>
                       <div className="flex flex-wrap items-center gap-1.5">
-                        <span
-                          className={`truncate font-mono text-xs ${
-                            isCurrent ? "font-semibold" : "text-foreground/80"
-                          }`}
-                        >
-                          {label}
-                        </span>
+                        {!isCurrent && item.stored && item.id ? (
+                          <Link
+                            href={`/certificates/${item.id}`}
+                            className="truncate font-mono text-xs text-foreground/80 hover:underline hover:underline-offset-3"
+                          >
+                            {label}
+                          </Link>
+                        ) : (
+                          <span
+                            className={cn(
+                              "truncate font-mono text-xs",
+                              isCurrent
+                                ? "font-semibold"
+                                : "text-muted-foreground",
+                            )}
+                          >
+                            {label}
+                          </span>
+                        )}
                         {isCurrent && <Badge variant="secondary">현재</Badge>}
                         {item.stored &&
-                          item.self_signed &&
-                          item.certificate_type === "ca" && (
+                          item.certificate_type === "ca" &&
+                          (item.self_signed ? (
                             <Badge variant="outline">루트 CA</Badge>
-                          )}
+                          ) : (
+                            <Badge variant="outline">중간 CA</Badge>
+                          ))}
                         {!item.stored && (
                           <Badge variant="outline" className="text-muted-foreground">
                             미보유
@@ -334,31 +386,34 @@ export default function CertificateDetailPage() {
                         )}
                       </div>
                       {item.stored && item.not_after ? (
-                        <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                          {item.status && !isCurrent && (
+                            <CertStatusBadge
+                              status={item.status}
+                              notAfter={item.not_after}
+                            />
+                          )}
                           <span className="tabular-nums">
                             만료 {formatDate(item.not_after)}
                           </span>
                           <DdayText notAfter={item.not_after} />
                         </div>
                       ) : !item.stored ? (
-                        <div className="mt-0.5 text-xs text-muted-foreground">
+                        <div className="mt-1 text-xs text-muted-foreground">
                           인벤토리에 없는 상위 인증서입니다.
                         </div>
                       ) : null}
+                      {caNode && item.id && (
+                        <div className="mt-1">
+                          <Link
+                            href={`/certificates?${ISSUED_BY_PARAM}=${encodeURIComponent(item.id)}`}
+                            className="text-xs font-medium text-muted-foreground hover:text-foreground hover:underline hover:underline-offset-3"
+                          >
+                            이 CA가 발급한 {caNode.leaf_count.toLocaleString()}건 →
+                          </Link>
+                        </div>
+                      )}
                     </div>
-                  </div>
-                );
-                return clickable ? (
-                  <Link
-                    key={`${item.id}-${i}`}
-                    href={`/certificates/${item.id}`}
-                    className="block rounded-md px-2 py-1.5 transition-colors hover:bg-secondary/60"
-                  >
-                    {row}
-                  </Link>
-                ) : (
-                  <div key={`${item.subject_dn}-${i}`} className="px-2 py-1.5">
-                    {row}
                   </div>
                 );
               })}
