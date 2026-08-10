@@ -1,0 +1,12 @@
+# PostgreSQL 포트를 호스트에 임시로 여는 오버레이다 (백업·psql 점검 등).
+# 기본 docker-compose.yml은 DB를 노출하지 않는다 — 인증서 인벤토리 전체가
+# 걸린 포트라 상시 개방은 하지 않는다. 필요할 때만 겹쳐 쓰고 끝나면 되돌린다.
+#
+# 사용 (INSTALL.md 5.5절):
+#   docker compose -f docker-compose.yml -f docker-compose.db-expose.yml up -d
+# 호스트 포트는 DB_PORT로 바꾼다. 기본값은 루프백 한정 노출이다 —
+# 외부에서 붙어야 하면 DB_BIND_ADDR을 0.0.0.0으로 바꾸되 방화벽을 함께 조인다.
+services:
+  db:
+    ports:
+      - "${DB_BIND_ADDR:-127.0.0.1}:${DB_PORT:-5432}:5432"

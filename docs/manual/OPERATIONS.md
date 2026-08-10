@@ -366,7 +366,7 @@ docker compose exec db pg_restore -U autocert -d autocert --clean --if-exists /t
 | `docker compose up`이 `set POSTGRES_PASSWORD in .env` 오류로 중단 | `.env` 미생성 또는 비밀번호 미설정 | `cp .env.example .env` 후 `POSTGRES_PASSWORD` 설정 |
 | backend가 재시작을 반복 | DB 미기동 상태에서 연결 실패 | `docker compose ps`로 db가 `healthy`인지 확인, `docker compose logs db` 점검 |
 | 웹 콘솔은 뜨는데 데이터 로드 실패 | frontend → backend 컨테이너 내부 통신 실패 | `docker compose ps`로 backend 기동 확인, `docker compose logs frontend backend` 점검. 브라우저는 3000번만 쓰므로 관리자 PC 방화벽은 무관하다 (INSTALL.md 3.3절). backend를 별도 호스트로 분리했다면 `BACKEND_INTERNAL_URL` 빌드 인자 확인 후 frontend 재빌드 |
-| 포트 충돌 (`address already in use`) | 3000/8080/5432를 다른 프로세스가 점유 | 점유 프로세스 정리 또는 compose `ports` 좌측(호스트 포트) 변경 |
+| 포트 충돌 (`address already in use`) | 3000/8443/8080을 다른 프로세스가 점유 | 점유 프로세스 정리, 또는 `.env`의 `FRONTEND_PORT`·`BACKEND_PORT`·`SENSOR_GATEWAY_PORT`로 호스트 포트 변경 후 `docker compose up -d` — 함께 고칠 항목(방화벽·센서 `--server`·`NOTIFY_BASE_URL`)은 INSTALL.md 5.5절 |
 | 업그레이드 후 backend 기동 실패, 로그에 마이그레이션 오류 | 스키마 적용 실패 | 로그의 실패 마이그레이션 확인 후 지원 채널에 보고. 임의로 테이블을 수정하지 말 것 |
 | 로그인할 계정이 없음 | 초기 관리자 미생성 — `BOOTSTRAP_ADMIN_PASSWORD` 미설정 상태로 최초 기동 | `docker compose logs backend`에서 `BOOTSTRAP_ADMIN_PASSWORD is not set` 경고 확인 → `.env`에 설정 후 backend 재기동. 초기 생성은 사용자가 0명일 때만 동작한다 (INSTALL.md 6.1절) |
 | 로그인 화면으로 자꾸 돌아감 / API 401 | 미로그인 또는 세션 만료 (`SESSION_TTL` 기본 8시간) | 재로그인. API 직접 호출이면 `Authorization: Bearer <token>` 헤더(또는 세션 쿠키) 확인 |

@@ -38,6 +38,11 @@ type Config struct {
 	// SensorListenAddr는 센서 게이트웨이(mTLS) 리슨 주소다
 	// (SENSOR_LISTEN_ADDR, 기본 ":8443"). SENSOR_CA_ENC_KEY가 설정된 경우에만 쓰인다.
 	SensorListenAddr string
+	// SensorGatewayPort는 SensorListenAddr에서 뽑은 포트다 (":8443" → "8443").
+	// 센서 등록 명령 예시(POST /sensors 응답)가 **실제** 게이트웨이 포트를 안내하도록
+	// API 계층에 넘긴다 — 예시가 기본 포트로 굳어 있으면 포트를 바꾼 운영자가
+	// 그대로 복사해 접속에 실패한다. 파싱할 수 없으면 기본 포트로 폴백한다(경고).
+	SensorGatewayPort string
 	// SensorAdvertisedDNS/IPs는 센서가 게이트웨이에 접속할 때 쓰는 주소다
 	// (SENSOR_ADVERTISED_HOSTS, 콤마 구분 DNS/IP 혼용). 게이트웨이 서버 인증서의
 	// SAN에 들어간다 — 여기 없는 주소로 접속하는 센서는 TLS 검증에 실패한다.
@@ -115,6 +120,12 @@ type SweepConfig struct {
 // (IPS 오탐 억제).
 const sweepMaxRatePPS = 1000
 
+// 센서 게이트웨이 리슨 주소의 기본값과 그 포트다. 둘은 항상 같은 포트를 가리킨다.
+const (
+	defaultSensorListenAddr = ":8443"
+	defaultSensorPort       = "8443"
+)
+
 // Load는 환경변수에서 설정을 읽는다.
 func Load() (Config, error) {
 	cfg := Config{
@@ -131,6 +142,9 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("config: SESSION_TTL must be a positive Go duration: %w", err)
 	}
 	cfg.SessionTTL = ttl
+	// 알림·스윕뿐 아니라 센서 주소 검증도 이 파서의 경고 목록을 쓴다 —
+	// 잘못된 값은 기동을 막지 않고 경고 + 무시가 이 파일의 일관된 처리다.
+	l := &envLoader{channelErrors: map[string]string{}}
 	if raw := os.Getenv("SENSOR_CA_ENC_KEY"); raw != "" {
 		// 오류에 키 값을 싣지 않는다 — 형식 요구사항만 알린다.
 		// 형식이 틀려도 기동은 계속한다: 게이트웨이만 비활성화되고 코어 API는 뜬다.
@@ -141,21 +155,12 @@ func Load() (Config, error) {
 			cfg.SensorCAEncKey = key
 		}
 	}
-	cfg.SensorListenAddr = getenv("SENSOR_LISTEN_ADDR", ":8443")
-	for _, h := range strings.Split(os.Getenv("SENSOR_ADVERTISED_HOSTS"), ",") {
-		h = strings.TrimSpace(h)
-		if h == "" {
-			continue
-		}
-		if ip := net.ParseIP(h); ip != nil {
-			cfg.SensorAdvertisedIPs = append(cfg.SensorAdvertisedIPs, ip)
-		} else {
-			cfg.SensorAdvertisedDNS = append(cfg.SensorAdvertisedDNS, h)
-		}
-	}
+	cfg.SensorListenAddr = getenv("SENSOR_LISTEN_ADDR", defaultSensorListenAddr)
+	cfg.SensorGatewayPort = l.listenPort("SENSOR_LISTEN_ADDR", cfg.SensorListenAddr, defaultSensorPort)
+	cfg.SensorAdvertisedDNS, cfg.SensorAdvertisedIPs =
+		l.advertisedHosts("SENSOR_ADVERTISED_HOSTS", os.Getenv("SENSOR_ADVERTISED_HOSTS"))
 	// 알림·스윕 설정은 값이 잘못돼도 기동을 막지 않는다: 경고 후 기본값 폴백이거나
 	// 해당 채널만 비활성이다 (센서 게이트웨이 선례).
-	l := &envLoader{channelErrors: map[string]string{}}
 	cfg.Notify = l.notify()
 	cfg.Sweep = l.sweep()
 	cfg.NotifyChannelErrors = l.channelErrors
@@ -190,6 +195,82 @@ func (l *envLoader) disableChannel(channel, reason string) {
 		return
 	}
 	l.channelErrors[channel] = reason
+}
+
+// listenPort는 리슨 주소에서 포트만 뽑는다 (":8443" → "8443").
+// 파싱 실패는 기동을 막지 않는다 — 리슨은 주소 원문으로 그대로 시도하고,
+// 여기서 뽑은 포트는 등록 명령 예시 안내에만 쓰이므로 기본값으로 폴백한다.
+func (l *envLoader) listenPort(key, addr, fallback string) string {
+	_, port, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil || port == "" {
+		l.warnf("%s=%q has no parsable port; the sensor enroll command example falls back to %s",
+			key, addr, fallback)
+		return fallback
+	}
+	return port
+}
+
+// advertisedHosts는 SENSOR_ADVERTISED_HOSTS(콤마 구분)를 SAN용 DNS 이름과 IP로 나눈다.
+// 포트가 붙은 항목("10.0.0.5:9443")과 호스트명 형식이 아닌 항목은 **버리고 경고한다** —
+// 예전에는 net.ParseIP에 실패한 값을 전부 DNS 이름으로 받아들여, 포트째로 SAN
+// dNSName에 박히고 한참 뒤 센서 접속 단계에서야 TLS 검증 실패로 드러났다.
+// 호스트 주소는 secret이 아니므로 어떤 항목이 문제인지 경고에 그대로 지목한다.
+func (l *envLoader) advertisedHosts(key, raw string) ([]string, []net.IP) {
+	var dnsNames []string
+	var ips []net.IP
+	for _, h := range strings.Split(raw, ",") {
+		h = strings.TrimSpace(h)
+		if h == "" {
+			continue
+		}
+		// "[2001:db8::1]"의 대괄호는 주소 표기의 일부가 아니다.
+		if len(h) > 2 && strings.HasPrefix(h, "[") && strings.HasSuffix(h, "]") {
+			h = h[1 : len(h)-1]
+		}
+		if ip := net.ParseIP(h); ip != nil {
+			ips = append(ips, ip)
+			continue
+		}
+		// IP가 아닌데 host:port로 쪼개진다면 포트를 적은 것이다.
+		if _, _, err := net.SplitHostPort(h); err == nil {
+			l.warnf("%s entry %q includes a port; list only the DNS name or IP "+
+				"(the port comes from SENSOR_LISTEN_ADDR) — entry ignored", key, h)
+			continue
+		}
+		name := strings.TrimSuffix(h, ".")
+		if !isDNSName(name) {
+			l.warnf("%s entry %q is not a valid DNS name or IP address; entry ignored", key, h)
+			continue
+		}
+		dnsNames = append(dnsNames, name)
+	}
+	return dnsNames, ips
+}
+
+// isDNSName은 SAN dNSName으로 넣어도 되는 호스트명인지 본다 (RFC 1123):
+// 라벨은 1~63자의 영숫자·하이픈이고 하이픈으로 시작·끝나지 않으며 전체 253자 이하다.
+// 스킴("https://host")·경로·공백·와일드카드는 전부 여기서 걸린다.
+func isDNSName(h string) bool {
+	if h == "" || len(h) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(h, ".") {
+		if len(label) == 0 || len(label) > 63 {
+			return false
+		}
+		if label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			switch {
+			case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-':
+			default:
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // boolVal은 bool 환경변수를 읽는다. 이 헬퍼들은 경고에 값을 그대로 싣으므로

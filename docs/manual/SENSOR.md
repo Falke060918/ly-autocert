@@ -44,7 +44,11 @@ Discovery 스캔은 기본적으로 AutoCert **서버가 직접** 실행한다 (
 | --- | --- | --- |
 | `SENSOR_CA_ENC_KEY` | (없음) | 센서 mTLS 내부 CA의 개인키를 암호화(AES-256-GCM)해 보관하기 위한 키. **hex 64자(32바이트)** — `openssl rand -hex 32`로 생성. **미설정이면 8443 센서 게이트웨이가 아예 열리지 않는다**(센서를 안 쓰는 정상 상태). 설정할 때는 `SENSOR_ADVERTISED_HOSTS`도 반드시 함께 채운다. 분실하면 CA 개인키를 복호화할 수 없어 신규 센서 등록·인증서 갱신이 불가능해지므로 백업 매체에 안전하게 보관한다. CA 생성(첫 센서 등록) 이후 값을 바꾸면 안 된다 |
 | `SENSOR_ADVERTISED_HOSTS` | (없음) | 센서가 서버에 접속할 때 쓰는 **실제 주소**(DNS 이름 또는 IP, 쉼표 구분 혼용 가능 — 예: `10.20.0.5,autocert.internal`, 한 대에서 시험할 때는 `127.0.0.1,localhost`). 게이트웨이 서버 인증서의 SAN에 들어간다 — 여기 없는 주소로 접속하는 센서는 TLS 검증에 실패한다. 센서 `--server`에 쓸 주소를 반드시 포함할 것. **`SENSOR_CA_ENC_KEY`를 설정했는데 이 값이 비어 있으면 게이트웨이가 뜨지 않는다**(위 경고 — 코어 API는 정상). 변경 시 backend 재기동 필요(서버 인증서는 기동 시 발급) |
-| `SENSOR_LISTEN_ADDR` | `:8443` | 센서 게이트웨이 리슨 주소. 특별한 사유가 없으면 기본값 사용 |
+| `SENSOR_GATEWAY_PORT` | `8443` | 센서가 접속하는 **호스트 포트**. 특별한 사유가 없으면 기본값 사용. 바꾸는 절차와 함께 고칠 항목은 INSTALL.md 5.5절 |
+
+> `SENSOR_ADVERTISED_HOSTS`에 **포트를 적지 않는다** (`10.20.0.5:9443` ✗ / `10.20.0.5` ○). 이 값은 인증서 SAN이라 주소만 들어간다 — 포트를 붙이면 기동 로그에 경고를 남기고 그 항목이 통째로 무시되어, 센서 접속 단계에서 TLS 검증 실패로 드러난다. 포트는 `SENSOR_GATEWAY_PORT`가 정한다.
+>
+> compose 배포에서는 `SENSOR_LISTEN_ADDR`을 `.env`에 직접 넣지 않는다 — 리스너 포트와 포트 매핑이 어긋나는 것을 막기 위해 컨테이너 내부 포트(`SENSOR_GATEWAY_INTERNAL_PORT`) 하나에서 파생시킨다 (INSTALL.md 5.5절).
 
 ```sh
 # 키 생성 예시 — 출력값을 .env의 SENSOR_CA_ENC_KEY에 넣는다
@@ -55,12 +59,13 @@ openssl rand -hex 32
 # .env 추가 예시 (센서를 쓰는 경우)
 SENSOR_CA_ENC_KEY=<위 명령의 출력값>
 SENSOR_ADVERTISED_HOSTS=10.20.0.5,autocert.internal
-SENSOR_LISTEN_ADDR=:8443
+# 포트는 기본값(8443)을 쓸 것이면 넣지 않아도 된다
+#SENSOR_GATEWAY_PORT=8443
 ```
 
 ### 3.2 방화벽
 
-- **센서 호스트 → AutoCert 서버 8443/TCP** 아웃바운드 1경로를 연다 (INSTALL.md 4.1절). 필요한 경로는 이것 하나뿐이다.
+- **센서 호스트 → AutoCert 서버 8443/TCP**(기본값 — 바꿨다면 그 포트) 아웃바운드 1경로를 연다 (INSTALL.md 4.1절). 필요한 경로는 이것 하나뿐이다.
 - 센서 호스트 → 스캔 대상 세그먼트의 TLS 포트(443 등) 아웃바운드는 스캔 대상에 맞게 연다.
 - 센서 호스트에 인바운드 규칙은 필요 없다.
 
@@ -119,6 +124,7 @@ autocert-sensor enroll \
 ```
 
 - `<서버 주소>`는 `SENSOR_ADVERTISED_HOSTS`에 포함된 DNS 이름 또는 IP여야 한다 (3.1절).
+- **포트는 서버 설정을 따른다.** 위 `8443`은 기본값이며, 5.1절 화면의 "enroll 명령 예시"에는 그 서버에 **실제로 설정된 포트**가 이미 들어가 있으므로 그대로 복사해 쓰면 된다 (INSTALL.md 5.5절).
 - 등록 과정: 센서가 로컬에서 키쌍 생성 → CSR 제출(서버 진위는 `--ca-fingerprint` 핀으로 검증) → 클라이언트 인증서(90일 유효) 수령·저장. 개인키는 전송되지 않는다.
 - 성공하면 `enrollment complete` 로그와 함께 센서 ID가 출력되고, 웹 콘솔 [센서] 화면에서 상태가 **대기 → 활성**으로 바뀐다.
 
@@ -136,6 +142,8 @@ autocert-sensor enroll \
 ## 6. 서비스 등록 (상시 실행)
 
 등록(5장)을 마친 뒤 `run` 모드를 서비스로 상시 실행한다.
+
+> 아래 예시의 `8443`은 기본 포트다. 서버에서 센서 게이트웨이 포트를 바꿨다면 `--server`의 포트를 그 값으로 적는다. **포트가 바뀌어도 재등록(enroll)은 필요 없다** — 포트는 인증서 SAN에도 상태 디렉토리에도 기록되지 않으므로, 유닛의 포트만 고쳐 서비스를 재시작하면 기존 신원으로 그대로 붙는다 (INSTALL.md 5.5.2).
 
 ### 6.1 Linux — systemd 유닛 예시
 
@@ -217,7 +225,7 @@ schtasks /Run /TN "AutocertSensor"
 | **웹 콘솔·8080은 멀쩡한데 8443만 안 열림** (로그 `sensor gateway disabled: startup failed — check SENSOR_ADVERTISED_HOSTS …`) | `SENSOR_CA_ENC_KEY`는 설정했는데 `SENSOR_ADVERTISED_HOSTS`가 비어 있음 — 서버 인증서에 넣을 SAN이 없다. 게이트웨이만 비활성화되고 코어 API는 계속 뜨므로 화면에는 증상이 없다 | `SENSOR_ADVERTISED_HOSTS`에 센서가 접속할 실제 주소를 넣고 backend 재기동 (3.1절). 센서를 쓰지 않을 거라면 `SENSOR_CA_ENC_KEY`도 함께 지운다 |
 | 로그에 `sensor gateway disabled: invalid sensor configuration` | `SENSOR_CA_ENC_KEY` 형식 오류 — hex 64자(32바이트)가 아님 | `openssl rand -hex 32`로 다시 생성해 넣고 재기동 (3.1절). 이미 센서를 등록한 뒤라면 기존 키를 되찾아야 한다 — 값을 바꾸면 기존 CA를 복호화할 수 없다 |
 | enroll/run 연결 거부 (connection refused) | ① `SENSOR_CA_ENC_KEY` 미설정 — 8443 리스너 자체가 없음 ② 센서 설정 오류로 게이트웨이만 비활성화됨(위 두 행) ③ 방화벽 차단 | backend 로그에서 `sensor gateway listening` 유무부터 확인 — 없으면 `sensor gateway disabled …` 경고 문구로 원인을 가른다 → `.env`의 센서 변수 2종을 세트로 확인 후 재기동 (3.1절) → 센서→서버 8443 아웃바운드 방화벽 확인 (3.2절) |
-| run에서 TLS 검증 실패 (certificate is valid for … not …) | `--server` 주소가 `SENSOR_ADVERTISED_HOSTS`에 없음 | 서버 `.env`의 `SENSOR_ADVERTISED_HOSTS`에 해당 주소를 추가하고 backend 재기동 (3.1절) |
+| run에서 TLS 검증 실패 (certificate is valid for … not …) | `--server` 주소가 `SENSOR_ADVERTISED_HOSTS`에 없음. **주소는 맞는데 실패한다면** `SENSOR_ADVERTISED_HOSTS`에 포트를 함께 적었을 가능성이 크다 — 포트가 붙은 항목은 무시되므로 SAN에서 그 주소가 통째로 빠진다 | 서버 `.env`의 `SENSOR_ADVERTISED_HOSTS`에 **포트 없는** 주소를 넣고 backend 재기동 (3.1절). 기동 로그에 `SENSOR_ADVERTISED_HOSTS entry "…" includes a port …` 경고가 있는지 확인 |
 | 인증서 유효기간 오류 (expired / not yet valid) | 센서 호스트 **시계 드리프트**, 또는 90일 이상 정지로 인증서 만료 | NTP 동기화 확인 (2장). 만료면 비활성화 후 재등록 |
 | run 중 401 반복 | 센서가 비활성화됨, 또는 인증서가 교체·만료됨 | [센서] 화면에서 상태 확인. disabled면 재등록 |
 | `state not found in … — run 'enroll' first` | 미등록 상태로 run 실행, 또는 `--state-dir` 불일치 | 5장 등록 먼저 수행. enroll과 run의 `--state-dir`가 같은지 확인 |
