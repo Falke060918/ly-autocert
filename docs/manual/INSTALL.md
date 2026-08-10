@@ -2,6 +2,100 @@
 
 > **문서 상태**: Phase 1(인증서 인벤토리) + Phase 3a(센서) 구현 완료 기준. 아직 구현되지 않은 기능은 **(예정)** 으로 표기한다. 기능이 완료될 때마다 이 문서를 갱신한다.
 
+> **이 문서를 읽는 법**
+> - 처음 설치한다 → **0장만** 보면 된다. 명령을 그대로 복사해 붙여 넣으면 끝난다.
+> - 설치가 안 된다 → **8장 트러블슈팅**.
+> - 환경변수·포트·방화벽 값을 확인해야 한다 → **5장**(정본 표).
+> - 스크립트를 쓸 수 없는 환경이다 → **5장**이 손으로 하는 전체 절차다.
+
+## 0. 빠른 설치
+
+`scripts/install.sh` 하나가 설치의 전부다. `.env` 편집·키 생성·`docker compose` 명령을 직접 칠 일이 없다.
+
+### 0.1 서버 설치 — 명령 5줄
+
+반입 매체를 서버에 복사한 디렉터리에서 순서대로 실행한다. (버전 `1.0.0`은 반입한 번들 파일명에 맞춘다.)
+
+```sh
+sha256sum -c autocert-offline-1.0.0.tar.sha256
+tar xf autocert-offline-1.0.0.tar && cd autocert-offline-1.0.0
+sh load-offline.sh
+tar xzf source/autocert-source-1.0.0.tar.gz && cd autocert-1.0.0
+bash scripts/install.sh
+```
+
+각 줄이 하는 일:
+
+| 줄 | 하는 일 |
+| --- | --- |
+| 1 | 매체 손상 확인. **어긋나면 매체를 다시 받는다** — 재시도·부분 적재로 넘기지 않는다 |
+| 2 | 번들 해제 |
+| 3 | 번들 안 모든 파일 체크섬 대조 + 컨테이너 이미지 적재(`docker load`) |
+| 4 | 제품 소스 해제 (`autocert-1.0.0/`) |
+| 5 | **설치 스크립트 실행** — 방향키 메뉴가 뜬다 |
+
+`scripts/install.sh`가 대신 해 주므로 **직접 할 필요가 없는 것**:
+
+- `.env` 생성과 편집
+- `POSTGRES_PASSWORD`·`SENSOR_CA_ENC_KEY` 난수 생성 (`openssl rand` 불필요)
+- NIC IP 자동 탐지 → `SENSOR_ADVERTISED_HOSTS` 후보 제시
+- compose 네트워크 대역을 `ADMIN_IP_TRUSTED_PROXIES`에 자동 주입 (8.1절 ②의 함정을 미리 막는다)
+- 호스트 포트 충돌 검사
+- `docker compose up -d` 실행과 `/healthz` 응답 대기
+
+무인 실행(전부 기본값)과 도움말:
+
+```sh
+bash scripts/install.sh --yes
+bash scripts/install.sh --help
+```
+
+### 0.2 설치 중 무엇을 묻는가
+
+방향키(↑↓)로 고르고 Enter로 진행한다. **묻는 항목은 아래가 전부다.**
+
+| 묻는 것 | 선택지 | 모르겠으면 |
+| --- | --- | --- |
+| 실행 모드 | 서버 설치 / HTTPS 적용 / 설정 변경 / 상태 확인 | **서버 설치** — 처음이면 이것 |
+| 호스트 포트 | 웹 콘솔 3000 · REST API 8080 · 센서 게이트웨이 8443. 이미 점유된 포트가 있으면 스크립트가 알려주고 다른 값을 받는다 | **기본값 그대로** (나중에 5.5절로 바꿀 수 있다) |
+| 센서(원격 수집기) 사용 여부 | 사용함 / 사용 안 함 | **사용 안 함** — 나중에 "설정 변경" 모드로 켤 수 있다 (SENSOR.md) |
+| 센서 접속 주소 | 탐지된 NIC IP 목록에서 다중 선택 | **센서 호스트에서 이 서버로 접속할 때 쓰는 IP**를 고른다. 위에서 "사용 안 함"을 골랐으면 묻지 않는다 |
+
+- **비밀번호·암호화 키는 묻지 않는다.** 스크립트가 난수로 만들어 `.env`에 넣는다.
+- **관리자 계정도 묻지 않는다.** 설치가 끝난 뒤 브라우저에서 만든다 (0.3).
+- HTTPS 종단은 인증서 파일을 먼저 준비해야 하므로 별도 모드다 — 0.4절 참조.
+
+### 0.3 첫 접속 — 관리자 계정 만들기
+
+스크립트가 접속 주소를 출력한다. 브라우저로 접속한다.
+
+```
+http://<서버 IP>:3000
+```
+
+계정이 **0명**이면 로그인 화면 대신 **초기 설정 화면("관리자 계정 만들기")** 이 열린다.
+
+1. 계정명(아이디)을 입력한다.
+2. 비밀번호와 비밀번호 확인을 입력한다 — **최소 12자, 최대 72바이트, 계정명과 같으면 안 된다.**
+3. [관리자 계정 만들기]를 누른다. 만들어진 계정은 **System Administrator** 역할로 고정이다.
+4. 로그인 화면으로 이동한다. 방금 정한 계정으로 로그인하면 설치가 끝난다.
+
+> **한 번 만들면 이 화면은 영구히 닫힌다.** 계정이 하나라도 생기는 순간 초기 설정 화면과 그 API가 함께 닫히고, 다시 여는 스위치는 없다. 이후 계정 추가는 로그인한 System Administrator가 [사용자] 화면에서 한다 (6.2절).
+
+접속했는데 **로그인 화면이 나온다면** 계정이 이미 있다는 뜻이다 — 무인 설치용 `BOOTSTRAP_ADMIN_PASSWORD`가 설정돼 있었거나(6.1절), 이미 설치를 마친 서버다.
+
+### 0.4 그다음에 할 일
+
+| 하고 싶은 것 | 어디로 |
+| --- | --- |
+| 인증서 등록 시작 (업로드 · Discovery 스캔) | 6.3절 → 운영 절차는 OPERATIONS.md |
+| 격리 세그먼트에 센서 설치 | **SENSOR.md 0장**(센서도 스크립트 한 줄이다) |
+| HTTPS로 접속하게 만들기 | 인증서 파일을 `deploy/tls/`에 두고 `bash scripts/install.sh`의 **"HTTPS 적용"** 모드. 인증서 준비·갱신·주의사항은 TLS.md |
+| 만료 메일·웹훅·Syslog 알림 켜기 | 5.2.1절(값) → OPERATIONS.md 2.7절(정책) |
+| 관리 콘솔 접근 IP 제한 | 5.2.3절 → OPERATIONS.md 2.9절 |
+| 포트 변경 | 5.5절 |
+| 설치가 안 됨 | **8장 트러블슈팅** |
+
 ## 1. 제품 개요
 
 INHERIT AutoCert는 폐쇄망·레거시 환경을 위한 온프레미스 인증서 라이프사이클 관리(CLM) 플랫폼이다. 외부 SaaS 연결을 요구하지 않으며, 모든 인증서 정보와 감사 로그는 고객 내부에 저장된다.
@@ -127,7 +221,11 @@ AutoCert 서버를 어느 네트워크 세그먼트에 둘지는 아래 세 기�
 
 frontend → backend(8080), backend → db(5432) 통신은 Docker Compose 내부 네트워크에서 이루어지므로 별도 방화벽 설정이 필요 없다. 호스트 포트를 바꿔도 이 경로는 영향받지 않는다 — 컨테이너 내부 포트까지 바꾸는 경우만 5.5절을 따른다.
 
-## 5. 설치 절차
+## 5. 수동 설치 (부록) — 스크립트를 못 쓰는 환경
+
+> **0장 빠른 설치로 끝났다면 이 장은 읽지 않아도 된다.** `scripts/install.sh`가 아래 5.1–5.3을 대신 수행한다.
+>
+> 이 장이 필요한 경우는 셋이다. ① 스크립트 실행이 금지된 제한 셸 환경 ② 스크립트가 만든 설정을 손으로 확인·수정해야 하는 경우 ③ **환경변수·포트·방화벽 값의 정본을 찾을 때** — 5.2절의 변수 표와 5.5절의 포트 표는 이 문서의 원본이며 다른 장·다른 매뉴얼이 여기를 참조한다.
 
 ### 5.1 오프라인 반입 (이미지·소스)
 
@@ -188,7 +286,7 @@ dist/autocert-offline-<버전>.tar.sha256    # 매체 손상 판별용
 
 #### 5.1.3 고객사 — 현장에서 실행할 것
 
-매체를 서버에 복사한 뒤, 아래가 전부다.
+매체를 서버에 복사한 뒤, 아래가 전부다. (**0.1절의 5줄과 같은 절차**이며, 여기서는 마지막 `bash scripts/install.sh` 대신 5.2–5.3을 손으로 한다.)
 
 ```sh
 sha256sum -c autocert-offline-1.0.0.tar.sha256   # 매체 손상 확인
@@ -207,6 +305,8 @@ cd autocert-1.0.0
 - 센서를 쓸 경우 `sensor/` 의 바이너리를 센서 호스트로 옮긴다 (SENSOR.md 2장).
 
 ### 5.2 환경 변수 설정
+
+> `scripts/install.sh`를 썼다면 이 절은 **이미 끝나 있다** — `.env`가 생성되고 `POSTGRES_PASSWORD`가 난수로 채워져 있다. 아래 표는 값을 확인·수정할 때 보는 정본이다.
 
 ```sh
 cp .env.example .env
@@ -396,10 +496,14 @@ curl http://localhost:8080/healthz   # HTTP 200이면 정상 (BACKEND_PORT를 �
 - **접근 IP 제한**: 관리 콘솔 접속을 특정 대역으로만 열려면 5.2.3절의 신뢰 프록시 대역을 설정한 뒤 웹 콘솔(관리 → 접근 제한)에서 허용 목록을 만든다. 목록이 비어 있으면 제한이 없다.
 - **TLS 종단(HTTPS)**: 웹 콘솔 앞단에 nginx 리버스 프록시를 얹어 HTTPS로 종단할 수 있다. 사내 CA 발급 인증서나 자체 서명 인증서를 파일로 반입해 쓰며(폐쇄망이라 외부 ACME는 쓰지 않는다), 오버레이 파일 하나로 켜고 끈다 — 적용하지 않으면 기존 HTTP 구성 그대로다. 절차·인증서 준비·갱신·트러블슈팅은 **TLS.md** 참조.
 
+인증서 파일을 `deploy/tls/`에 둔 뒤 `bash scripts/install.sh`의 **"HTTPS 적용"** 모드를 쓰면 아래 명령과 `SESSION_COOKIE_SECURE` 전환을 스크립트가 처리한다. 손으로 한다면:
+
 ```sh
 # HTTPS 구성으로 기동 (deploy/tls/ 에 server.crt·server.key를 먼저 둔다)
 docker compose -f docker-compose.yml -f docker-compose.https.yml up -d --build
 ```
+
+- 이후 **모든** compose 명령에 두 파일을 함께 넘겨야 한다(`COMPOSE_FILE` 환경변수 권장). 오버레이의 `ports: !override`는 **Docker Compose v2.24.4 이상**이 필요하다 — 낮은 버전에서의 증상과 대처는 8.1절 ③.
 
 ### 5.5 포트 변경 절차
 
@@ -446,6 +550,8 @@ docker compose up -d
 ## 6. 초기 설정
 
 ### 6.1 초기 관리자 계정과 로그인
+
+> 따라 하기만 하면 되는 요약은 **0.3절**에 있다. 이 절은 무인 설치 경로까지 포함한 정본이다.
 
 **기본 경로 — 브라우저에서 만든다.** 설치 직후에는 계정이 하나도 없다. `http://<서버 IP>:3000`에 접속하면 로그인 화면 대신 **초기 설정 화면**이 열린다.
 
@@ -530,3 +636,80 @@ curl -X POST http://localhost:8080/api/v1/certificates/import \
 docker compose down        # 컨테이너만 제거 (데이터 유지)
 docker compose down -v     # 데이터 볼륨까지 완전 삭제 — 복구 불가, 백업 후 실행할 것
 ```
+
+## 8. 트러블슈팅 (설치 단계)
+
+설치 이후의 운영 중 증상은 OPERATIONS.md 6장, 센서 관련은 SENSOR.md 9장에 있다.
+
+먼저 현재 상태부터 본다. 스크립트의 **"상태 확인"** 모드가 컨테이너·포트·`/healthz`를 한 번에 점검한다.
+
+```sh
+bash scripts/install.sh
+docker compose ps
+docker compose logs backend
+```
+
+### 8.1 자주 걸리는 함정
+
+**① 포트 충돌 — `address already in use`**
+
+3000·8080·8443 중 하나를 다른 프로세스가 이미 쓰고 있다. `scripts/install.sh`는 설치 전에 이걸 검사해 다른 포트를 제안하지만, 설치 후에 다른 서비스가 그 포트를 차지하면 다시 발생한다.
+
+- 조치: 점유 프로세스를 정리하거나, `.env`의 `FRONTEND_PORT`·`BACKEND_PORT`·`SENSOR_GATEWAY_PORT`를 바꾸고 `docker compose up -d`.
+- **포트를 바꾸면 함께 고쳐야 하는 것들이 있다** — 방화벽 규칙, 센서의 `--server` 포트, `NOTIFY_BASE_URL`. 동반 수정 표는 5.5절.
+
+**② 접근 IP 제한을 걸었는데 모든 관리자가 같은 IP로 보인다**
+
+이 제품은 **브라우저 → frontend → backend** 중계 구조다(3.3절). 그래서 backend가 보는 출발지는 관리자 PC가 아니라 **frontend 컨테이너**다. `ADMIN_IP_TRUSTED_PROXIES`가 비어 있으면 모든 접속이 `172.x.x.x` 같은 컨테이너 주소 하나로 보이고, 그 값으로 규칙을 만들면 **아무도 걸러지지 않아 제한이 무의미해진다.**
+
+- `scripts/install.sh`는 compose 네트워크 대역을 이 변수에 **자동으로 넣는다.** 수동 설치했거나 값을 지웠다면 5.2.3절대로 직접 넣는다.
+- 확인:
+
+```sh
+docker network inspect inherit_autocert_default --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'
+```
+
+- 화면에서 자기 자신을 차단해 잠겼다면 `ADMIN_IP_ALLOW_BOOTSTRAP`으로 복구한다 (5.2.3절, OPERATIONS.md 2.9절).
+
+**③ HTTPS 오버레이를 얹었더니 포트가 중복되거나 3000·8080이 그대로 열려 있다**
+
+`docker-compose.https.yml`은 `ports: !override`를 쓰며 **Docker Compose v2.24.4 이상**이 필요하다. 그보다 낮은 버전은 `!override`를 무시하고 포트를 **추가 병합**하므로, base의 `0.0.0.0:3000`·`0.0.0.0:8080`이 살아남아 HTTPS를 우회할 수 있다.
+
+```sh
+docker compose version
+```
+
+- 2.24.4 미만이면: Compose를 올리거나, 오버레이의 `ports` 블록 2개를 지우고 `docker-compose.yml`의 `ports`를 직접 `127.0.0.1:...`로 고친다 (파일 상단 주석에 같은 안내가 있다).
+
+**④ 로그인하면 다시 로그인 화면으로 튕긴다**
+
+`SESSION_COOKIE_SECURE=true`인데 평문 HTTP로 접속한 경우다. 서버는 200과 함께 쿠키를 내려보내지만 **브라우저가 조용히 버린다** — 서버 로그에는 성공만 남아 원인을 찾기 어렵다.
+
+- HTTPS 프록시를 쓰지 않는다면 `SESSION_COOKIE_SECURE=false`(기본값)로 두고 backend를 재기동한다. 프록시와 이 값은 **항상 함께** 바꾼다 (TLS.md).
+
+**⑤ 센서가 서버에 붙지 못한다 — 인증서 유효기간 오류**
+
+센서 mTLS는 인증서 유효기간을 검증하므로 **센서 호스트와 서버의 시계가 어긋나면 등록·통신이 실패한다.** 폐쇄망 내부 NTP 서버에 동기화한다 (SENSOR.md 2장). `scripts/install-sensor.sh`가 설치 전에 이 항목을 점검한다.
+
+**⑥ 센서 접속이 TLS 검증 실패 — `certificate is valid for … not …`**
+
+`SENSOR_ADVERTISED_HOSTS`에 **포트를 붙였을** 가능성이 크다. 이 값은 게이트웨이 서버 인증서의 SAN이라 **주소만** 들어간다.
+
+- `10.20.0.5` ○ / `10.20.0.5:9443` ✗ — 포트가 붙은 항목은 기동 로그에 경고(`SENSOR_ADVERTISED_HOSTS entry "…" includes a port …`)를 남기고 **통째로 무시**되어, SAN에서 그 주소가 빠진다.
+- 포트를 정하는 것은 `SENSOR_GATEWAY_PORT`다 (5.5절). 값을 고친 뒤 backend를 재기동한다 — 서버 인증서는 기동 시 발급된다.
+
+**⑦ 스캔했는데 메일·DB·LDAP 서버의 인증서가 안 잡힌다**
+
+스캐너는 접속 즉시 TLS를 거는 **implicit TLS 전용**이다. 평문으로 시작해 `STARTTLS`로 승격하는 포트(25·587·110·143·389·5432·3306·1433·21·3389)에서는 인증서를 얻을 수 없어 프리셋에서도 제외했다(3.2절).
+
+- 결함이 아니라 현재 지원 범위다. 해당 인증서는 **수동 업로드**로 등록한다 (6.3절).
+
+### 8.2 기동 자체가 안 될 때
+
+| 증상 | 원인 | 조치 |
+| --- | --- | --- |
+| `set POSTGRES_PASSWORD in .env` | `.env`에 `POSTGRES_PASSWORD`가 없음(의도된 안전장치) | 값을 채우거나 `bash scripts/install.sh`를 다시 실행한다 |
+| `manifest unknown` / `pull access denied` | 이미지 적재 실패, 또는 `.env`의 `AUTOCERT_VERSION`이 적재한 태그와 다름 | `docker image ls`를 번들의 `MANIFEST.txt`와 대조 (5.1.2절). 폐쇄망에서는 `--build`를 붙이지 않는다 |
+| 웹 콘솔은 뜨는데 8443만 안 열림 (로그: `sensor gateway disabled: startup failed — check SENSOR_ADVERTISED_HOSTS …`) | `SENSOR_CA_ENC_KEY`만 넣고 `SENSOR_ADVERTISED_HOSTS`를 비움. 센서 게이트웨이만 꺼지고 코어 API는 정상 기동하므로 화면에 증상이 없다 | 두 변수는 **세트**다 — 둘 다 채우거나 둘 다 지운다 (5.2절 마지막 항목, SENSOR.md 3.1절) |
+| 알림 메일·웹훅·Syslog가 안 나감 | 해당 채널 설정이 비었거나 잘못됨 — **그 채널만** 비활성화되고 나머지는 정상 동작한다 | backend 기동 로그의 경고와 `GET /api/v1/notification-channels`의 `reason`이 같은 문구로 이유를 알려준다 (5.2.1절) |
+| 스윕·재스캔 값을 바꿨는데 반영이 안 됨 | 오타 시 기동 실패가 아니라 **경고 로그 후 기본값 폴백**이다 | 로그에서 변수명을 지목한 경고를 찾는다 (5.2.2·5.2.4절). 값 변경은 backend 재기동 후 새 작업부터 적용된다 |
