@@ -133,7 +133,10 @@ func parseListParams(r *http.Request) (store.ListCertificatesInput, *paramError)
 		}
 		in.Unowned = &b
 	}
-	if v := q.Get("issuer_org"); v != "" {
+	if q.Has("issuer_org") {
+		// 존재 여부로 판정한다 — 존재하며 빈 값이면 "조직 미상"
+		// (issuer_organization IS NULL) 필터이고, 부재만 필터 없음이다.
+		v := q.Get("issuer_org")
 		if utf8.RuneCountInString(v) > maxSearchLen {
 			return in, &paramError{"invalid_issuer_org", "issuer_org는 200자 이하여야 합니다."}
 		}

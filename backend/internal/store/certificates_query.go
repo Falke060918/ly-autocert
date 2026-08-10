@@ -59,6 +59,7 @@ type ListCertificatesInput struct {
 	Unowned           *bool  // 파생 상태: owner_id IS NULL
 	// IssuerOrg는 발급 기관(issuer_organization, 0016) 정확 일치 필터다.
 	// 분포 집계(GET /certificates/issuers)에서 클릭해 들어오는 경로라 부분 일치가 아니다.
+	// 빈 문자열은 "조직 미상"(issuer_organization IS NULL), nil만 필터 없음이다.
 	IssuerOrg *string
 	// IssuedBy는 "이 CA 인증서가 발급한 인증서" 필터다 — 값은 발급자 인증서 id.
 	// 매칭은 certificates_chain.go findIssuer의 역방향과 같다:
@@ -267,7 +268,13 @@ func buildListWhere(in ListCertificatesInput) (conds []string, args []any) {
 		}
 	}
 	if in.IssuerOrg != nil {
-		conds = append(conds, fmt.Sprintf("issuer_organization = %s", arg(*in.IssuerOrg)))
+		if *in.IssuerOrg == "" {
+			// 빈 문자열은 "조직 미상" — 분포(certificates_issuers.go)의
+			// NULL 묶음 행에서 클릭해 들어오는 경로다.
+			conds = append(conds, "issuer_organization IS NULL")
+		} else {
+			conds = append(conds, fmt.Sprintf("issuer_organization = %s", arg(*in.IssuerOrg)))
+		}
 	}
 	if in.IssuedBy != nil {
 		// certificates_chain.go findIssuer 술어의 역방향(발급자 → 하위).

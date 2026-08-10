@@ -137,4 +137,22 @@ func TestParseListParamsIssuerFilters(t *testing.T) {
 	if _, perr := parseListParams(r); perr == nil || perr.code != "invalid_issued_by" {
 		t.Errorf("invalid issued_by perr = %+v, want invalid_issued_by", perr)
 	}
+
+	// 파라미터가 존재하며 빈 값이면 "조직 미상"(issuer_organization IS NULL)
+	// 필터다 — 분포의 "조직 미상" 행 클릭 경로(프론트가 issuer_org=로 보낸다).
+	r = httptest.NewRequest("GET", "/api/v1/certificates?issuer_org=", nil)
+	in, perr = parseListParams(r)
+	if perr != nil {
+		t.Fatalf("perr = %+v, want nil", perr)
+	}
+	if in.IssuerOrg == nil || *in.IssuerOrg != "" {
+		t.Errorf("issuer_org(empty) = %v, want pointer to \"\"", in.IssuerOrg)
+	}
+
+	// 파라미터 부재는 nil(필터 없음) — 빈 값과 구분된다.
+	r = httptest.NewRequest("GET", "/api/v1/certificates", nil)
+	in, _ = parseListParams(r)
+	if in.IssuerOrg != nil {
+		t.Errorf("issuer_org(absent) = %v, want nil", in.IssuerOrg)
+	}
 }

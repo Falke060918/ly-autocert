@@ -147,6 +147,8 @@ paths:
           description: >
             발급 기관(issuer_organization) 정확 일치 필터. 발급 기관 분포
             (GET /certificates/issuers)에서 항목을 클릭해 들어오는 경로다.
+            파라미터가 존재하며 빈 값이면 "조직 미상"(issuer_organization
+            IS NULL) 필터로 동작하고, 파라미터 부재만 필터 없음이다.
           schema: { type: string, maxLength: 200 }
         - name: issued_by
           in: query
@@ -284,7 +286,7 @@ paths:
           schema: { type: boolean }
         - name: issuer_org
           in: query
-          description: 발급 기관 정확 일치 필터 (목록과 같은 의미)
+          description: 발급 기관 정확 일치 필터 (목록과 같은 의미 — 빈 값은 조직 미상)
           schema: { type: string, maxLength: 200 }
         - name: issued_by
           in: query

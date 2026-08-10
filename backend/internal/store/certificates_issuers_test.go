@@ -125,25 +125,26 @@ func TestIssuerOrganizationPersistedOnInsert(t *testing.T) {
 	}
 }
 
-// TestListCertificatesIssuerFilters는 issuer_org 정확 일치와 issued_by
-// (SKI=AKI 매칭) 필터를 검증한다.
+// TestListCertificatesIssuerFilters는 issuer_org 정확 일치(빈 문자열은
+// "조직 미상" IS NULL)와 issued_by(SKI=AKI 매칭) 필터를 검증한다.
 func TestListCertificatesIssuerFilters(t *testing.T) {
 	pool := testPool(t)
 	st := New(pool)
 	ctx := context.Background()
 
 	root, intermediate, leaf1, leaf2 := newTestIssuerChain(t, "Filter Root Org", "Filter Signing Org")
+	standalone := newTestCert(t) // 발급자 DN에 O가 없다 → issuer_organization NULL
 	reqID := "test-req-issuer-filters"
 	fileName := "issuers-filter-fixture.pem"
 	t.Cleanup(func() {
-		_, _ = pool.Exec(`DELETE FROM certificates WHERE fingerprint_sha256 IN ($1, $2, $3, $4)`,
+		_, _ = pool.Exec(`DELETE FROM certificates WHERE fingerprint_sha256 IN ($1, $2, $3, $4, $5)`,
 			root.FingerprintSHA256, intermediate.FingerprintSHA256,
-			leaf1.FingerprintSHA256, leaf2.FingerprintSHA256)
+			leaf1.FingerprintSHA256, leaf2.FingerprintSHA256, standalone.FingerprintSHA256)
 		cleanupAuditByRequestID(pool, reqID)
 	})
 
 	res, err := st.ImportCertificates(ctx, ImportInput{
-		Certificates: []domain.Certificate{root, intermediate, leaf1, leaf2},
+		Certificates: []domain.Certificate{root, intermediate, leaf1, leaf2, standalone},
 		FileName:     &fileName,
 		RequestID:    &reqID,
 	})
@@ -167,6 +168,26 @@ func TestListCertificatesIssuerFilters(t *testing.T) {
 		if item.IssuerOrganization == nil || *item.IssuerOrganization != org {
 			t.Errorf("issuer_org filter returned certificate with issuer_organization = %v", item.IssuerOrganization)
 		}
+	}
+
+	// 빈 문자열은 "조직 미상"(issuer_organization IS NULL) 필터다 —
+	// nil(필터 없음)과 구분된다. 분포의 "조직 미상" 행 클릭 경로.
+	emptyOrg := ""
+	list, err = st.ListCertificates(ctx, ListCertificatesInput{IssuerOrg: &emptyOrg, PageSize: 200})
+	if err != nil {
+		t.Fatalf("list by empty issuer_org: %v", err)
+	}
+	foundStandalone := false
+	for _, item := range list.Items {
+		if item.IssuerOrganization != nil {
+			t.Errorf("issuer_org=\"\" returned certificate with issuer_organization = %q", *item.IssuerOrganization)
+		}
+		if item.ID == ids[standalone.FingerprintSHA256] {
+			foundStandalone = true
+		}
+	}
+	if !foundStandalone {
+		t.Errorf("issuer_org=\"\" filter did not return the NULL-organization fixture")
 	}
 
 	intID := ids[intermediate.FingerprintSHA256]
