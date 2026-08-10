@@ -105,6 +105,9 @@ export COMPOSE_FILE=docker-compose.yml:docker-compose.https.yml
 
 - **센서 게이트웨이(8443)는 그대로 열린다.** 그 자체가 mTLS라 TLS 종단 대상이 아니며,
   프록시를 거치면 클라이언트 인증서 검증이 깨진다 (SENSOR.md 3장).
+- 위 포트는 전부 기본값이다. 오버레이도 base와 **같은 `.env` 변수**(`FRONTEND_PORT`·
+  `BACKEND_PORT`·`SENSOR_GATEWAY_PORT`)를 쓰고, 프록시 포트만 `HTTPS_PORT`(443)·
+  `HTTP_REDIRECT_PORT`(80)로 바꾼다 (INSTALL.md 5.5절).
 - `ports: !override` 문법은 **Docker Compose v2.24.4 이상**이 필요하다. 더 낮은 버전이면
   오버레이의 `ports` 블록 2개를 지우고 base의 `ports`를 직접 손본다(지우지 않으면 포트가
   병합되어 3000·8080이 계속 외부에 열린다).
@@ -204,8 +207,8 @@ TLS 종단은 **브라우저 ↔ 서버** 구간만 덮는다. 아래 구간은 
 대응 방향을 함께 적는다.
 
 - **backend ↔ PostgreSQL (`sslmode=disable`)** — 현재 DB 접속 DSN은 `sslmode=disable`이다.
-  db는 compose 내부 네트워크의 같은 호스트에서만 접근하고 외부 포트 노출도 권장하지 않으므로
-  (INSTALL.md 5.4) 실질 노출면은 호스트 내부로 한정된다. 다만 **DB를 별도 호스트나 관리형
+  db는 compose 내부 네트워크의 같은 호스트에서만 접근하고 호스트 포트도 기본적으로 열지 않으므로
+  (INSTALL.md 5.5.3) 실질 노출면은 호스트 내부로 한정된다. 다만 **DB를 별도 호스트나 관리형
   인스턴스로 분리하는 순간 평문 구간이 네트워크를 타게 된다.** 대응 방향은 ① 서버 인증서를 갖춘
   PostgreSQL을 두고 DSN을 `sslmode=verify-full` + `sslrootcert`로 바꾸는 것 ②
   `docker-compose.yml`의 `DATABASE_URL`을 환경변수로 완전히 외부화해 고객이 DSN을 통제하게 하는

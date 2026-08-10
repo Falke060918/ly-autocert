@@ -1,3 +1,21 @@
 * text=auto
 *.ps1 text eol=crlf
 *.sh text eol=lf
+
+# 고객사 반입 번들의 소스 아카이브는 git archive로 만든다(scripts/bundle-offline.sh).
+# 개발 프로세스 전용 파일은 제품 소스가 아니므로 아카이브에서 뺀다.
+.claude/ export-ignore
+.github/ export-ignore
+mockup/ export-ignore
+CLAUDE.md export-ignore
+SETUP.md export-ignore
+docs/STATE.md export-ignore
+docs/MAP.md export-ignore
+docs/GOTCHAS.md export-ignore
+docs/MACHINE.md.example export-ignore
+scripts/setup.sh export-ignore
+scripts/setup.ps1 export-ignore
+scripts/fanout.sh export-ignore
+scripts/session-banner.sh export-ignore
+scripts/statusline.sh export-ignore
+scripts/template-update.sh export-ignore
