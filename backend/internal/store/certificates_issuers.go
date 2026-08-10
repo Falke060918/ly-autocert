@@ -37,6 +37,9 @@ type CATreeNode struct {
 	// LeafCount는 이 CA가 직접 발급한 비-CA 인증서 수다(replaced 제외).
 	// 매칭은 findIssuer의 역방향: SKI=AKI 우선, 키 식별자 부재 시 DN 폴백.
 	LeafCount int `json:"leaf_count"`
+	// SubtreeLeafCount는 이 노드와 하위(Children) CA의 LeafCount 합산이다.
+	// 루트의 "하위 포함" 표기용 — 중간 CA는 손자가 없어(2계층 평탄화) LeafCount와 같다.
+	SubtreeLeafCount int `json:"subtree_leaf_count"`
 	// Children은 이 루트 계보의 중간 CA들이다(루트 노드에서만 비어 있지 않다).
 	Children []CATreeNode `json:"children"`
 }
@@ -195,8 +198,10 @@ func buildCATree(cas []caIssuerRow) []CATreeNode {
 		roots[i].Children = append(roots[i].Children, toCATreeNode(c))
 	}
 
-	// 정렬: 계보 리프 합 내림차순 → subject_dn. 자식은 리프 수 내림차순 → subject_dn.
+	// 하위 포함 합산 확정 + 정렬: 계보 리프 합 내림차순 → subject_dn.
+	// 자식은 리프 수 내림차순 → subject_dn.
 	for i := range roots {
+		roots[i].SubtreeLeafCount = treeLeafTotal(roots[i])
 		sort.SliceStable(roots[i].Children, func(a, b int) bool {
 			ca, cb := roots[i].Children[a], roots[i].Children[b]
 			if ca.LeafCount != cb.LeafCount {
@@ -206,7 +211,7 @@ func buildCATree(cas []caIssuerRow) []CATreeNode {
 		})
 	}
 	sort.SliceStable(roots, func(a, b int) bool {
-		ta, tb := treeLeafTotal(roots[a]), treeLeafTotal(roots[b])
+		ta, tb := roots[a].SubtreeLeafCount, roots[b].SubtreeLeafCount
 		if ta != tb {
 			return ta > tb
 		}
@@ -282,6 +287,8 @@ func toCATreeNode(c caIssuerRow) CATreeNode {
 		Status:     item.Status,
 		SelfSigned: item.SelfSigned,
 		LeafCount:  c.leafCount,
-		Children:   []CATreeNode{},
+		// 하위 합산은 buildCATree가 자식을 붙인 뒤 확정한다(중간 CA는 이 값 그대로).
+		SubtreeLeafCount: c.leafCount,
+		Children:         []CATreeNode{},
 	}
 }

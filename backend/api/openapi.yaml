@@ -2030,7 +2030,7 @@ components:
         CA 트리 1노드. 루트(자체 서명 CA) 아래에 그 계보의 중간 CA가 평탄화되어
         붙는다. 인벤토리에 없는 상위는 stored=false·id null로 subject_dn만 안다
         (체인 항목과 같은 규약).
-      required: [id, stored, subject_dn, common_name, not_after, status, self_signed, leaf_count, children]
+      required: [id, stored, subject_dn, common_name, not_after, status, self_signed, leaf_count, subtree_leaf_count, children]
       properties:
         id: { type: string, format: uuid, nullable: true }
         stored: { type: boolean }
@@ -2045,6 +2045,11 @@ components:
         leaf_count:
           type: integer
           description: 이 CA가 직접 발급한 비-CA 인증서 수 (replaced 제외)
+        subtree_leaf_count:
+          type: integer
+          description: >
+            이 노드와 하위(children) CA의 leaf_count 합산. 루트의 "하위 포함"
+            표기용이며, 중간 CA는 손자가 없어(2계층 평탄화) leaf_count와 같다.
         children:
           type: array
           items: { $ref: "#/components/schemas/CATreeNode" }

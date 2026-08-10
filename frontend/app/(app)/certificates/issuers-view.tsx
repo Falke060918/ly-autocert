@@ -139,9 +139,14 @@ function CANodeRow({ node, depth }: { node: IssuerCANode; depth: 0 | 1 }) {
           </div>
         )}
       </div>
+      {/*
+        루트 라벨은 "직접 발급 · 하위 포함"을 나눠 적는다 — 클릭 시 이동하는
+        issued_by 목록은 직접 발급분(중간 CA 포함)이라 합산 하나만 적으면
+        노드 건수와 목록 건수가 어긋나 보인다.
+      */}
       <span className="shrink-0 font-mono text-xs text-muted-foreground tabular-nums">
         {depth === 0 && node.children.length > 0
-          ? `하위 포함 리프 ${node.leaf_count.toLocaleString()}건`
+          ? `직접 발급 ${node.leaf_count.toLocaleString()}건 · 하위 포함 ${node.subtree_leaf_count.toLocaleString()}건`
           : `리프 ${node.leaf_count.toLocaleString()}건`}
       </span>
       {clickable && (

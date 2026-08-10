@@ -285,6 +285,11 @@ func TestCertificateIssuersAggregation(t *testing.T) {
 	if rootNode.LeafCount != 0 {
 		t.Errorf("root leaf_count = %d, want 0 (중간 CA는 리프가 아니다)", rootNode.LeafCount)
 	}
+	// 루트의 subtree_leaf_count는 하위 중간 CA 발급분까지 합산해야 한다 —
+	// 직접 발급(leaf_count=0)만 응답에 실으면 화면의 "하위 포함 N건"이 거짓이 된다.
+	if rootNode.SubtreeLeafCount != 2 {
+		t.Errorf("root subtree_leaf_count = %d, want 2 (하위 중간 CA 리프 합산)", rootNode.SubtreeLeafCount)
+	}
 	if len(rootNode.Children) != 1 {
 		t.Fatalf("root children = %d, want 1", len(rootNode.Children))
 	}
@@ -294,6 +299,10 @@ func TestCertificateIssuersAggregation(t *testing.T) {
 	}
 	if child.LeafCount != 2 {
 		t.Errorf("intermediate leaf_count = %d, want 2", child.LeafCount)
+	}
+	// 중간 CA는 손자가 없으므로(2계층 평탄화) subtree = 직접 발급이다.
+	if child.SubtreeLeafCount != 2 {
+		t.Errorf("intermediate subtree_leaf_count = %d, want 2", child.SubtreeLeafCount)
 	}
 
 	// 단독 자체 서명 리프는 어떤 CA와도 매칭되지 않는다.

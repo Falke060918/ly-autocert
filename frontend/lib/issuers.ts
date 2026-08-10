@@ -27,6 +27,8 @@ interface CATreeNodeWire {
   status: string | null;
   self_signed: boolean;
   leaf_count: number;
+  /** 하위(children) 포함 리프 합산 — 구버전 백엔드에는 없어 클라이언트가 보정한다. */
+  subtree_leaf_count?: number;
   children: CATreeNodeWire[] | null;
 }
 
@@ -55,8 +57,13 @@ export interface IssuerCANode {
   not_after: string | null;
   status: string | null;
   self_signed: boolean;
-  /** 이 CA가 발급한 리프 수. 루트 노드는 하위 중간 CA 발급분을 포함한다. */
+  /** 이 CA가 **직접** 발급한 리프 수 — 하위 중간 CA 발급분은 포함하지 않는다. */
   leaf_count: number;
+  /**
+   * 하위(children) 포함 리프 합산 — 루트의 "하위 포함 N건" 표기용.
+   * 중간 노드는 손자가 없어(2계층 평탄화) leaf_count와 같다.
+   */
+  subtree_leaf_count: number;
   /** 하위 중간 CA. 중간 노드에서는 빈 배열. */
   children: IssuerCANode[];
 }
@@ -72,6 +79,7 @@ export interface IssuerAggregationResponse {
 }
 
 function toCANode(node: CATreeNodeWire): IssuerCANode {
+  const children = (node.children ?? []).map(toCANode);
   return {
     certificate_id: node.id,
     stored: node.stored,
@@ -82,7 +90,11 @@ function toCANode(node: CATreeNodeWire): IssuerCANode {
     status: node.status,
     self_signed: node.self_signed,
     leaf_count: node.leaf_count,
-    children: (node.children ?? []).map(toCANode),
+    // 합산 미제공(구버전 백엔드) 시 직접 발급 + 자식 직접 발급으로 보정한다.
+    subtree_leaf_count:
+      node.subtree_leaf_count ??
+      node.leaf_count + children.reduce((sum, c) => sum + c.leaf_count, 0),
+    children,
   };
 }
 
