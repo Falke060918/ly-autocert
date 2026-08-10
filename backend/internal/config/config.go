@@ -58,6 +58,8 @@ type Config struct {
 	NotifyChannelErrors map[string]string
 	// Sweep은 대역 스윕 설정이다 (SCAN_SWEEP_*).
 	Sweep SweepConfig
+	// AdminIP는 관리 콘솔 접근 IP 제한 설정이다 (ADMIN_IP_*).
+	AdminIP AdminIPConfig
 	// Warnings는 값 오류로 기본값에 폴백했거나 위험한 값을 켠 항목의 경고다.
 	// cmd/server가 기동 시 경고 로그로 남긴다. secret 값은 담지 않는다.
 	// 채널을 비활성화하는 사유는 여기가 아니라 NotifyChannelErrors에 담긴다.
@@ -111,6 +113,65 @@ type SweepConfig struct {
 	StallAfter time.Duration
 }
 
+// AdminIPConfig는 관리 콘솔 접근 IP 제한 설정이다 (ADMIN_IP_*).
+// 허용 목록 자체는 DB(admin_ip_rules)에 있고, 여기 두 개는 "그 목록을 어떻게 읽고
+// 어떻게 우회하는가"만 정한다. 둘 다 비어 있는 것이 기본이며 정상이다.
+type AdminIPConfig struct {
+	// TrustedProxies는 X-Forwarded-For를 신뢰할 직접 접속 대역이다
+	// (ADMIN_IP_TRUSTED_PROXIES, 콤마 구분 IP/CIDR). 비면 XFF를 아예 보지 않고
+	// 직접 접속 IP만 쓴다 — 헤더 위조로 제한을 무력화할 수 없게 하는 기본값이다.
+	TrustedProxies []*net.IPNet
+	// Bootstrap은 허용 목록과 무관하게 통과시키는 비상 우회 대역이다
+	// (ADMIN_IP_ALLOW_BOOTSTRAP, 콤마 구분 IP/CIDR). 화면에서 자신을 잠갔을 때의
+	// 복구 경로이며, 비면 적용되지 않는다.
+	Bootstrap []*net.IPNet
+}
+
+// adminIP는 ADMIN_IP_*를 읽는다. 값 오류는 그 항목만 버리고 경고를 남긴다 —
+// 오타 하나로 기동이 막히면 복구 경로(비상 우회)까지 함께 사라진다.
+func (l *envLoader) adminIP() AdminIPConfig {
+	return AdminIPConfig{
+		TrustedProxies: l.cidrList("ADMIN_IP_TRUSTED_PROXIES"),
+		Bootstrap:      l.cidrList("ADMIN_IP_ALLOW_BOOTSTRAP"),
+	}
+}
+
+// cidrList는 콤마 구분 IP/CIDR 목록을 읽는다. 넷마스크가 없는 단일 IP는
+// /32(IPv6는 /128)로 올린다. 호스트 비트가 켜진 값은 net.ParseCIDR이 대역으로
+// 깎아주지만, 그 정규화 결과를 경고로 알려 조용한 범위 확대를 막는다.
+func (l *envLoader) cidrList(key string) []*net.IPNet {
+	var nets []*net.IPNet
+	for _, raw := range strings.Split(os.Getenv(key), ",") {
+		token := strings.TrimSpace(raw)
+		if token == "" {
+			continue
+		}
+		spec := token
+		if !strings.Contains(spec, "/") {
+			ip := net.ParseIP(spec)
+			if ip == nil {
+				l.warnf("%s entry %q is not an IP or CIDR; ignoring it", key, token)
+				continue
+			}
+			if ip.To4() != nil {
+				spec += "/32"
+			} else {
+				spec += "/128"
+			}
+		}
+		ip, network, err := net.ParseCIDR(spec)
+		if err != nil {
+			l.warnf("%s entry %q is not an IP or CIDR; ignoring it", key, token)
+			continue
+		}
+		if !ip.Equal(network.IP) {
+			l.warnf("%s entry %q has host bits set; using %s", key, token, network.String())
+		}
+		nets = append(nets, network)
+	}
+	return nets
+}
+
 // sweepMaxRatePPS는 레이트 상한이다. 더 큰 값을 받아도 여기로 깎고 경고를 남긴다
 // (IPS 오탐 억제).
 const sweepMaxRatePPS = 1000
@@ -158,6 +219,7 @@ func Load() (Config, error) {
 	l := &envLoader{channelErrors: map[string]string{}}
 	cfg.Notify = l.notify()
 	cfg.Sweep = l.sweep()
+	cfg.AdminIP = l.adminIP()
 	cfg.NotifyChannelErrors = l.channelErrors
 	cfg.Warnings = l.warnings
 	return cfg, nil

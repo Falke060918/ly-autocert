@@ -135,11 +135,16 @@ func run(logger *slog.Logger) error {
 
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
-		// 선택 의존성 2개를 주입한다. 둘 다 없어도 코어 API는 뜨지만, 없으면
-		// 채널 상태가 "배선 없음"이고 스윕 기본값이 SCAN_SWEEP_*를 무시한다.
+		// 선택 의존성 3개를 주입한다. 전부 없어도 코어 API는 뜨지만, 없으면
+		// 채널 상태가 "배선 없음"이고 스윕 기본값이 SCAN_SWEEP_*를 무시하며
+		// 접근 IP 제한이 XFF를 보지 않고 비상 우회 대역도 갖지 않는다.
 		Handler: api.NewServer(pool, authSvc, rec, cfg.SensorCAEncKey,
 			api.WithNotificationChannels(notifyChannels),
-			api.WithSweepDefaults(sweepDefaults(cfg.Sweep))),
+			api.WithSweepDefaults(sweepDefaults(cfg.Sweep)),
+			api.WithAdminIPAccess(api.AdminIPAccess{
+				TrustedProxies: cfg.AdminIP.TrustedProxies,
+				Bootstrap:      cfg.AdminIP.Bootstrap,
+			})),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

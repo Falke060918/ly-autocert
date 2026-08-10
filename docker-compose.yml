@@ -76,6 +76,13 @@ services:
       SCAN_SWEEP_CHUNK_GAP: ${SCAN_SWEEP_CHUNK_GAP:-5s}
       SCAN_SWEEP_MAX_DAYS: ${SCAN_SWEEP_MAX_DAYS:-30}
       SCAN_SWEEP_STALL_AFTER: ${SCAN_SWEEP_STALL_AFTER:-10m}
+      # --- 관리 콘솔 접근 IP 제한 (INSTALL.md 5.2.3) ---
+      # 허용 목록 자체는 DB에 있고 화면에서 관리한다. 목록이 비면 제한 없음이다.
+      # 이 구성(브라우저 → frontend → backend)에서는 백엔드가 보는 출발지가 frontend
+      # 컨테이너다 — 아래를 채우지 않으면 브라우저 IP 기준으로 제한할 수 없다.
+      ADMIN_IP_TRUSTED_PROXIES: ${ADMIN_IP_TRUSTED_PROXIES:-}
+      # 화면에서 자기 자신을 막았을 때의 복구 경로. 비우면 적용되지 않는다.
+      ADMIN_IP_ALLOW_BOOTSTRAP: ${ADMIN_IP_ALLOW_BOOTSTRAP:-}
     depends_on:
       db:
         condition: service_healthy

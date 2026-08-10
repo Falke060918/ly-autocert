@@ -20,6 +20,7 @@ const (
 	ctxKeyRequestID ctxKey = iota
 	ctxKeyUser
 	ctxKeySessionToken
+	ctxKeyClientIP
 )
 
 // sessionCookieName은 브라우저 클라이언트용 세션 쿠키다.
@@ -96,15 +97,17 @@ func extractToken(r *http.Request) string {
 	return ""
 }
 
-// clientIP는 감사 로그용 요청 출처 IP다.
+// clientIP는 요청 출처 IP다 (감사 로그 source_ip·접근 IP 제한 공용).
+//
+// 판정은 withAdminIPAllow가 하고 결과를 컨텍스트에 넣는다 — 감사에 남는 IP와
+// 접근 제한이 판정한 IP가 서로 다르면 "차단 로그를 감사에서 못 찾는" 상황이 된다.
+// X-Forwarded-For는 그 미들웨어가 신뢰 프록시 대역에서 온 요청에만 반영한다
+// (예전에는 무조건 첫 값을 믿었다 — 헤더 한 줄로 출처를 위조할 수 있었다).
 func clientIP(r *http.Request) *string {
-	// 폐쇄망 단일 인스턴스 전제이므로 XFF는 첫 값만 참고한다 (신뢰 프록시 설정은 추후).
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		ip := strings.TrimSpace(strings.Split(xff, ",")[0])
-		if net.ParseIP(ip) != nil {
-			return &ip
-		}
+	if ip, ok := r.Context().Value(ctxKeyClientIP).(string); ok && ip != "" {
+		return &ip
 	}
+	// 미들웨어를 거치지 않은 경로(단위 테스트 등)는 직접 접속 IP만 쓴다.
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil || net.ParseIP(host) == nil {
 		return nil
