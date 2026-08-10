@@ -18,6 +18,10 @@ const buttonVariants = cva(
           "hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-muted/50",
         destructive:
           "bg-destructive/10 text-destructive hover:bg-destructive/20 focus-visible:border-destructive/40 focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:hover:bg-destructive/30 dark:focus-visible:ring-destructive/40",
+        // 위험 동작 확정용 솔리드 변형 — 삭제·폐기의 최종 확인 버튼에만 쓴다.
+        // (destructive는 틴트형 그대로 유지 — 기존 계약 불변)
+        danger:
+          "bg-danger text-danger-foreground hover:bg-danger/90 focus-visible:border-danger/60 focus-visible:ring-danger/30",
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {

@@ -58,9 +58,10 @@ function NavLink({
     <Link
       href={href}
       className={cn(
-        "flex items-center gap-2.5 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+        "relative flex items-center gap-2.5 rounded-md px-3 py-2 text-sm font-medium transition-colors",
         isActive(pathname, href)
-          ? "bg-sidebar-accent text-sidebar-accent-foreground"
+          ? // 활성 항목 — primary 세로 인디케이터 바 (관제 콘솔의 현재 채널 표시)
+            "bg-sidebar-accent text-sidebar-accent-foreground before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-full before:bg-primary"
           : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
       )}
     >
