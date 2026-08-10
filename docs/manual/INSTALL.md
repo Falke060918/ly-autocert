@@ -29,7 +29,8 @@ INHERIT AutoCert는 폐쇄망·레거시 환경을 위한 온프레미스 인증
 **운영에 외부 인터넷 연결이 필요 없다.**
 
 - 웹 콘솔의 폰트를 포함한 모든 정적 자원은 컨테이너에 셀프호스팅되어 있다. CDN 등 외부 요청이 발생하지 않는다 (브라우저 개발자도구 네트워크 탭에서 외부 요청 0건으로 확인 가능).
-- 단, 컨테이너 **이미지 반입**은 별도로 필요하다. 인터넷이 되는 환경에서 이미지를 빌드/저장(`docker save`)한 뒤 반입 매체로 옮겨 폐쇄망에서 적재(`docker load`)하거나, 내부 레지스트리를 사용한다. 소스 반입 후 폐쇄망 내에서 빌드하는 경우 빌드 시점에는 베이스 이미지·의존성 접근이 가능한 내부 미러가 필요하다.
+- 단, 컨테이너 **이미지 반입**은 별도로 필요하다. 인터넷이 되는 개발측에서 반입 번들(이미지 + 소스 + 센서 바이너리 + 체크섬)을 만들어 매체로 옮기고, 폐쇄망에서는 검증·적재만 한다 — 절차는 **5.1절**. 사내 레지스트리를 쓰는 경우는 5.1.2절.
+- 번들에는 최종 이미지가 들어 있으므로 **폐쇄망 안에서 빌드할 필요가 없다.** 굳이 현장 빌드를 택하면 베이스 이미지·의존성(Go 모듈·npm 패키지) 접근이 가능한 내부 미러가 따로 필요하다.
 
 ### 2.3 하드웨어 (권장 최소값)
 
@@ -121,9 +122,82 @@ frontend → backend(8080), backend → db(5432) 통신은 Docker Compose 내부
 
 ## 5. 설치 절차
 
-### 5.1 소스/이미지 반입
+### 5.1 오프라인 반입 (이미지·소스)
 
-배포 아카이브(또는 저장소)를 서버의 작업 디렉터리에 푼다. 이하 명령은 저장소 루트에서 실행한다.
+폐쇄망 서버는 이미지를 내려받을 수 없다. **인터넷이 되는 개발측에서 반입 번들을 만들어 매체로 옮기고, 고객사에서는 체크섬 대조 후 적재만 한다.** 폐쇄망 안에서 빌드하지 않는다 — 번들에 최종 이미지가 들어 있으므로 현장에 Go·Node.js·내부 미러가 필요 없다.
+
+두 스크립트가 이 절차의 전부다.
+
+| 스크립트 | 실행 위치 | 실행 환경 |
+| --- | --- | --- |
+| `scripts/bundle-offline.sh` | **개발측** (인터넷 가능) | Linux·macOS·WSL·Git Bash. docker(+compose v2)·git·tar·gzip·sha256sum 필요 |
+| `load-offline.sh` (번들에 동봉) | **고객사 서버** (폐쇄망) | Linux·macOS. docker·gzip·sha256sum 필요 |
+
+#### 5.1.1 개발측 — 매체에 담아 갈 것
+
+저장소 루트에서 한 줄이다.
+
+```sh
+sh scripts/bundle-offline.sh
+```
+
+이미지 빌드 → `docker save` → 센서 바이너리 크로스 빌드 → 소스·compose·매뉴얼 수집 → SHA-256 체크섬 생성까지 수행하고, `dist/` 아래에 결과를 만든다. **반입 매체에 담을 것은 아래 두 파일뿐이다.**
+
+```
+dist/autocert-offline-<버전>.tar           # 번들 전체
+dist/autocert-offline-<버전>.tar.sha256    # 매체 손상 판별용
+```
+
+주요 옵션: `--version <버전>` / `--output <디렉터리>` / `--skip-build`(이미 빌드된 이미지 사용) / `--skip-sensor` / `--no-archive`. 전체 목록은 `sh scripts/bundle-offline.sh --help`.
+
+번들(`.tar`)을 풀면 다음이 들어 있다.
+
+| 경로 | 내용 |
+| --- | --- |
+| `MANIFEST.txt` | 제품 버전·생성 일시(UTC)·소스 커밋·**포함 이미지 태그와 이미지 ID** |
+| `SHA256SUMS` | 번들 안 모든 파일의 SHA-256 (적재 스크립트가 이걸로 대조한다) |
+| `load-offline.sh` | 고객사에서 실행할 검증·적재 스크립트 |
+| `images/` | `postgres:16-alpine`, `inherit-autocert/backend:<버전>`, `inherit-autocert/frontend:<버전>` (docker save + gzip) |
+| `sensor/` | 센서 바이너리 linux/windows amd64 + 자체 SHA256SUMS (SENSOR.md 2장) |
+| `source/` | 제품 소스 아카이브 (`git archive` — `.env` 등 비밀값 파일은 원천적으로 들어가지 않는다) |
+| `manual/` | INSTALL·OPERATIONS·SENSOR 매뉴얼 |
+| `docker-compose.yml`, `.env.example` | 참고용 사본 (실제 기동은 `source/`를 푼 디렉터리에서 한다) |
+
+- **빌드 단계 전용 베이스 이미지(`golang`·`node`)는 담지 않는다.** 두 Dockerfile 모두 멀티스테이지라 최종 이미지에 실행에 필요한 레이어가 이미 포함되어 있다.
+- 번들 크기는 이미지 3종 기준 **약 200 MB**다(센서 바이너리 포함 시 +13 MB).
+
+#### 5.1.2 이미지 이름과 버전 태그
+
+이미지 이름은 compose에 고정되어 있다 — compose 프로젝트명에 따라 이름이 달라지지 않는다.
+
+| 서비스 | 이미지 |
+| --- | --- |
+| backend | `inherit-autocert/backend:<버전>` |
+| frontend | `inherit-autocert/frontend:<버전>` |
+| db | `postgres:16-alpine` (공식 이미지 그대로) |
+
+- 버전 기본값은 저장소 루트의 `VERSION` 파일이며 `docker-compose.yml`의 기본 태그와 같아야 한다(다르면 번들 스크립트가 중단한다). 변경 이력은 `CHANGELOG.md`.
+- `.env`에 `AUTOCERT_VERSION`·`AUTOCERT_IMAGE_PREFIX`를 넣으면 태그와 접두어를 덮어쓸 수 있다. **사내 레지스트리에 올려 쓰는 경우** `AUTOCERT_IMAGE_PREFIX=registry.internal/autocert` 같은 값을 쓰고, 이때는 반입 번들 대신 레지스트리 push/pull로 대체해도 된다.
+
+#### 5.1.3 고객사 — 현장에서 실행할 것
+
+매체를 서버에 복사한 뒤, 아래가 전부다.
+
+```sh
+sha256sum -c autocert-offline-0.1.0.tar.sha256   # 매체 손상 확인
+tar xf autocert-offline-0.1.0.tar
+cd autocert-offline-0.1.0
+sh load-offline.sh                                # 체크섬 대조 + docker load
+tar xzf source/autocert-source-0.1.0.tar.gz       # autocert-0.1.0/ 으로 풀린다
+cd autocert-0.1.0
+```
+
+`load-offline.sh`는 ① `SHA256SUMS` 전건 대조 ② `docker load` ③ 매니페스트의 이미지 태그가 실제로 적재됐는지 확인, 순서로 진행한다.
+
+- **체크섬이 하나라도 어긋나면 적재하지 않고 즉시 중단한다.** 이때는 매체를 다시 복사해 받는다 — 부분 적재나 재시도로 넘기지 않는다.
+- 적재 없이 검증만 하려면 `sh load-offline.sh --verify-only`.
+- 이후 5.2절(환경 변수) → 5.3절(기동) 순으로 진행한다. **기동 시 `--build`를 붙이지 않는다** — 적재한 이미지를 그대로 쓴다.
+- 센서를 쓸 경우 `sensor/` 의 바이너리를 센서 호스트로 옮긴다 (SENSOR.md 2장).
 
 ### 5.2 환경 변수 설정
 
@@ -144,6 +218,8 @@ cp .env.example .env
 | `SENSOR_CA_ENC_KEY` | (없음) | 센서 사용 시에만. 센서 CA 개인키 암호화 키 — hex 64자, `openssl rand -hex 32`로 생성. 미설정이면 센서 게이트웨이(8443)가 열리지 않는다. 설정하면 `SENSOR_ADVERTISED_HOSTS`도 반드시 함께 채운다 (SENSOR.md 3.1절) |
 | `SENSOR_ADVERTISED_HOSTS` | (없음) | 센서 사용 시에만. 센서가 서버 접속에 쓸 **실제** DNS/IP 목록(쉼표 구분, 예: `10.20.0.5,autocert.internal`) — 게이트웨이 서버 인증서 SAN. 위 키를 설정했는데 이 값이 비면 센서 게이트웨이(8443)가 뜨지 않는다 — 8080 웹/API는 정상 기동한다 (SENSOR.md 3.1절) |
 | `SENSOR_LISTEN_ADDR` | `:8443` | 센서 게이트웨이 리슨 주소. 보통 기본값 사용 |
+| `AUTOCERT_VERSION` | 릴리즈 버전 (`docker-compose.yml`에 고정) | 쓸 이미지의 버전 태그. **반입 번들 그대로 쓰면 설정할 필요가 없다** — 버전을 덮어써서 번들을 만든 경우에만 같은 값을 넣는다 (5.1.2절) |
+| `AUTOCERT_IMAGE_PREFIX` | `inherit-autocert` | 이미지 이름 접두어. 사내 레지스트리를 쓸 때만 변경 (5.1.2절) |
 
 - `POSTGRES_PASSWORD`가 비어 있으면 기동이 거부된다(의도된 안전장치).
 - 센서 관련 3개 변수는 `.env.example`에 없다 — 센서를 쓸 때 `.env`에 직접 추가한다.
@@ -238,9 +314,11 @@ cp .env.example .env
 ### 5.3 기동
 
 ```sh
-docker compose up --build -d
+docker compose up -d
 ```
 
+- **폐쇄망에서는 `--build`를 붙이지 않는다.** 5.1절로 적재한 `inherit-autocert/backend:<버전>`·`inherit-autocert/frontend:<버전>` 이미지를 그대로 쓴다. `--build`는 인터넷(또는 내부 미러)이 되는 환경에서 소스로부터 다시 빌드할 때만 쓴다.
+- `docker compose up`이 이미지를 찾지 못하면(`manifest unknown`·`pull access denied`) 적재가 안 됐거나 `.env`의 `AUTOCERT_VERSION`이 적재한 태그와 다른 경우다 — `docker image ls` 결과를 번들의 `MANIFEST.txt`와 대조한다.
 - 최초 기동 시 backend가 DB 연결 후 **SQL 마이그레이션을 자동 적용**한다. 별도의 스키마 생성 작업이 필요 없다.
 - DB 데이터는 Docker 볼륨 `pgdata`에 영속 저장된다.
 

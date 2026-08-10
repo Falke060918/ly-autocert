@@ -1,5 +1,5 @@
 # MAP — 코드베이스 구조·명령 캐시
-확인일: 2026-08-09
+확인일: 2026-08-10
 
 ## 저장소 구조
 - `backend/` — Go 백엔드
@@ -53,7 +53,10 @@
   - `lib/` — api.ts(타입+엔드포인트 함수+ApiError. **401 탈출은 apiFetch 한 곳**: 1회 빗장으로 `/session/clear` POST → `/login?reason=session_expired` 이동. login/logout은 `BOUNCE_EXEMPT`로 제외 — 마운트 시 1회뿐인 `/auth/me`에 401 처리를 두면 소프트 내비게이션에서 아예 안 걸린다. 알림 함수군(알림함 5종·정책 CRUD·테스트 발송·채널 상태·발송 이력)도 여기 있다 — 채널 상태 타입은 `{channel, enabled, reason}` 3필드뿐이라 설정값(호스트·계정·URL)을 담을 자리가 애초에 없다), auth.tsx(useAuth·역할 게이트 — 업로드·스캔은 3역할, `isSystemAdministrator`·`ALL_ROLES`), format.ts, sweeps.ts(스윕 타입·엔드포인트 6종 + `createScanWithPortSpec`(스캔 생성의 `port_spec` 버전) + 프리셋 조회 + 규모·소요 추정 헬퍼. **스윕 상태는 ScanJobStatus와 별개 union**이며 서로 넓히지 않는다)
   - `app/fonts.css` — 폰트는 npm 패키지 셀프호스팅 `@font-face` (폐쇄망 대응, CDN 없음)
 - `docker-compose.yml` / `.env.example` — 루트. backend + postgres + frontend
-  - 베이스 이미지 3종: `golang:1.25-alpine`·`gcr.io/distroless/static-debian12`(backend/Dockerfile), `node:24-alpine`(frontend/Dockerfile) — 폐쇄망 빌드 시 내부 레지스트리 미러 필요
+  - 베이스 이미지 3종: `golang:1.25-alpine`·`gcr.io/distroless/static-debian12`(backend/Dockerfile), `node:24-alpine`(frontend/Dockerfile) — 폐쇄망 빌드 시 내부 레지스트리 미러 필요. 단 **반입 번들은 최종 이미지만 담는다**(멀티스테이지라 빌드 단계 베이스는 불필요)
+  - backend·frontend는 `image: ${AUTOCERT_IMAGE_PREFIX:-inherit-autocert}/<서비스>:${AUTOCERT_VERSION:-<버전>}`로 이름·태그가 고정돼 있다(compose 프로젝트명 의존 제거). 태그 기본값은 루트 `VERSION`과 **같아야 하며** `scripts/bundle-offline.sh`가 다르면 중단한다
+- `VERSION`(단일 진실원천) / `CHANGELOG.md`(SemVer 체계·릴리즈 시 VERSION·compose 기본 태그와 함께 갱신) / `.gitattributes`(`export-ignore`로 `.claude`·`.github`·`mockup`·CLAUDE/SETUP·STATE/MAP/GOTCHAS·개발 전용 scripts를 소스 아카이브에서 제외)
+- `scripts/` — 제품 배포 스크립트 3종(나머지는 템플릿 도구): `bundle-offline.sh`(개발측 — 이미지 빌드·save·센서 빌드·git archive·SHA256SUMS·`dist/autocert-offline-<버전>.tar` 생성, 옵션 `--skip-build`/`--skip-sensor`/`--no-archive`/`--version`/`--output`), `load-offline.sh`(고객사 — 체크섬 대조 실패 시 **적재 전 중단**, docker load, MANIFEST 태그 대조. 번들에 사본으로 실려 간다), `build-sensor-dist.sh`(센서 크로스 빌드 레시피의 단일 진실원천 — `backend/Makefile`의 `sensor-dist`가 이걸 호출한다. Git Bash에선 MSYS 경로 변환을 꺼야 `-w /src`가 깨지지 않는다)
 - `mockup/index.html` — 승인된 4화면 정적 목업 (제품 코드 아님)
 - `docs/` — 00-spec(명세) / 01-plan(기획) / 02-goals(목표) / STATE / MAP / GOTCHAS. 절대 경로·OS 전용 명령은 여기가 아니라 git 미추적 `docs/MACHINE.md`(원본 `MACHINE.md.example`)에 적는다
   - 00-spec 15장=Phase 1~5 로드맵 + 상용화 준비 트랙(Phase 2 병렬), 16장=MVP 제외 목록, 02-goals=성공 기준 7개+M1~M3(Phase 판정 시 대조 출처)
@@ -71,7 +74,8 @@
 ## 검증 명령
 - backend: `go build ./...`, `go vet ./...`, 단위 테스트 `go test ./...` (backend/ 에서. 로컬 Go 없으면 Docker 경유)
 - 라우트-OpenAPI 명세 정합: `make openapi-check` (backend/ 에서, DB 불필요 — backend/Makefile)
-- 센서 배포판: `make sensor-dist` (backend/ 에서, Docker golang:1.25-alpine 경유 linux/windows amd64 정적 빌드 + SHA256SUMS → dist/, gitignore 대상)
+- 센서 배포판: `sh scripts/build-sensor-dist.sh` (루트에서) 또는 `make sensor-dist` (backend/ 에서 — 같은 스크립트를 호출한다). Docker golang:1.25-alpine 경유 linux/windows amd64 정적 빌드 + SHA256SUMS → backend/dist/, gitignore 대상
+- 오프라인 반입 번들: `sh scripts/bundle-offline.sh` (루트에서, Docker 필요) → `dist/autocert-offline-<버전>.tar` + `.sha256`. 고객사 측은 번들 안에서 `sh load-offline.sh`. 절차 문서는 docs/manual/INSTALL.md 5.1
 - DB 통합 테스트(db·store·api): compose db 기동 후 전용 테스트 DB 생성(`docker compose exec db createdb -U autocert autocert_test`) 뒤 `TEST_DATABASE_URL=postgres://autocert:<pw>@db:5432/autocert_test?sslmode=disable go test -p 1 ./...` — db 패키지가 up/down/up 전체를 돌리므로 **메인 DB(autocert)에는 돌리지 않는다**. **`-p 1` 필수**: 패키지 병렬 실행 시 db 패키지의 down이 다른 패키지가 쓰는 스키마를 지운다. 로컬 Go 없으면 compose 네트워크(`inherit_autocert_default`)에 붙인 golang 컨테이너 경유
 - frontend: `npm run build`, `npm run lint` (frontend/ 에서)
 

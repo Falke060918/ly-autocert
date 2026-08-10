@@ -68,10 +68,13 @@ SENSOR_LISTEN_ADDR=:8443
 
 ### 4.1 빌드 (인터넷이 되는 빌드 환경에서)
 
-저장소의 `backend/` 디렉터리에서 실행한다 (Docker 필요, 로컬 Go 불필요):
+**오프라인 반입 번들(INSTALL.md 5.1절)을 쓴다면 이 절은 건너뛴다** — 번들의 `sensor/` 디렉터리에 아래 산출물이 그대로 들어 있고, 번들 적재 시 체크섬 대조도 함께 끝난다.
+
+번들 없이 센서 바이너리만 따로 만들려면 저장소 루트에서 실행한다 (Docker 필요, 로컬 Go 불필요):
 
 ```sh
-make sensor-dist
+sh scripts/build-sensor-dist.sh
+# backend/ 디렉터리에서 `make sensor-dist`로 실행해도 같다(같은 스크립트를 호출한다)
 ```
 
 산출물은 `backend/dist/`에 생성된다:
