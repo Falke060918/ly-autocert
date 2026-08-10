@@ -1,12 +1,12 @@
 /**
- * 잔여 일수 회귀 테스트 — `node --test` (Node 내장 러너, 추가 의존성 없음).
+ * 잔여 일수·DN 파싱 회귀 테스트 — `node --test` (Node 내장 러너, 추가 의존성 없음).
  * 실행: npm test
  */
 
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 
-import { dday } from "./format.ts";
+import { dday, dnCommonName, dnOrganization } from "./format.ts";
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
@@ -55,4 +55,45 @@ test("잔여 12시간은 아직 유효하고 D-0이다", () => {
   assert.equal(d.days, 0);
   assert.equal(d.label, "D-0");
   assert.equal(d.tone, "urgent");
+});
+
+// ── DN 파싱 (RFC2253 이스케이프 인지) ────────────────────────────────────
+// 구현 전 회귀: `\,`가 구분자로 오인돼 CN "Example\, Inc."가 "Example\"로 잘렸다.
+
+test("CN의 이스케이프된 쉼표는 값의 일부다", () => {
+  assert.equal(
+    dnCommonName("CN=Example\\, Inc.,O=Example,C=KR"),
+    "Example, Inc.",
+  );
+});
+
+test("이스케이프된 백슬래시·따옴표를 언이스케이프한다", () => {
+  assert.equal(dnCommonName("CN=a\\\\b,O=X"), "a\\b");
+  assert.equal(dnCommonName('CN=say \\"hi\\",O=X'), 'say "hi"');
+});
+
+test("RFC1779 레거시 따옴표 값 안의 쉼표는 구분자가 아니다", () => {
+  assert.equal(dnCommonName('CN="Example, Inc.",O=X'), "Example, Inc.");
+});
+
+test("16진 이스케이프(\\2c)는 해당 문자로 푼다", () => {
+  assert.equal(dnCommonName("CN=a\\2c b,O=X"), "a, b");
+});
+
+test("멀티밸류 RDN(+)에서는 CN 값만 취한다", () => {
+  assert.equal(dnCommonName("CN=web01+OU=Infra,O=X"), "web01");
+});
+
+test("openssl 슬래시 표기도 파싱한다", () => {
+  assert.equal(dnCommonName("/C=KR/O=Example/CN=web01.example.com"), "web01.example.com");
+});
+
+test("CN이 없으면 DN 전체를 반환한다 (기존 동작 유지)", () => {
+  assert.equal(dnCommonName("O=Example,C=KR"), "O=Example,C=KR");
+});
+
+test("dnOrganization은 O= 값을 뽑고 없으면 null이다", () => {
+  assert.equal(dnOrganization("CN=x,O=Example CA\\, Ltd.,C=KR"), "Example CA, Ltd.");
+  assert.equal(dnOrganization("CN=x,C=KR"), null);
+  assert.equal(dnOrganization("CN=x,OU=Org Unit,C=KR"), null); // OU는 O가 아니다
 });
