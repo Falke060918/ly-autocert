@@ -2,9 +2,14 @@ package discovery
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -74,6 +79,103 @@ func TestScanEndpointCollectsCertificate(t *testing.T) {
 	}
 	if obs.TLSVersion == "" {
 		t.Error("expected TLS version to be set")
+	}
+}
+
+// newTestServerCert는 테스트 전용 자기서명 인증서를 매 실행마다 새로 만든다.
+// 키·인증서를 저장소에 커밋하지 않기 위한 것이다 (보안 하드 규칙 4).
+func newTestServerCert(t *testing.T) tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate test key: %v", err)
+	}
+	tmpl := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "legacy-tls.example.test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create test certificate: %v", err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
+// startPinnedVersionTLSServer는 딱 한 가지 TLS 버전만 받아들이는 테스트 서버를 띄운다.
+// 구형 장비(TLS 1.0/1.1 전용)를 흉내내기 위한 것이다.
+// 주의: Go 서버는 MinVersion을 명시하지 않으면 TLS 1.2 미만을 거부한다 —
+// Min/Max를 모두 같은 값으로 고정해야 1.0/1.1 전용 서버가 된다.
+func startPinnedVersionTLSServer(t *testing.T, version uint16) (string, int) {
+	t.Helper()
+	conf := &tls.Config{
+		Certificates: []tls.Certificate{newTestServerCert(t)},
+		MinVersion:   version,
+		MaxVersion:   version,
+	}
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", conf)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return // 리스너 종료.
+			}
+			go func() {
+				defer conn.Close()
+				if tc, ok := conn.(*tls.Conn); ok {
+					_ = tc.Handshake() // 실패는 클라이언트 쪽 검증 대상이다.
+				}
+			}()
+		}
+	}()
+
+	host, portStr, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("split host port: %v", err)
+	}
+	port, _ := strconv.Atoi(portStr)
+	return host, port
+}
+
+// TestScanEndpointCollectsLegacyTLSVersions는 TLS 1.0/1.1 전용 서버에서도 인증서가
+// 수집되는지 확인한다(회귀 고정). 스캐너 tls.Config에 MinVersion이 없으면 Go 클라이언트
+// 기본값이 TLS 1.2라 구형 장비가 조용히 Reachable=false로 빠진다 — 폐쇄망 레거시 장비의
+// 인증서가 통째로 누락되던 결함이다. 1.2/1.3도 같은 표에서 회귀 확인한다.
+func TestScanEndpointCollectsLegacyTLSVersions(t *testing.T) {
+	tests := []struct {
+		name    string
+		version uint16
+		want    string
+	}{
+		{name: "tls 1.0 only server", version: tls.VersionTLS10, want: "TLS 1.0"},
+		{name: "tls 1.1 only server", version: tls.VersionTLS11, want: "TLS 1.1"},
+		{name: "tls 1.2 only server", version: tls.VersionTLS12, want: "TLS 1.2"},
+		{name: "tls 1.3 only server", version: tls.VersionTLS13, want: "TLS 1.3"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			host, port := startPinnedVersionTLSServer(t, tt.version)
+
+			obs := ScanEndpoint(context.Background(), Endpoint{IP: host, Port: port}, 3*time.Second)
+			if !obs.Reachable {
+				t.Fatalf("Reachable = false, want true (%s 전용 서버의 인증서가 누락된다)", tt.want)
+			}
+			if len(obs.Chain) == 0 {
+				t.Fatal("expected at least one certificate in chain")
+			}
+			if obs.TLSVersion != tt.want {
+				t.Errorf("TLSVersion = %q, want %q", obs.TLSVersion, tt.want)
+			}
+		})
 	}
 }
 
