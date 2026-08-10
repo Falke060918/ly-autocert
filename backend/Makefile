@@ -11,5 +11,7 @@ openapi-check:
 # 산출물: dist/ (gitignore 대상). 체크섬은 컨테이너 안에서 계산해 호스트 OS 비의존.
 # 레시피 본체는 ../scripts/build-sensor-dist.sh에 있다 — make가 없는 환경(오프라인
 # 번들 스크립트)도 같은 빌드를 쓰기 위해서다. 레시피를 여기에 복제하지 않는다.
+# 버전은 AUTOCERT_VERSION → 저장소 루트 VERSION → dev 순으로 정해져 바이너리에 주입된다
+# (`autocert-sensor --version`). 예: AUTOCERT_VERSION=1.0.0-rc1 make sensor-dist
 sensor-dist:
 	sh $(CURDIR)/../scripts/build-sensor-dist.sh
