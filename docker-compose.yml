@@ -1,4 +1,10 @@
 # INHERIT_AutoCert 개발환경. 실행: cp .env.example .env && docker compose up --build
+#
+# 포트는 전부 .env로 바꿀 수 있다 (INSTALL.md 5.5 "포트 변경 절차").
+#   호스트 노출:  FRONTEND_PORT(3000) / BACKEND_PORT(8080) / SENSOR_GATEWAY_PORT(8443)
+#   컨테이너 내부: BACKEND_INTERNAL_PORT(8080) / SENSOR_GATEWAY_INTERNAL_PORT(8443)
+# BACKEND_INTERNAL_PORT를 바꾸면 frontend를 **재빌드**해야 한다 — 프록시 대상
+# (BACKEND_INTERNAL_URL)이 빌드 시점에 고정되기 때문이다(아래 frontend 주석).
 services:
   db:
     image: postgres:16-alpine
@@ -6,8 +12,10 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-autocert}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-autocert}
-    ports:
-      - "5432:5432"
+    # DB는 기본적으로 호스트에 노출하지 않는다 — backend 컨테이너만 접근하면 되고,
+    # 5432가 열려 있으면 인증서 인벤토리 전체가 호스트 네트워크에 노출된다.
+    # 백업·psql 접속 등으로 임시로 열어야 하면 docker-compose.db-expose.yml을 겹친다
+    # (INSTALL.md 5.5절). 컨테이너 간 통신은 노출 없이도 그대로 된다.
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -19,11 +27,14 @@ services:
   backend:
     build: ./backend
     ports:
-      - "8080:8080"
+      # "호스트:컨테이너". 호스트 포트만 바꾸는 것이 가장 안전하다 —
+      # 컨테이너 쪽(BACKEND_INTERNAL_PORT)을 바꾸면 frontend 재빌드가 필요하다.
+      - "${BACKEND_PORT:-8080}:${BACKEND_INTERNAL_PORT:-8080}"
       # 센서 게이트웨이(mTLS). SENSOR_CA_ENC_KEY 미설정이면 백엔드가 리스너를 열지 않는다.
-      - "8443:8443"
+      # 센서 포트를 바꿔도 등록된 센서의 재등록은 필요 없다 (INSTALL.md 5.5.2).
+      - "${SENSOR_GATEWAY_PORT:-8443}:${SENSOR_GATEWAY_INTERNAL_PORT:-8443}"
     environment:
-      HTTP_ADDR: ":8080"
+      HTTP_ADDR: ":${BACKEND_INTERNAL_PORT:-8080}"
       DATABASE_URL: postgres://${POSTGRES_USER:-autocert}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-autocert}?sslmode=disable
       SESSION_TTL: ${SESSION_TTL:-8h}
       # users 테이블이 비어 있을 때만 초기 System Administrator를 만든다.
@@ -32,7 +43,12 @@ services:
       # 센서 CA 개인키 봉인 키 (hex 64자). 센서(Phase 3a)를 쓸 때만 필요하다.
       SENSOR_CA_ENC_KEY: ${SENSOR_CA_ENC_KEY:-}
       # 센서 게이트웨이 리슨 주소와, 센서가 접속할 DNS/IP(콤마 구분 — 서버 인증서 SAN).
-      SENSOR_LISTEN_ADDR: ${SENSOR_LISTEN_ADDR:-:8443}
+      # 리슨 포트는 위 ports의 컨테이너 쪽과 반드시 같아야 한다 — 어긋나면 리스너는
+      # 떠 있는데 아무도 접속하지 못하므로, .env의 SENSOR_LISTEN_ADDR을 직접 받지 않고
+      # SENSOR_GATEWAY_INTERNAL_PORT 하나에서 파생시킨다 (INSTALL.md 5.5절).
+      # SENSOR_ADVERTISED_HOSTS에는 **포트를 적지 않는다** — 포트가 붙은 항목은
+      # 기동 시 경고와 함께 무시된다(SAN에 들어가면 센서 TLS 검증이 깨진다).
+      SENSOR_LISTEN_ADDR: ":${SENSOR_GATEWAY_INTERNAL_PORT:-8443}"
       SENSOR_ADVERTISED_HOSTS: ${SENSOR_ADVERTISED_HOSTS:-}
       # --- 만료 알림 (INSTALL.md 5.2.1) ---
       # 전부 비어 있어도 정상이다. 채널 설정이 비면 그 채널만 비활성화되고 코어 API는 뜬다.
@@ -86,9 +102,12 @@ services:
       args:
         # 프록시 대상은 rewrites 설정에 빌드 시점 고정되므로 environment가 아니라 build args로 넘긴다.
         # 브라우저 → frontend(/api/*) → backend 중계 구조라 컨테이너 내부 주소를 쓴다.
-        BACKEND_INTERNAL_URL: http://backend:8080
+        # BACKEND_INTERNAL_PORT를 바꿨다면 `docker compose up --build`로 frontend를
+        # 다시 빌드해야 반영된다 — 재기동만으로는 옛 포트가 그대로 남는다.
+        BACKEND_INTERNAL_URL: http://backend:${BACKEND_INTERNAL_PORT:-8080}
     ports:
-      - "3000:3000"
+      # 컨테이너 쪽 3000은 이미지의 PORT 기본값이다 — 호스트 포트만 바꾼다.
+      - "${FRONTEND_PORT:-3000}:3000"
     depends_on:
       - backend
 
