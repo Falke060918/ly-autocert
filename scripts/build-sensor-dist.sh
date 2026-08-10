@@ -14,6 +14,15 @@ GO_IMAGE="${GO_IMAGE:-golang:1.25-alpine}"
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 backend_dir=$(CDPATH='' cd -- "$script_dir/../backend" && pwd)
+repo_root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
+
+# 버전 결정 순서: AUTOCERT_VERSION 환경변수 → 저장소 루트 VERSION 파일 → dev.
+# main.version으로 주입되어 `autocert-sensor --version`이 출력한다.
+sensor_version="${AUTOCERT_VERSION:-}"
+if [ -z "$sensor_version" ] && [ -f "$repo_root/VERSION" ]; then
+	sensor_version=$(tr -d ' \t\r\n' < "$repo_root/VERSION")
+fi
+[ -n "$sensor_version" ] || sensor_version="dev"
 
 # Git Bash/MSYS는 docker 인자의 `/src`를 호스트 경로(C:/Program Files/Git/src)로 자동
 # 변환해 컨테이너 경로를 망가뜨린다. 변환을 끄고 호스트 경로만 Windows 형식으로 넘긴다.
@@ -26,13 +35,14 @@ case "$(uname -s)" in
 		;;
 esac
 
-echo "센서 배포판 빌드 ($GO_IMAGE) — 산출물: $backend_dir/dist"
+echo "센서 배포판 빌드 ($GO_IMAGE, 버전 $sensor_version) — 산출물: $backend_dir/dist"
 
-docker run --rm -v "$mount_dir":/src -w /src -e CGO_ENABLED=0 "$GO_IMAGE" \
+# 버전은 -e로 넘긴다 — 컨테이너 안에서 전개되므로 호스트 셸의 따옴표 처리를 타지 않는다.
+docker run --rm -v "$mount_dir":/src -w /src -e CGO_ENABLED=0 -e "SENSOR_VERSION=$sensor_version" "$GO_IMAGE" \
 	sh -ec '
 	mkdir -p dist
-	GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/autocert-sensor-linux-amd64 ./cmd/sensor
-	GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/autocert-sensor-windows-amd64.exe ./cmd/sensor
+	GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=$SENSOR_VERSION" -o dist/autocert-sensor-linux-amd64 ./cmd/sensor
+	GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=$SENSOR_VERSION" -o dist/autocert-sensor-windows-amd64.exe ./cmd/sensor
 	cd dist && sha256sum autocert-sensor-linux-amd64 autocert-sensor-windows-amd64.exe > SHA256SUMS'
 
 echo "완료:"

@@ -4,6 +4,7 @@
 //
 //	sensor enroll --server https://host:8443 --token <1회용 토큰> --ca-fingerprint <sha256 hex>
 //	sensor run    --server https://host:8443
+//	sensor --version
 //
 // 개인키는 enroll 때 로컬에서 생성되어 이 호스트를 떠나지 않는다.
 package main
@@ -21,6 +22,10 @@ import (
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/sensor"
 )
 
+// version은 빌드 시 ldflags로 주입된다 (scripts/build-sensor-dist.sh:
+// -X main.version=<VERSION>). 주입 없이 `go build`하면 "dev"로 남는다.
+var version = "dev"
+
 func main() {
 	// 구조화 JSON 로그 (00-spec 11장 관측성 고정값).
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -33,6 +38,10 @@ func main() {
 
 	var err error
 	switch os.Args[1] {
+	case "--version", "-version", "version":
+		// 현장에 여러 대가 깔렸을 때 구버전 식별용 — 로컬 출력 전용이다.
+		fmt.Printf("autocert-sensor %s\n", version)
+		return
 	case "enroll":
 		err = runEnroll(os.Args[2:], logger)
 	case "run":
@@ -52,6 +61,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "usage: sensor <enroll|run> [flags]")
 	fmt.Fprintln(os.Stderr, "  enroll --server <https://host:port> --token <token> --ca-fingerprint <sha256 hex> [--state-dir <dir>]")
 	fmt.Fprintln(os.Stderr, "  run    --server <https://host:port> [--state-dir <dir>]")
+	fmt.Fprintln(os.Stderr, "  --version  빌드 버전 출력")
 }
 
 func runEnroll(args []string, logger *slog.Logger) error {
