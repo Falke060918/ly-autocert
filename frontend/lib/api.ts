@@ -423,6 +423,43 @@ export interface NotificationDeliveryListResponse {
   page_size: number;
 }
 
+/**
+ * 관리 콘솔 접근을 허용하는 출발지 IP 규칙 (마이그레이션 0014).
+ * cidr은 서버가 정규화한 표기다 — 단일 IP도 /32(IPv6는 /128)로 저장된다.
+ */
+export interface AdminIPRule {
+  id: string;
+  cidr: string;
+  description: string;
+  is_active: boolean;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * 지금 이 요청이 서버에 어떻게 보이는지. 설정값(대역 문자열)은 담기지 않고
+ * 설정 여부만 담긴다 — 알림 채널 상태와 같은 규약이다.
+ */
+export interface AdminIPAccessState {
+  /** 서버가 판정한 내 출발지 IP. 이 값이 허용 목록에 없으면 나는 잠긴다. */
+  client_ip: string;
+  /** 활성 규칙이 1건 이상이라 제한이 실제로 걸려 있는 상태. */
+  enforced: boolean;
+  bootstrap_configured: boolean;
+  /** 지금 비상 우회 대역으로 접속 중인가(= 잠금 방지 판정이 적용되지 않는다). */
+  client_via_bootstrap: boolean;
+  /** false인데 client_ip가 내 PC 주소가 아니면 이것이 원인이다. */
+  trusted_proxy_configured: boolean;
+}
+
+export interface AdminIPRuleListResponse {
+  request_id?: string;
+  items: AdminIPRule[];
+  total: number;
+  access: AdminIPAccessState;
+}
+
 // ── 오류·요청 헬퍼 ────────────────────────────────────────────────────────
 
 /** 통일 오류 응답(00-spec 13장)을 담는 예외. status로 401/403 분기한다. */
@@ -790,4 +827,41 @@ export function listNotificationDeliveries(opts?: {
   return apiFetch<NotificationDeliveryListResponse>(
     `/api/v1/notification-deliveries${qs ? `?${qs}` : ""}`,
   );
+}
+
+// ── 접근 IP 제한 (System Administrator 전용 — 마이그레이션 0014) ───────────
+
+/** 허용 목록을 조회한다. items가 비었거나 전부 비활성이면 제한이 없다. */
+export function listAdminIPRules() {
+  return apiFetch<AdminIPRuleListResponse>("/api/v1/admin-ip-rules");
+}
+
+/**
+ * 규칙을 추가한다. cidr은 단일 IP(10.0.0.5)와 대역(10.0.0.0/24) 둘 다 받는다.
+ * 이 추가로 요청자 자신이 차단되면 서버가 409(self_lockout_forbidden)로 거부한다.
+ */
+export function createAdminIPRule(req: {
+  cidr: string;
+  description?: string;
+  is_active?: boolean;
+}) {
+  return apiFetch<AdminIPRule>("/api/v1/admin-ip-rules", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
+}
+
+/** 활성/비활성 토글. 자신을 차단하는 비활성화는 409다. */
+export function setAdminIPRuleActive(id: string, isActive: boolean) {
+  return apiFetch<AdminIPRule>(
+    `/api/v1/admin-ip-rules/${encodeURIComponent(id)}`,
+    { method: "PATCH", body: JSON.stringify({ is_active: isActive }) },
+  );
+}
+
+/** 규칙 삭제. 자신을 차단하는 삭제는 409다. 성공은 204라 본문이 없다. */
+export function deleteAdminIPRule(id: string) {
+  return apiFetch<void>(`/api/v1/admin-ip-rules/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
 }

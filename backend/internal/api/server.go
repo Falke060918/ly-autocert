@@ -33,7 +33,7 @@ type Server struct {
 	audit  *audit.Recorder
 	routes []string
 
-	// 아래 넷은 배선(cmd/server)이 있어야 채워지는 선택 의존성이다.
+	// 아래 다섯은 배선(cmd/server)이 있어야 채워지는 선택 의존성이다.
 	// 비어 있어도 코어 API는 정상 동작한다 (05-notifications 10.1 실패 격리).
 	channels      NotificationChannels
 	sweepDefaults SweepDefaults
@@ -44,6 +44,10 @@ type Server struct {
 	// secureCookies는 세션 쿠키에 Secure 플래그를 붙일지다 (SESSION_COOKIE_SECURE).
 	// 기본 false — 평문 HTTP 기본 설치를 깨지 않는다.
 	secureCookies bool
+
+	// adminIP는 접근 IP 허용 목록 판정기다. 항상 존재하며(허용 목록이 비면
+	// 제한 없음), 환경변수 유래 설정만 WithAdminIPAccess로 채워진다.
+	adminIP *adminIPGuard
 }
 
 // Option은 NewServer의 선택 의존성 주입이다.
@@ -84,7 +88,10 @@ func WithSecureCookies(secure bool) Option {
 // sensorCAKey는 센서 mTLS 내부 CA 개인키의 봉인 키(32바이트)다 — 센서 CA를
 // 처음 부트스트랩하는 시점(첫 센서 생성)에만 필요하며 nil이어도 기동은 된다.
 func NewServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorCAKey []byte, opts ...Option) http.Handler {
-	return withSecurityHeaders(withRequestID(newServer(pool, authSvc, rec, sensorCAKey, opts...).mux))
+	s := newServer(pool, authSvc, rec, sensorCAKey, opts...)
+	// 접근 IP 제한은 인증보다 앞이다 — 차단된 IP는 로그인 화면조차 받지 못한다.
+	// Request ID 안쪽에 두어 차단 응답에도 request_id가 실린다.
+	return withSecurityHeaders(withRequestID(s.withAdminIPAllow(s.mux)))
 }
 
 // newServer는 라우트를 등록한 Server를 만든다. 핸들러를 호출하지 않는 한
@@ -93,7 +100,8 @@ func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorC
 	st := store.New(pool)
 	disc := discovery.NewManager(st)
 	s := &Server{mux: http.NewServeMux(), pool: pool, store: st, auth: authSvc, audit: rec,
-		sensorGatewayPort: defaultSensorGatewayPort}
+		sensorGatewayPort: defaultSensorGatewayPort,
+		adminIP:           newAdminIPGuard(st)}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -184,6 +192,17 @@ func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorC
 	s.protected("GET /api/v1/sensors", handleListSensors(st), domain.AllRoles...)
 	s.protected("GET /api/v1/sensors/{id}", handleGetSensor(st), domain.AllRoles...)
 	s.protected("POST /api/v1/sensors/{id}/disable", handleDisableSensor(st),
+		domain.RoleSystemAdministrator)
+	// 관리 콘솔 접근 IP 허용 목록 (0014) — System Administrator 전용.
+	// 조회도 관리자 전용이다: 허용 대역 목록 자체가 우회 대상 정보다.
+	// 변경 3종은 admin_ip_rule.* 감사 이벤트를 store가 같은 트랜잭션으로 남긴다.
+	s.protected("GET /api/v1/admin-ip-rules", s.handleListAdminIPRules,
+		domain.RoleSystemAdministrator)
+	s.protected("POST /api/v1/admin-ip-rules", s.handleCreateAdminIPRule,
+		domain.RoleSystemAdministrator)
+	s.protected("PATCH /api/v1/admin-ip-rules/{id}", s.handleUpdateAdminIPRule,
+		domain.RoleSystemAdministrator)
+	s.protected("DELETE /api/v1/admin-ip-rules/{id}", s.handleDeleteAdminIPRule,
 		domain.RoleSystemAdministrator)
 	// 감사 로그 조회·무결성 검증 — 00-spec 7.11에서 감사 로그 조회 권한은
 	// Security Administrator와 Auditor에만 명시되어 있다.

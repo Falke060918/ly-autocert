@@ -60,6 +60,9 @@ func newTestEnv(t *testing.T, opts ...Option) *testEnv {
 	// audit_events는 append-only 트리거(0007)가 DELETE를 차단하므로, 테이블 소유자
 	// 권한으로 트리거를 잠시 내리고 지운다 — 운영 DB에서는 절대 하지 않는 조작이다.
 	for _, stmt := range []string{
+		// 접근 IP 규칙이 남아 있으면 그 다음 테스트의 요청이 통째로 403이 된다
+		// (미들웨어는 인증보다 앞이다) — 사용자보다 먼저 지운다.
+		`DELETE FROM admin_ip_rules`,
 		`DELETE FROM sessions`, `DELETE FROM users`,
 		`ALTER TABLE audit_events DISABLE TRIGGER USER`,
 		`DELETE FROM audit_events`,
@@ -81,8 +84,8 @@ func newTestEnv(t *testing.T, opts ...Option) *testEnv {
 	return &testEnv{pool: pool, svc: svc, server: server}
 }
 
-// do는 JSON 요청을 보낸다. token이 비어 있지 않으면 Bearer로 붙인다.
-func (e *testEnv) do(t *testing.T, method, path, token string, body any) *http.Response {
+// newRequest는 JSON 요청을 만든다 (헤더를 더 붙여야 하는 호출자가 쓴다).
+func (e *testEnv) newRequest(t *testing.T, method, path, token string, body any) *http.Request {
 	t.Helper()
 	var buf bytes.Buffer
 	if body != nil {
@@ -98,7 +101,13 @@ func (e *testEnv) do(t *testing.T, method, path, token string, body any) *http.R
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	return req
+}
+
+// do는 JSON 요청을 보낸다. token이 비어 있지 않으면 Bearer로 붙인다.
+func (e *testEnv) do(t *testing.T, method, path, token string, body any) *http.Response {
+	t.Helper()
+	resp, err := http.DefaultClient.Do(e.newRequest(t, method, path, token, body))
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, path, err)
 	}

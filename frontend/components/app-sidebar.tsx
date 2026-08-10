@@ -6,6 +6,7 @@ import {
   Bell,
   BellRing,
   LayoutDashboard,
+  Lock,
   Radar,
   RadioTower,
   ShieldCheck,
@@ -26,6 +27,7 @@ const NAV_ITEMS = [
 /** System Administrator에게만 보이는 메뉴 — 화면 자체도 같은 역할로 잠겨 있다. */
 const ADMIN_NAV_ITEMS = [
   { href: "/users", label: "사용자", icon: Users },
+  { href: "/settings/access", label: "접근 제한", icon: Lock },
 ] as const;
 
 /**
