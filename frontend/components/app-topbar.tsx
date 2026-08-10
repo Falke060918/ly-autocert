@@ -3,6 +3,7 @@
 import { LogOut } from "lucide-react";
 
 import { NotificationBell } from "@/components/notification-bell";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { roleLabel, useAuth } from "@/lib/auth";
@@ -16,6 +17,8 @@ export function AppTopbar() {
         Phase 1 — 인증서 인벤토리
       </div>
       <div className="flex items-center gap-3">
+        {/* 테마 토글은 세션 상태와 무관하게 항상 노출 */}
+        <ThemeToggle />
         {loading ? (
           <Skeleton className="h-8 w-40" />
         ) : user ? (

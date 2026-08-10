@@ -14,6 +14,11 @@ const badgeVariants = cva(
           "bg-secondary text-secondary-foreground [a]:hover:bg-secondary/80",
         destructive:
           "bg-destructive/10 text-destructive focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:focus-visible:ring-destructive/40 [a]:hover:bg-destructive/20",
+        // 상태 tone 3종 — 인증서 상태(만료·임박·정상) 전용. 장식 용도 금지.
+        danger:
+          "bg-danger/10 text-danger focus-visible:ring-danger/20 dark:bg-danger/15 dark:focus-visible:ring-danger/40 [a]:hover:bg-danger/20",
+        warn: "bg-warn/10 text-warn focus-visible:ring-warn/20 dark:bg-warn/15 dark:focus-visible:ring-warn/40 [a]:hover:bg-warn/20",
+        ok: "bg-ok/10 text-ok focus-visible:ring-ok/20 dark:bg-ok/15 dark:focus-visible:ring-ok/40 [a]:hover:bg-ok/20",
         outline:
           "border-border text-foreground [a]:hover:bg-muted [a]:hover:text-muted-foreground",
         ghost:
