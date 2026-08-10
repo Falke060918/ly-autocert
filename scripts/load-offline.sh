@@ -105,6 +105,6 @@ if [ "$no_next_steps" -eq 1 ]; then
 	log "완료."
 else
 	log "완료. 다음 단계:"
-	log "  이 디렉터리에서  sh install.sh  를 실행하면 소스 전개·환경 설정·기동까지 이어서 진행한다."
+	log "  이 디렉터리에서  bash install.sh  를 실행하면 소스 전개·환경 설정·기동까지 이어서 진행한다."
 	log "  자세한 절차는 manual/INSTALL.md 5장."
 fi

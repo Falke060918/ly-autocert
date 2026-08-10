@@ -2,12 +2,21 @@
 # INHERIT AutoCert 센서 설치·등록 마법사 — 대상: 격리 세그먼트의 센서 호스트(Linux x86_64).
 # 실행: sudo bash install-sensor.sh
 #
-# 하는 일: 사전 점검(권한·NTP·바이너리 무결성·게이트웨이 도달성) → 바이너리 배치 →
+# 하는 일: 사전 점검(권한·NTP·패키지/바이너리 무결성·게이트웨이 도달성) → 바이너리 배치 →
 #          enroll → systemd 유닛 등록·기동 → 상태 확인까지 한 번에 끝낸다.
 # 절차 원문과 트러블슈팅은 manual/SENSOR.md.
 #
 # 보안: 등록 토큰은 화면에 에코하지 않고 로그·출력 어디에도 남기지 않는다.
 #       개인키는 센서 호스트에서 생성되어 호스트를 떠나지 않는다(이 스크립트도 다루지 않는다).
+
+# `sh install-sensor.sh` 로 실행되어도 동작하게 bash로 다시 띄운다 — 이 스크립트는
+# bash 문법(배열·BASH_SOURCE·pipefail)을 쓴다. set -o pipefail 앞이어야 dash가 안 죽는다.
+if [ -z "${BASH_VERSION:-}" ]; then
+	if command -v bash >/dev/null 2>&1; then exec bash "$0" "$@"; fi
+	printf '이 스크립트는 bash가 필요하다 (sudo bash install-sensor.sh).\n' >&2
+	exit 1
+fi
+
 set -euo pipefail
 
 SERVICE_NAME="autocert-sensor"
@@ -288,14 +297,16 @@ parse_enroll_command() {
 binary_src=''
 binary_sha=''
 
+# 반입 패키지에서는 install-sensor.sh 가 패키지 루트에 있다(SHA256SUMS·MANIFEST.txt 와 같은 자리).
+script_dir=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+
 find_binary() {
 	if [ -n "$opt_binary" ]; then
 		[ -f "$opt_binary" ] || return 1
 		binary_src="$opt_binary"
 		return 0
 	fi
-	local script_dir cand
-	script_dir=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+	local cand
 	for cand in \
 		"./$DIST_NAME" \
 		"./autocert-sensor" \
@@ -371,6 +382,84 @@ check_ntp() {
 	esac
 }
 
+# 반입 패키지(sensor_linux_<버전>/)의 패키지 레벨 SHA256SUMS. 설치 스크립트 자신과
+# lib/tui.sh·매뉴얼까지 포함하므로 바이너리 단위 대조보다 넓다.
+# build-sensor-dist.sh 가 만드는 backend/dist/SHA256SUMS 는 바이너리 2줄뿐이고
+# MANIFEST.txt 가 없다 — 그 차이로 두 경로를 가른다(패키지 레벨이 있으면 우선).
+package_dir=''
+package_verified=0
+
+find_package_dir() {
+	local c
+	for c in "$script_dir" "$PWD"; do
+		[ -n "$c" ] || continue
+		if [ -f "$c/SHA256SUMS" ] && [ -f "$c/MANIFEST.txt" ]; then
+			(CDPATH='' cd -- "$c" && pwd)
+			return 0
+		fi
+	done
+	return 1
+}
+
+check_package() {
+	local dir out rc mismatch missing okc sha_check
+	if ! dir=$(find_package_dir); then
+		# 패키지가 아니라 바이너리만 반입한 경우다 — check_binary 가 바이너리 단위로 대조한다.
+		return
+	fi
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha_check='sha256sum -c'
+	elif command -v shasum >/dev/null 2>&1; then
+		sha_check='shasum -a 256 -c'
+	else
+		row_warn "패키지 무결성 — sha256sum·shasum이 없어 대조 불가 ($dir)"
+		hint "무결성을 확인하지 못한 채로 설치하게 된다 — coreutils 를 설치한 뒤 다시 실행하는 편이 낫다"
+		return
+	fi
+
+	rc=0
+	# shellcheck disable=SC2086 # sha_check 는 "shasum -a 256 -c" 처럼 인자를 포함해 분리가 의도적이다
+	out=$( (cd "$dir" && $sha_check SHA256SUMS) 2>&1 ) || rc=$?
+	if [ "$rc" -eq 0 ]; then
+		package_dir="$dir"
+		package_verified=1
+		okc=$(printf '%s\n' "$out" | grep -c ': OK$' || true)
+		row_ok "패키지 무결성 — 확인됨 (SHA256SUMS ${okc}건) · $dir"
+		return
+	fi
+
+	mismatch=$(printf '%s\n' "$out" | grep ': FAILED$' || true)
+	missing=$(printf '%s\n' "$out" | grep ': FAILED open or read$' || true)
+
+	if [ -n "$mismatch" ]; then
+		# 내용이 다르다 = 매체 손상 또는 변조. 바이너리를 시스템 경로에 배치하기 전에 끊는다.
+		# --force 로도 넘기지 않는다 — 여기서 넘기면 검증이 있으나 마나다.
+		row_fail "패키지 무결성 — 파일 내용이 SHA256SUMS와 다르다 · $dir"
+		printf '%s\n' "$mismatch" | while IFS= read -r l; do
+			[ -n "$l" ] || continue
+			hint "불일치: ${l%%:*}"
+		done
+		hint "매체 손상 또는 변조다. 패키지를 다시 반입해 재시도한다 (SENSOR.md 4.2)"
+		die "패키지 체크섬 불일치 — 바이너리를 배치하지 않고 중단했다"
+	fi
+
+	if [ -n "$missing" ]; then
+		row_fail "패키지 무결성 — SHA256SUMS에 적힌 파일이 없다 · $dir"
+		printf '%s\n' "$missing" | while IFS= read -r l; do
+			[ -n "$l" ] || continue
+			hint "없음: ${l%%:*}"
+		done
+		hint "고치는 법: 압축을 다시 풀어 패키지를 온전한 상태로 만든 뒤 실행한다"
+		return
+	fi
+
+	row_fail "패키지 무결성 — 대조에 실패했다 · $dir"
+	printf '%s\n' "$out" | tail -n 3 | while IFS= read -r l; do
+		[ -n "$l" ] || continue
+		hint "$l"
+	done
+}
+
 check_binary() {
 	if ! find_binary; then
 		row_fail "센서 바이너리 — 찾지 못했다 ($DIST_NAME)"
@@ -380,6 +469,17 @@ check_binary() {
 	fi
 
 	binary_sha=$(sha256_of "$binary_src")
+
+	# 패키지 레벨 대조가 이미 이 바이너리를 포함해 통과했으면 다시 보지 않는다.
+	if [ "$package_verified" -eq 1 ] && [ -n "$package_dir" ]; then
+		case "$binary_src" in
+			"$package_dir"/*)
+				row_ok "센서 바이너리 — 무결성 확인됨 (패키지 SHA256SUMS 대조) · $binary_src"
+				return
+				;;
+		esac
+	fi
+
 	local sums_dir sums_file
 	sums_dir=$(dirname -- "$binary_src")
 	sums_file="$sums_dir/SHA256SUMS"
@@ -390,8 +490,11 @@ check_binary() {
 		return
 	fi
 
+	# 항목 경로는 "name" · "*name" · "./name" 세 형태가 다 나온다(패키지 SHA256SUMS는 ./ 접두).
 	local want
-	want=$(awk -v f="$(basename -- "$binary_src")" '$2 == f || $2 == "*" f {print $1}' "$sums_file" | head -n 1)
+	want=$(awk -v f="$(basename -- "$binary_src")" '
+		{ p = $2; sub(/^\*/, "", p); sub(/^.*\//, "", p); if (p == f) { print $1; exit } }
+	' "$sums_file")
 	if [ -z "$want" ]; then
 		row_warn "센서 바이너리 — $binary_src (SHA256SUMS에 이 파일 항목이 없다)"
 		return
@@ -818,6 +921,8 @@ fi
 head1 "사전 점검"
 check_root
 check_ntp
+# 패키지 대조가 먼저다 — 통과하면 check_binary 가 그 결과를 그대로 쓴다.
+check_package
 check_binary
 
 if [ "$check_fail" -gt 0 ]; then

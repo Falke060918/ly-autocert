@@ -1,7 +1,7 @@
 ﻿# INHERIT AutoCert 센서 설치·등록 마법사 — 대상: 격리 세그먼트의 센서 호스트(Windows x86_64).
 # 실행: 관리자 PowerShell에서  powershell -ExecutionPolicy Bypass -File .\install-sensor.ps1
 #
-# 하는 일: 사전 점검(권한·시각 동기·바이너리 무결성·게이트웨이 도달성) → 바이너리 배치 →
+# 하는 일: 사전 점검(권한·시각 동기·패키지/바이너리 무결성·게이트웨이 도달성) → 바이너리 배치 →
 #          enroll → 작업 스케줄러 등록(ONSTART/SYSTEM)·기동 → 상태 확인까지 한 번에 끝낸다.
 # 절차 원문과 트러블슈팅은 manual/SENSOR.md.
 #
@@ -42,6 +42,8 @@ $LogFile = Join-Path $LogDir 'sensor.log'
 
 $script:CheckFail = 0
 $script:CheckWarn = 0
+$script:PackageDir = $null
+$script:PackageVerified = $false
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 출력 유틸
@@ -399,6 +401,77 @@ function Find-SensorBinary {
     return $null
 }
 
+# 반입 패키지(sensor_windows_<버전>\)의 패키지 레벨 SHA256SUMS. 설치 스크립트 자신과
+# 매뉴얼까지 포함하므로 바이너리 단위 대조보다 넓다. build-sensor-dist.sh 가 만드는
+# backend\dist\SHA256SUMS 는 바이너리 2줄뿐이고 MANIFEST.txt 가 없다 - 그 차이로 두
+# 경로를 가른다(패키지 레벨이 있으면 우선).
+function Find-PackageDir {
+    $candidates = @()
+    if ($PSCommandPath) { $candidates += (Split-Path -Parent $PSCommandPath) }
+    $candidates += (Get-Location).Path
+    foreach ($c in $candidates) {
+        if (-not $c) { continue }
+        if ((Test-Path -LiteralPath (Join-Path $c 'SHA256SUMS') -PathType Leaf) -and
+            (Test-Path -LiteralPath (Join-Path $c 'MANIFEST.txt') -PathType Leaf)) {
+            return (Resolve-Path -LiteralPath $c).Path
+        }
+    }
+    return $null
+}
+
+function Invoke-CheckPackage {
+    $dir = Find-PackageDir
+    if (-not $dir) {
+        # 패키지가 아니라 바이너리만 반입한 경우다 - Invoke-CheckBinary 가 단건 대조한다.
+        return
+    }
+    $sumsFile = Join-Path $dir 'SHA256SUMS'
+
+    $okCount = 0
+    $mismatch = New-Object System.Collections.ArrayList
+    $missing = New-Object System.Collections.ArrayList
+
+    foreach ($line in (Get-Content -LiteralPath $sumsFile)) {
+        if (-not $line -or -not $line.Trim()) { continue }
+        $parts = $line.Trim() -split '\s+', 2
+        if ($parts.Count -lt 2) { continue }
+        $want = $parts[0].ToLowerInvariant()
+        # "*name" (바이너리 모드) · "./name" (패키지) 두 형태를 다 받는다.
+        $rel = $parts[1].TrimStart('*').Replace('/', '\')
+        if ($rel.StartsWith('.\')) { $rel = $rel.Substring(2) }
+        $target = Join-Path $dir $rel
+        if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
+            [void]$missing.Add($rel)
+            continue
+        }
+        $got = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($got -eq $want) { $okCount++ } else { [void]$mismatch.Add($rel) }
+    }
+
+    if ($mismatch.Count -gt 0) {
+        # 내용이 다르다 = 매체 손상 또는 변조. 바이너리를 시스템 경로에 배치하기 전에 끊는다.
+        # -Force 로도 넘기지 않는다 - 여기서 넘기면 검증이 있으나 마나다.
+        Write-RowFail "패키지 무결성 - 파일 내용이 SHA256SUMS와 다르다 · $dir"
+        foreach ($m in $mismatch) { Write-Hint "불일치: $m" }
+        Write-Hint '매체 손상 또는 변조다. 패키지를 다시 반입해 재시도한다 (SENSOR.md 4.2)'
+        Stop-WithError '패키지 체크섬 불일치 - 바이너리를 배치하지 않고 중단했다'
+    }
+    if ($missing.Count -gt 0) {
+        Write-RowFail "패키지 무결성 - SHA256SUMS에 적힌 파일이 없다 · $dir"
+        foreach ($m in $missing) { Write-Hint "없음: $m" }
+        Write-Hint '고치는 법: 압축을 다시 풀어 패키지를 온전한 상태로 만든 뒤 실행한다'
+        return
+    }
+    if ($okCount -eq 0) {
+        Write-RowWarn "패키지 무결성 - SHA256SUMS에서 대조할 항목을 찾지 못했다 · $dir"
+        return
+    }
+
+    $script:PackageDir = $dir
+    $script:PackageVerified = $true
+    Write-RowOk "패키지 무결성 - 확인됨 (SHA256SUMS $okCount 건) · $dir"
+}
+
 function Invoke-CheckBinary {
     $found = Find-SensorBinary
     if (-not $found) {
@@ -409,6 +482,13 @@ function Invoke-CheckBinary {
     }
     $script:BinarySrc = $found
     $script:BinarySha = (Get-FileHash -LiteralPath $found -Algorithm SHA256).Hash.ToLowerInvariant()
+
+    # 패키지 레벨 대조가 이미 이 바이너리를 포함해 통과했으면 다시 보지 않는다.
+    if ($script:PackageVerified -and $script:PackageDir -and
+        $found.StartsWith(($script:PackageDir.TrimEnd('\') + '\'), [System.StringComparison]::OrdinalIgnoreCase)) {
+        Write-RowOk "센서 바이너리 - 무결성 확인됨 (패키지 SHA256SUMS 대조) · $found"
+        return
+    }
 
     $sumsFile = Join-Path (Split-Path -Parent $found) 'SHA256SUMS'
     if (-not (Test-Path -LiteralPath $sumsFile -PathType Leaf)) {
@@ -422,7 +502,8 @@ function Invoke-CheckBinary {
     foreach ($line in (Get-Content -LiteralPath $sumsFile)) {
         $parts = $line.Trim() -split '\s+', 2
         if ($parts.Count -lt 2) { continue }
-        $entry = $parts[1].TrimStart('*')
+        # 항목 경로는 "name" · "*name" · "./name" 세 형태가 다 나온다.
+        $entry = Split-Path -Leaf ($parts[1].TrimStart('*').Replace('/', '\'))
         if ($entry -eq $name) { $want = $parts[0].ToLowerInvariant(); break }
     }
     if (-not $want) {
@@ -870,6 +951,8 @@ if (-not $SkipEnroll) {
 Write-Head '사전 점검'
 Invoke-CheckAdmin
 Invoke-CheckTimeSync
+# 패키지 대조가 먼저다 - 통과하면 Invoke-CheckBinary 가 그 결과를 그대로 쓴다.
+Invoke-CheckPackage
 Invoke-CheckBinary
 
 if ($script:CheckFail -gt 0) {

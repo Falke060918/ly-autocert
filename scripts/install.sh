@@ -8,10 +8,49 @@
 # 스크립트가 만들어 .env(600)에만 넣고 화면에는 절대 출력하지 않는다.
 #
 # 자세한 배경·수동 절차는 docs/manual/INSTALL.md.
+
+# 이 스크립트는 bash 문법(배열·${!var}·pipefail)을 쓴다. `sh install.sh` 로 실행되어도
+# 동작하도록 bash로 다시 띄운다 — set -o pipefail 앞이어야 dash가 여기서 죽지 않는다.
+if [ -z "${BASH_VERSION:-}" ]; then
+	if command -v bash >/dev/null 2>&1; then exec bash "$0" "$@"; fi
+	printf '이 스크립트는 bash가 필요하다 (bash install.sh).\n' >&2
+	exit 1
+fi
+
 set -euo pipefail
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-ROOT_DIR=$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)
+PARENT_DIR=$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)
+
+# 배치 두 가지를 여기서 가른다.
+#   저장소   : scripts/install.sh          → 설치 루트는 저장소 루트(한 단계 위)
+#   반입 패키지: main_<버전>/install.sh    → 패키지 루트가 곧 설치 루트다
+# 셔뱅·실행 인자·현재 디렉터리는 믿지 않는다 — **마커 파일 존재**로만 가른다.
+# 저장소의 scripts/ 에도 load-offline.sh 사본이 있어서 그 파일 하나로는 구분되지 않는다.
+root_markers_ok() {
+	# 설치 루트에는 compose 파일이 반드시 있고(스택 정의), 그 옆에 버전·설정 표본이 붙는다.
+	[ -f "$1/docker-compose.yml" ] || return 1
+	[ -f "$1/VERSION" ] || [ -f "$1/.env.example" ] || [ -f "$1/MANIFEST.txt" ] || return 1
+	return 0
+}
+
+if root_markers_ok "$SCRIPT_DIR"; then
+	PACKAGE_MODE=1
+	ROOT_DIR=$SCRIPT_DIR
+elif root_markers_ok "$PARENT_DIR"; then
+	PACKAGE_MODE=0
+	ROOT_DIR=$PARENT_DIR
+else
+	# 여기서 조용히 진행하면 .env·images/·source/ 를 엉뚱한 디렉터리에서 찾게 된다.
+	printf '설치 루트를 찾지 못했다 — docker-compose.yml 이 있는 디렉터리가 아니다.\n' >&2
+	printf '  확인한 위치: %s\n' "$SCRIPT_DIR" >&2
+	printf '              %s\n' "$PARENT_DIR" >&2
+	printf '실행 위치를 확인한다.\n' >&2
+	printf '  저장소   : 저장소 루트에서  bash scripts/install.sh\n' >&2
+	printf '  반입 패키지: main_<버전>/ 안에서  bash install.sh\n' >&2
+	printf '패키지를 푼 디렉터리가 통째로 옮겨졌거나 일부 파일만 복사된 것은 아닌지 확인한다.\n' >&2
+	exit 1
+fi
 
 # shellcheck source=scripts/lib/tui.sh
 . "$SCRIPT_DIR/lib/tui.sh"
@@ -27,6 +66,7 @@ DEFAULT_SENSOR_PORT=8443
 DEFAULT_TRUSTED_PROXIES="172.16.0.0/12"   # Docker 사용자 정의 네트워크 기본 풀
 HEALTH_TIMEOUT=120
 COMPOSE_HTTPS_MIN="2.24.4"                # ports: !override 지원 하한
+DEFAULT_PROJECT_NAME="autocert"           # compose 프로젝트명 고정값 — 볼륨 이름의 접두어다
 
 ASSUME_YES=""
 NON_INTERACTIVE=""
@@ -41,6 +81,7 @@ COMPOSE_HTTPS_OK=""
 IMAGES_PRESENT=""
 BUNDLE_DIR=""
 PRIMARY_IP="127.0.0.1"
+COMPOSE_PROJECT=""
 
 # 최종 안내에 쓰는 확정값
 CFG_FRONTEND_PORT=""
@@ -69,6 +110,7 @@ INHERIT AutoCert 설치 마법사
   FRONTEND_PORT  BACKEND_PORT  SENSOR_GATEWAY_PORT
   SENSOR_ENABLED(1|0)  SENSOR_ADVERTISED_HOSTS  ADMIN_IP_TRUSTED_PROXIES
   POSTGRES_PASSWORD  (미설정이면 자동 생성)
+  COMPOSE_PROJECT_NAME  (미설정이면 autocert 로 고정 — DB 볼륨 이름의 접두어다)
 
 예:
   bash scripts/install.sh                          대화형 설치
@@ -139,11 +181,59 @@ ver_ge() {
 }
 
 dc() {
+	# 프로젝트명을 명시한다 — .env의 COMPOSE_PROJECT_NAME과 같은 값이지만, .env를 쓰기
+	# 전(사전 점검·기존 스택 감지) 단계에서도 같은 프로젝트를 봐야 한다.
+	local pargs=()
+	if [ -n "$COMPOSE_PROJECT" ]; then pargs=(-p "$COMPOSE_PROJECT"); fi
+	# ${a[@]+"${a[@]}"} — 빈 배열을 set -u 에서 참조해도 안전한 형태(bash 4.2 대응).
 	if [ "$CFG_HTTPS" -eq 1 ]; then
-		docker compose --project-directory "$ROOT_DIR" -f "$COMPOSE_FILE" -f "$COMPOSE_HTTPS_FILE" "$@"
+		docker compose ${pargs[@]+"${pargs[@]}"} --project-directory "$ROOT_DIR" -f "$COMPOSE_FILE" -f "$COMPOSE_HTTPS_FILE" "$@"
 	else
-		docker compose --project-directory "$ROOT_DIR" -f "$COMPOSE_FILE" "$@"
+		docker compose ${pargs[@]+"${pargs[@]}"} --project-directory "$ROOT_DIR" -f "$COMPOSE_FILE" "$@"
 	fi
+}
+
+# compose v2의 기본 프로젝트명 규칙: 소문자화 → [a-z0-9_-] 밖의 문자 제거 → 앞쪽 _- 제거.
+compose_default_project_name() {
+	basename -- "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]//g; s/^[_-]*//'
+}
+
+# 이 프로젝트명으로 만들어진 DB 볼륨이나 컨테이너가 이미 있는가.
+project_has_state() {
+	local p=$1
+	have docker || return 1
+	docker info >/dev/null 2>&1 || return 1
+	if docker volume ls -q 2>/dev/null | grep -qx "${p}_pgdata"; then return 0; fi
+	if docker ps -aq --filter "label=com.docker.compose.project=$p" 2>/dev/null | grep -q .; then return 0; fi
+	return 1
+}
+
+# Docker 볼륨 이름은 compose 프로젝트명이 접두어이고, 프로젝트명의 기본값은
+# 디렉터리명에서 나온다. 패키지 루트가 곧 설치 루트라 신버전은 main_1.0.1/ 같은
+# **다른 디렉터리**에 깔린다 — 고정하지 않으면 프로젝트명이 바뀌어 기존 pgdata 볼륨을
+# 못 찾고 빈 DB로 뜬다. 그래서 .env에 고정값을 박는다.
+resolve_project_name() {
+	local cur derived
+	cur=$(value_for COMPOSE_PROJECT_NAME "")
+	if [ -n "$cur" ]; then
+		# 이미 정해진 값은 절대 바꾸지 않는다 — 여기서 바꾸면 그게 곧 빈 DB 사고다.
+		COMPOSE_PROJECT=$cur
+		return 0
+	fi
+	derived=$(compose_default_project_name "$ROOT_DIR")
+	if [ -n "$derived" ] && [ "$derived" != "$DEFAULT_PROJECT_NAME" ] && project_has_state "$derived"; then
+		COMPOSE_PROJECT=$derived
+		return 0
+	fi
+	COMPOSE_PROJECT=$DEFAULT_PROJECT_NAME
+	return 0
+}
+
+# .env에 기록한다. resolve_project_name이 정한 값을 그대로 쓴다(재계산하지 않는다).
+persist_project_name() {
+	[ -n "$COMPOSE_PROJECT" ] || resolve_project_name
+	env_set COMPOSE_PROJECT_NAME "$COMPOSE_PROJECT"
+	ui_ok "compose 프로젝트명 고정: $COMPOSE_PROJECT (DB 볼륨 ${COMPOSE_PROJECT}_pgdata — 디렉터리를 옮겨도 유지된다)"
 }
 
 gen_secret_b64() {
@@ -380,6 +470,19 @@ preflight() {
 		PRE_FATAL=1
 	fi
 
+	# 1-2) 제품 소스 (패키지 배치에서는 install.sh가 전개한다)
+	if source_tree_present; then
+		ui_row ok "제품 소스" "전개됨 (backend/ · frontend/)"
+	elif [ "$PACKAGE_MODE" -eq 1 ] && source_archive_path >/dev/null; then
+		ui_row info "제품 소스" "아카이브 있음 — 설치 시 이 디렉터리에 전개한다"
+	elif [ "$PACKAGE_MODE" -eq 1 ]; then
+		ui_row warn "제품 소스" "source/autocert-source-*.tar.gz 없음"
+		pre_hint "소스 아카이브가 없으면 --build 와 HTTPS 오버레이(deploy/tls)를 쓸 수 없다. 패키지를 다시 반입한다."
+	fi
+
+	# 1-3) compose 프로젝트명 — 볼륨(DB) 이름의 접두어라 버전 올릴 때 바뀌면 안 된다.
+	ui_row info "compose 프로젝트" "$COMPOSE_PROJECT"
+
 	# 2) docker
 	if have docker; then
 		ui_row ok "docker" "$(docker --version 2>/dev/null | head -1)"
@@ -504,9 +607,99 @@ images_present() {
 		docker image inspect "$(image_tag frontend)" >/dev/null 2>&1
 }
 
+# --- 소스 전개 (패키지 배치 전용) --------------------------------------------
+#
+# 반입 패키지는 이미지·설치 스크립트만 최상위에 두고 제품 소스는
+# source/autocert-source-<버전>.tar.gz 하나로 담는다(반입 심사 열람용으로
+# docker-compose.yml·.env.example 사본만 미리 꺼내 둔다). 여기서 그 아카이브를
+# **패키지 루트에** 전개하면 두 사본이 같은 바이트로 덮이고, compose의
+# `build: ./backend` · deploy/tls 마운트 컨텍스트가 실재하게 된다.
+
+source_archive_path() {
+	local v c
+	v=$(tr -d ' \t\r\n' < "$VERSION_FILE" 2>/dev/null || printf '')
+	if [ -n "$v" ] && [ -f "$ROOT_DIR/source/autocert-source-$v.tar.gz" ]; then
+		printf '%s' "$ROOT_DIR/source/autocert-source-$v.tar.gz"
+		return 0
+	fi
+	for c in "$ROOT_DIR"/source/autocert-source-*.tar.gz; do
+		[ -f "$c" ] || continue
+		printf '%s' "$c"
+		return 0
+	done
+	return 1
+}
+
+source_tree_present() {
+	[ -f "$ROOT_DIR/backend/go.mod" ] && [ -f "$ROOT_DIR/frontend/package.json" ]
+}
+
+# 아카이브 최상위는 autocert-<버전>/ 한 겹이다. 그 한 겹을 벗겨 ROOT_DIR에 푼다.
+extract_source_archive() {
+	local archive=$1 tmp top
+	if tar xzf "$archive" -C "$ROOT_DIR" --strip-components=1 2>/dev/null; then
+		return 0
+	fi
+	# busybox tar 등 --strip-components 미지원 환경 폴백: 임시 디렉터리에 풀고 옮긴다.
+	ui_note "tar가 --strip-components를 지원하지 않는다 — 임시 디렉터리를 경유해 전개한다."
+	tmp=$(mktemp -d "${TMPDIR:-/tmp}/autocert-src.XXXXXX") || return 1
+	if ! tar xzf "$archive" -C "$tmp"; then rm -rf "$tmp"; return 1; fi
+	top=$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -1)
+	if [ -z "$top" ]; then rm -rf "$tmp"; return 1; fi
+	# "$top/." 로 복사하면 점 파일(.env.example 등)까지 한 번에 옮겨진다.
+	if ! cp -R "$top/." "$ROOT_DIR/"; then rm -rf "$tmp"; return 1; fi
+	rm -rf "$tmp"
+	return 0
+}
+
+ensure_source_tree() {
+	[ "$PACKAGE_MODE" -eq 1 ] || return 0
+
+	local archive save
+	if ! archive=$(source_archive_path); then
+		if source_tree_present; then return 0; fi
+		ui_warn "source/autocert-source-*.tar.gz 를 찾지 못했다 — 소스 전개를 건너뛴다."
+		ui_info "적재된 이미지만으로 기동은 되지만, --build 와 HTTPS 오버레이는 소스가 있어야 한다."
+		return 0
+	fi
+
+	if source_tree_present; then
+		ui_ok "소스 트리 확인됨 — 이미 전개되어 있어 다시 풀지 않는다"
+		return 0
+	fi
+
+	ui_step "제품 소스를 설치 루트에 전개한다: source/$(basename "$archive")"
+	# 패키지의 VERSION은 실제로 담긴 이미지 태그의 정본이다(--version 으로 덮어쓴 빌드가
+	# 있다). 아카이브 안의 VERSION으로 덮이면 이미지 태그 판정이 어긋나므로 되돌린다.
+	save=$(mktemp "${TMPDIR:-/tmp}/autocert-version.XXXXXX") || save=""
+	if [ -n "$save" ] && [ -f "$VERSION_FILE" ]; then cp "$VERSION_FILE" "$save"; else save=""; fi
+
+	if ! extract_source_archive "$archive"; then
+		[ -n "$save" ] && rm -f "$save"
+		die "소스 아카이브 전개에 실패했다: $archive"
+	fi
+	if [ -n "$save" ]; then
+		if ! cmp -s "$save" "$VERSION_FILE" 2>/dev/null; then
+			cp "$save" "$VERSION_FILE"
+			ui_note "VERSION은 패키지 값을 유지했다(이미지 태그 정본)."
+		fi
+		rm -f "$save"
+	fi
+
+	if [ ! -f "$COMPOSE_FILE" ] || [ ! -d "$ROOT_DIR/backend" ] || [ ! -d "$ROOT_DIR/frontend" ]; then
+		die "소스 전개 결과가 온전하지 않다 — docker-compose.yml·backend/·frontend/ 가 모두 있어야 한다."
+	fi
+	ui_ok "소스 전개 완료 (backend/ · frontend/ · deploy/ · docker-compose.yml)"
+}
+
 # 번들 디렉터리(SHA256SUMS·MANIFEST.txt·load-offline.sh가 함께 있는 곳)를 찾는다.
 find_bundle_dir() {
 	local c
+	# 패키지 배치에서는 설치 루트가 곧 번들 디렉터리다.
+	if [ "$PACKAGE_MODE" -eq 1 ] && [ -f "$ROOT_DIR/load-offline.sh" ]; then
+		printf '%s' "$ROOT_DIR"
+		return 0
+	fi
 	for c in \
 		"$PWD" "$PWD"/* \
 		"$ROOT_DIR" "$ROOT_DIR"/.. "$ROOT_DIR"/../* \
@@ -530,7 +723,8 @@ ensure_images() {
 		[ -n "$BUNDLE_DIR" ] || BUNDLE_DIR=$(find_bundle_dir || true)
 		if [ -n "$BUNDLE_DIR" ]; then
 			ui_step "오프라인 번들을 적재한다: $BUNDLE_DIR"
-			if sh "$BUNDLE_DIR/load-offline.sh" >&3 2>&3; then
+			# --no-next-steps: 번들의 "다음 단계" 안내가 마법사 진행 중간에 끼어들지 않게 한다.
+			if sh "$BUNDLE_DIR/load-offline.sh" --no-next-steps >&3 2>&3; then
 				if images_present; then
 					ui_ok "이미지 적재 완료"
 					return 0
@@ -905,6 +1099,18 @@ print_done() {
 	else
 		ui_info "3. 메일 알림이 필요하면 .env의 SMTP_* 를 채우고 다시 기동한다(INSTALL.md 5.2.1)."
 	fi
+
+	# 센서 바이너리는 이 서버 패키지에 들어 있지 않다 — 반입 자체를 빠뜨리는 사고를 막는다.
+	if [ "$CFG_SENSOR_ENABLED" -eq 1 ]; then
+		local pv
+		pv=$(tr -d ' \t\r\n' < "$VERSION_FILE" 2>/dev/null || printf '<버전>')
+		[ -n "$pv" ] || pv="<버전>"
+		ui_blank
+		ui_step "센서 패키지 (별도 반입 필요)"
+		ui_info "이 서버 패키지에는 센서 바이너리가 없다 — 센서 호스트에는 sensor_linux_${pv}.tar.gz / sensor_windows_${pv}.zip 을 따로 반입한다."
+		ui_info "각 패키지의 install-sensor.sh · install-sensor.ps1 이 [센서] 화면의 등록 명령을 받아 설치까지 끝낸다."
+	fi
+
 	ui_blank
 	ui_note "설정 변경·재기동이 필요하면 이 스크립트를 다시 실행한다(기존 값이 기본값으로 제시된다)."
 }
@@ -913,9 +1119,11 @@ print_done() {
 
 mode_install() {
 	ui_title "서버 설치"
+	ensure_source_tree
 	ensure_images
 
 	env_open
+	persist_project_name
 	collect_our_ports
 	ask_ports
 	ask_sensor
@@ -935,8 +1143,10 @@ mode_install() {
 
 mode_reconfigure() {
 	ui_title "설정 변경·재기동"
+	ensure_source_tree
 	ensure_images
 	env_open
+	persist_project_name
 	collect_our_ports
 	ask_ports
 	ask_sensor
@@ -957,6 +1167,8 @@ mode_reconfigure() {
 
 mode_https() {
 	ui_title "HTTPS 적용"
+	# deploy/tls 는 소스 아카이브 안에 있다 — 인증서를 두기 전에 트리가 있어야 한다.
+	ensure_source_tree
 	if [ -z "$COMPOSE_HTTPS_OK" ]; then
 		ui_warn "compose ${COMPOSE_VERSION:-?} 는 ports: !override 를 지원하지 않는다(필요: ${COMPOSE_HTTPS_MIN} 이상)."
 		ui_info "compose를 올리거나 docs/manual/TLS.md 의 수동 절차를 따른다."
@@ -971,6 +1183,7 @@ mode_https() {
 
 	CFG_HTTPS=1
 	env_open
+	persist_project_name
 	collect_our_ports
 	local hp rp
 	hp=$(value_for HTTPS_PORT "443")
@@ -1058,6 +1271,8 @@ main() {
 	PRIMARY_IP=$(detect_primary_ip)
 	# 사전 점검에서도 기존 .env 값(이미지 접두어·버전 등)을 봐야 한다.
 	env_open
+	# dc()가 -p 로 넘길 프로젝트명. 기존 스택 감지(stack_running)보다 먼저 정해야 한다.
+	resolve_project_name
 
 	if ! preflight; then
 		exit 1
