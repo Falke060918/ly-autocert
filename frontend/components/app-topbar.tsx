@@ -13,9 +13,8 @@ export function AppTopbar() {
 
   return (
     <header className="flex h-14 shrink-0 items-center justify-between border-b bg-background px-6">
-      <div className="text-sm text-muted-foreground">
-        Phase 1 — 인증서 인벤토리
-      </div>
+      {/* 좌측은 의도적으로 비워둔다 — 추후 탭 자리(사용자 확정: Phase 문구 삭제). */}
+      <div />
       <div className="flex items-center gap-3">
         {/* 테마 토글은 세션 상태와 무관하게 항상 노출 */}
         <ThemeToggle />

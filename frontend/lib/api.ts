@@ -244,9 +244,13 @@ export type ScanJobStatus =
 /** Job 실행 주체 — server = 서버 직접 실행, sensor = 센서 위임(pull 리스). */
 export type ScanExecutorType = "server" | "sensor";
 
+/** Job 발주 출처 — manual = 사람 발주, sweep = 스윕 청크, rescan = 주기 재스캔. */
+export type ScanOrigin = "manual" | "sweep" | "rescan";
+
 export interface ScanJob {
   id: string;
   status: ScanJobStatus;
+  origin: ScanOrigin;
   executor_type: ScanExecutorType;
   /** executor_type이 sensor일 때 실행을 맡은 센서 id. 서버 실행이면 null. */
   sensor_id: string | null;
@@ -523,8 +527,15 @@ async function toApiError(res: Response): Promise<ApiError> {
     const body = (await res.json()) as {
       error?: { code?: string; message?: string } & Record<string, unknown>;
       request_id?: string;
-    };
-    const { code, message, ...rest } = body.error ?? {};
+    } & Record<string, unknown>;
+    const { code, message, ...errRest } = body.error ?? {};
+    // 부가 필드는 error 객체 안팎 양쪽에서 걷는다 — duplicate_scan(409)의
+    // job_id처럼 서버가 top-level에 싣는 계약이 있다(error 안 값이 우선).
+    const rest: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(body)) {
+      if (k !== "error" && k !== "request_id") rest[k] = v;
+    }
+    Object.assign(rest, errRest);
     return new ApiError(
       res.status,
       code ?? "unknown",
