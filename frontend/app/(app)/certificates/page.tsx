@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/table";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CertStatusBadge, DdayText } from "@/components/cert-badges";
 import { FreshnessText } from "@/components/freshness";
 import { useTicker } from "@/components/notification-bell";
@@ -40,8 +41,16 @@ import {
   type CertificateListResponse,
   type ImportResult,
 } from "@/lib/api";
-import { dnCommonName, formatDate, isSelfSigned } from "@/lib/format";
+import {
+  applyIssuerFilter,
+  getIssuerAggregation,
+  ISSUED_BY_PARAM,
+  ISSUER_ORG_PARAM,
+  type IssuerAggregationResponse,
+} from "@/lib/issuers";
+import { dnCommonName, dnOrganization, formatDate, isSelfSigned } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { findCANode, IssuersView } from "./issuers-view";
 
 const TYPE_LABELS: Record<string, string> = {
   server: "서버",
@@ -75,6 +84,13 @@ const SORTABLE: Record<string, string> = {
   created_at: "등록일",
 };
 
+/**
+ * URL의 issuer_org 값 중 "조직 미상(null)"의 표기.
+ * API 계약(lib/issuers.ts)은 빈 문자열이지만 URL 쿼리·Radix Select는 빈 값을
+ * 못 담아 URL 쪽만 센티널을 쓰고 API 호출 직전에 ""로 되돌린다.
+ */
+const ISSUER_ORG_UNKNOWN = "__none__";
+
 export default function CertificatesPage() {
   return (
     <Suspense>
@@ -94,9 +110,31 @@ function CertificatesBody() {
   const [uploadOpen, setUploadOpen] = React.useState(false);
   const [reloadKey, setReloadKey] = React.useState(0);
   const [exporting, setExporting] = React.useState(false);
+  // 발급 기관 집계 — 필터 Select 옵션·발급 CA 칩 라벨·발급 기관 뷰가 공유한다.
+  // 백엔드 병행 구현 중이라 실패할 수 있다 — 실패하면 필터를 숨긴다(목록은 무관).
+  const [issuerAgg, setIssuerAgg] =
+    React.useState<IssuerAggregationResponse | null>(null);
+  const [issuerAggError, setIssuerAggError] = React.useState(false);
 
   // 신선도 표기는 상대 시각이라 주기적으로 다시 그린다(렌더 중 Date.now 금지).
   const now = useTicker(60_000);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    getIssuerAggregation()
+      .then((res) => {
+        if (!cancelled) {
+          setIssuerAgg(res);
+          setIssuerAggError(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setIssuerAggError(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadKey]);
 
   // URL 쿼리 → API 쿼리 (허용 파라미터만 통과시킨다).
   //
@@ -117,6 +155,11 @@ function CertificatesBody() {
     if (!includeReplaced && !statusFilter.split(",").includes("replaced")) {
       out.set("exclude_status", "replaced");
     }
+    const rawOrg = searchParams.get(ISSUER_ORG_PARAM);
+    applyIssuerFilter(out, {
+      issuerOrg: rawOrg === ISSUER_ORG_UNKNOWN ? "" : rawOrg,
+      issuedBy: searchParams.get(ISSUED_BY_PARAM),
+    });
     return out;
   }, [searchParams]);
 
@@ -159,7 +202,7 @@ function CertificatesBody() {
 
   const hasFilter = [
     "q", "status", "type", "expired", "expires_within_days", "self_signed", "unowned",
-    "include_replaced",
+    "include_replaced", ISSUER_ORG_PARAM, ISSUED_BY_PARAM,
   ].some((k) => searchParams.get(k));
 
   const includeReplaced = searchParams.get("include_replaced") === "true";
@@ -168,6 +211,12 @@ function CertificatesBody() {
   const order = searchParams.get("order") ?? "asc";
   const canManage = canManageInventory(user);
   const canExport = canExportInventory(user);
+
+  const view = searchParams.get("view") === "issuers" ? "issuers" : "list";
+  const issuerOrgValue = searchParams.get(ISSUER_ORG_PARAM);
+  const issuedById = searchParams.get(ISSUED_BY_PARAM);
+  // 발급 CA 칩 라벨 — 집계 트리에서 이름을 찾고, 못 찾으면 일반 문구로 남긴다.
+  const issuedByNode = findCANode(issuerAgg, issuedById);
 
   /** 현재 필터 조건 전체를 CSV로 내려받는다 (서버가 certificate.export 감사 기록). */
   const exportCsv = React.useCallback(async () => {
@@ -227,6 +276,21 @@ function CertificatesBody() {
         />
       )}
 
+      {/* 같은 인벤토리를 두 관점으로 본다 — 행 단위 목록 / CA 계층(발급 기관). */}
+      <Tabs
+        value={view}
+        onValueChange={(v) => setQuery({ view: v === "issuers" ? v : null }, false)}
+      >
+        <TabsList>
+          <TabsTrigger value="list">목록</TabsTrigger>
+          <TabsTrigger value="issuers">발급 기관</TabsTrigger>
+        </TabsList>
+      </Tabs>
+
+      {view === "issuers" ? (
+        <IssuersView agg={issuerAgg} error={issuerAggError} />
+      ) : (
+        <>
       <div className="flex flex-wrap items-center gap-2">
         <SearchField
           initial={searchParams.get("q") ?? ""}
@@ -282,6 +346,41 @@ function CertificatesBody() {
             ))}
           </SelectContent>
         </Select>
+        {/* 발급기관 필터 — 집계 API 실패(백엔드 미배선 포함) 시에는 숨긴다. */}
+        {issuerAgg && (
+          <Select
+            value={issuerOrgValue ?? "all"}
+            onValueChange={(v) =>
+              setQuery({ [ISSUER_ORG_PARAM]: v === "all" ? null : v })
+            }
+          >
+            <SelectTrigger className="w-[190px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">발급기관: 전체</SelectItem>
+              {issuerAgg.organizations.map((o) =>
+                o.organization === null ? (
+                  <SelectItem key={ISSUER_ORG_UNKNOWN} value={ISSUER_ORG_UNKNOWN}>
+                    조직 미상 ({o.count.toLocaleString()})
+                  </SelectItem>
+                ) : (
+                  <SelectItem key={o.organization} value={o.organization}>
+                    {o.organization} ({o.count.toLocaleString()})
+                  </SelectItem>
+                ),
+              )}
+              {/* URL로 들어온 값이 집계에 없어도 Select가 비지 않게 살린다. */}
+              {issuerOrgValue != null &&
+                issuerOrgValue !== ISSUER_ORG_UNKNOWN &&
+                !issuerAgg.organizations.some(
+                  (o) => o.organization === issuerOrgValue,
+                ) && (
+                  <SelectItem value={issuerOrgValue}>{issuerOrgValue}</SelectItem>
+                )}
+            </SelectContent>
+          </Select>
+        )}
         {/*
           교체된 인증서는 기본으로 숨긴다 — 갱신이 끝나 죽은 인증서가 목록·만료
           집계에 섞이면 이미 처리한 건에 대한 알림처럼 신뢰를 깎는다. 다만 이력
@@ -300,6 +399,21 @@ function CertificatesBody() {
           </Label>
         </div>
         <div className="ml-auto flex items-center gap-2">
+          {/* 발급 기관 뷰에서 CA를 골라 넘어온 필터 — Select가 없어 칩으로 세운다. */}
+          {issuedById && (
+            <FilterChip
+              label={
+                issuedByNode
+                  ? `발급 CA: ${
+                      issuedByNode.common_name ??
+                      issuedByNode.organization ??
+                      dnCommonName(issuedByNode.subject_dn)
+                    }`
+                  : "발급 CA 필터"
+              }
+              onRemove={() => setQuery({ [ISSUED_BY_PARAM]: null })}
+            />
+          )}
           {searchParams.get("self_signed") === "true" && (
             <FilterChip label="자체 서명" onRemove={() => setQuery({ self_signed: null })} />
           )}
@@ -389,9 +503,16 @@ function CertificatesBody() {
                       {c.signature_algorithm}
                     </TableCell>
                     <TableCell className="max-w-56 truncate text-[13px]">
+                      {/*
+                        조직(O=) 우선 — 같은 CA 계열은 CN(발급 서버별)이 아니라
+                        조직으로 묶여 보이는 게 필터·집계 축과 일치한다.
+                        issuer_organization 미배선·백필 전에는 DN 파싱으로 폴백.
+                      */}
                       {isSelfSigned(c.subject_dn, c.issuer_dn)
                         ? "자체 서명"
-                        : dnCommonName(c.issuer_dn)}
+                        : (c.issuer_organization ??
+                          dnOrganization(c.issuer_dn) ??
+                          dnCommonName(c.issuer_dn))}
                     </TableCell>
                     <TableCell className="text-[13px]">
                       {TYPE_LABELS[c.certificate_type] ?? c.certificate_type}
@@ -409,6 +530,8 @@ function CertificatesBody() {
           )}
           <Pager data={data} setQuery={setQuery} />
         </Card>
+      )}
+        </>
       )}
     </div>
   );
