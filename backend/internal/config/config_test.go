@@ -238,6 +238,8 @@ var notifySweepEnv = []string{
 	"SCAN_SWEEP_ENABLED", "SCAN_SWEEP_RATE_PPS", "SCAN_SWEEP_CONCURRENCY",
 	"SCAN_SWEEP_CHUNK_ENDPOINTS", "SCAN_SWEEP_CHUNK_GAP", "SCAN_SWEEP_MAX_DAYS",
 	"SCAN_SWEEP_STALL_AFTER",
+	"RESCAN_ENABLED", "RESCAN_INTERVAL", "RESCAN_RATE_PPS", "RESCAN_BATCH_IPS",
+	"RESCAN_REPLACE_CONFIRM", "RESCAN_RETIRE_MISSES",
 }
 
 // setNotifyRequired는 필수 변수를 채우고 알림·스윕 변수를 모두 비운다.
@@ -311,6 +313,91 @@ func TestLoadSweepDefaults(t *testing.T) {
 	}
 	if cfg.Sweep != want {
 		t.Errorf("Sweep = %+v, want %+v", cfg.Sweep, want)
+	}
+}
+
+// TestLoadRescanDefaults는 재스캔 기본값을 고정한다 (설계 12.1).
+// 기본 간격 12h는 사용자 확정값이며, 만료 임박 가속(6h/1h)은 설정이 아니라
+// discovery의 고정 티어라 여기 나오지 않는다.
+func TestLoadRescanDefaults(t *testing.T) {
+	setNotifyRequired(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := RescanConfig{
+		Enabled:        true,
+		Interval:       12 * time.Hour,
+		RatePPS:        20,
+		BatchIPs:       1024,
+		ReplaceConfirm: 2,
+		RetireMisses:   30,
+	}
+	if cfg.Rescan != want {
+		t.Errorf("Rescan = %+v, want %+v", cfg.Rescan, want)
+	}
+	if len(cfg.Warnings) != 0 {
+		t.Errorf("Warnings = %v, want empty", cfg.Warnings)
+	}
+}
+
+// TestLoadRescanValuesPassThrough는 설정한 값이 그대로 실리는지 본다.
+func TestLoadRescanValuesPassThrough(t *testing.T) {
+	setNotifyRequired(t)
+	t.Setenv("RESCAN_ENABLED", "false")
+	t.Setenv("RESCAN_INTERVAL", "6h")
+	t.Setenv("RESCAN_RATE_PPS", "35")
+	t.Setenv("RESCAN_BATCH_IPS", "256")
+	t.Setenv("RESCAN_REPLACE_CONFIRM", "3")
+	t.Setenv("RESCAN_RETIRE_MISSES", "10")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := RescanConfig{
+		Enabled: false, Interval: 6 * time.Hour, RatePPS: 35,
+		BatchIPs: 256, ReplaceConfirm: 3, RetireMisses: 10,
+	}
+	if cfg.Rescan != want {
+		t.Errorf("Rescan = %+v, want %+v", cfg.Rescan, want)
+	}
+	if len(cfg.Warnings) != 0 {
+		t.Errorf("Warnings = %v, want empty", cfg.Warnings)
+	}
+}
+
+// TestLoadRescanInvalidValuesFallBackWithWarning은 값 오류가 기동 실패가 아니라
+// 경고 + 기본값 폴백임을 고정한다 (설계 12.2 · 센서 게이트웨이 격리 전례).
+// RESCAN_INTERVAL 하한(1m)은 인벤토리 전체를 매 tick 훑는 설정을 막는다.
+func TestLoadRescanInvalidValuesFallBackWithWarning(t *testing.T) {
+	setNotifyRequired(t)
+	t.Setenv("RESCAN_ENABLED", "sometimes")
+	t.Setenv("RESCAN_INTERVAL", "10s")
+	t.Setenv("RESCAN_RATE_PPS", "quick")
+	t.Setenv("RESCAN_BATCH_IPS", "0")
+	t.Setenv("RESCAN_REPLACE_CONFIRM", "-2")
+	t.Setenv("RESCAN_RETIRE_MISSES", "0")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load must not fail on bad rescan values: %v", err)
+	}
+	want := RescanConfig{
+		Enabled: true, Interval: 12 * time.Hour, RatePPS: 20,
+		BatchIPs: 1024, ReplaceConfirm: 2, RetireMisses: 30,
+	}
+	if cfg.Rescan != want {
+		t.Errorf("Rescan did not fall back to defaults: %+v", cfg.Rescan)
+	}
+	joined := strings.Join(cfg.Warnings, "\n")
+	for _, name := range []string{
+		"RESCAN_ENABLED", "RESCAN_INTERVAL", "RESCAN_RATE_PPS", "RESCAN_BATCH_IPS",
+		"RESCAN_REPLACE_CONFIRM", "RESCAN_RETIRE_MISSES",
+	} {
+		if !strings.Contains(joined, name) {
+			t.Errorf("warnings do not name %s: %v", name, cfg.Warnings)
+		}
 	}
 }
 

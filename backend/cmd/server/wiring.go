@@ -464,3 +464,37 @@ func startSweepScheduler(ctx context.Context, logger *slog.Logger, cfg config.Co
 	}
 	return stop
 }
+
+// rescanOptions는 config.RescanConfig를 discovery.RescanOptions로 옮겨 담는다
+// (discovery가 config를 import하지 않으므로 별도 타입이다). 값 검증·경고는
+// config가 이미 했으므로 여기서는 매핑만 한다. 동시성은 설정 표면을 늘리지 않기
+// 위해 상수(discovery.RescanConcurrency)를 그대로 쓴다.
+func rescanOptions(c config.RescanConfig) discovery.RescanOptions {
+	return discovery.RescanOptions{
+		Enabled:        c.Enabled,
+		Interval:       c.Interval,
+		RatePPS:        c.RatePPS,
+		Concurrency:    discovery.RescanConcurrency,
+		BatchIPs:       c.BatchIPs,
+		ReplaceConfirm: c.ReplaceConfirm,
+		RetireMisses:   c.RetireMisses,
+	}
+}
+
+// startRescanScheduler는 주기 재스캔 tick 루프를 띄운다(발주 + 교체 전이).
+// 스윕과 마찬가지로 API Manager와 상태를 공유하지 않는 전용 인스턴스다.
+// RESCAN_ENABLED=false면 아무것도 띄우지 않고 사유 로그 1줄만 남긴다(stop은 no-op).
+func startRescanScheduler(ctx context.Context, logger *slog.Logger, cfg config.Config, st *store.Store) (stop func()) {
+	stop = discovery.NewManager(st).
+		UseRescanOptions(rescanOptions(cfg.Rescan)).
+		StartRescanScheduler(ctx)
+	if cfg.Rescan.Enabled {
+		logger.Info("discovery: rescan scheduler started",
+			"interval", cfg.Rescan.Interval.String(),
+			"rate_pps", cfg.Rescan.RatePPS,
+			"batch_ips", cfg.Rescan.BatchIPs,
+			"replace_confirm", cfg.Rescan.ReplaceConfirm,
+			"retire_misses", cfg.Rescan.RetireMisses)
+	}
+	return stop
+}

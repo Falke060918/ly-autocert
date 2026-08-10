@@ -133,6 +133,11 @@ func run(logger *slog.Logger) error {
 	stopSweep := startSweepScheduler(ctx, logger, cfg, st)
 	defer stopSweep()
 
+	// 주기 재스캔 tick — 이미 아는 엔드포인트의 신선도 유지 + 교체 확정 전이.
+	// 스윕과는 목적도 주기도 다른 별개의 발주자다 (docs/design/06 1.3).
+	stopRescan := startRescanScheduler(ctx, logger, cfg, st)
+	defer stopRescan()
+
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
 		// 선택 의존성 4개를 주입한다. 없어도 코어 API는 뜨지만, 없으면 채널 상태가

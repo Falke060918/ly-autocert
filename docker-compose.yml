@@ -99,6 +99,18 @@ services:
       SCAN_SWEEP_CHUNK_GAP: ${SCAN_SWEEP_CHUNK_GAP:-5s}
       SCAN_SWEEP_MAX_DAYS: ${SCAN_SWEEP_MAX_DAYS:-30}
       SCAN_SWEEP_STALL_AFTER: ${SCAN_SWEEP_STALL_AFTER:-10m}
+      # --- 주기 재스캔·교체 감지 (INSTALL.md 5.2.3) ---
+      # 이미 발견한 엔드포인트만 다시 확인한다(신규 대역 발견은 수동 스캔·스윕 소관).
+      # 전부 비어 있어도 정상이다 — 기본값이 곧 권장값이다.
+      RESCAN_ENABLED: ${RESCAN_ENABLED:-true}
+      # 기본 재확인 간격. 만료 임박 인증서는 자동 가속된다(잔여 30일 이하 6h / 7일 이하 1h).
+      RESCAN_INTERVAL: ${RESCAN_INTERVAL:-12h}
+      RESCAN_RATE_PPS: ${RESCAN_RATE_PPS:-20}
+      RESCAN_BATCH_IPS: ${RESCAN_BATCH_IPS:-1024}
+      # 교체 확정에 필요한 연속 관측 횟수. 1로 낮추면 LB 뒤에 인증서 두 개가
+      # 번갈아 보일 때 서로를 무한히 교체 처리한다.
+      RESCAN_REPLACE_CONFIRM: ${RESCAN_REPLACE_CONFIRM:-2}
+      RESCAN_RETIRE_MISSES: ${RESCAN_RETIRE_MISSES:-30}
     depends_on:
       db:
         condition: service_healthy
