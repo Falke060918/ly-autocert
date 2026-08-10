@@ -135,11 +135,14 @@ func run(logger *slog.Logger) error {
 
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
-		// 선택 의존성 2개를 주입한다. 둘 다 없어도 코어 API는 뜨지만, 없으면
-		// 채널 상태가 "배선 없음"이고 스윕 기본값이 SCAN_SWEEP_*를 무시한다.
+		// 선택 의존성을 주입한다. 없어도 코어 API는 뜨지만, 없으면 채널 상태가
+		// "배선 없음"이고 스윕 기본값이 SCAN_SWEEP_*를 무시한다.
+		// 세션 쿠키 Secure는 SESSION_COOKIE_SECURE(기본 false) — HTTPS 리버스
+		// 프록시로 종단할 때만 켠다 (docs/manual/TLS.md).
 		Handler: api.NewServer(pool, authSvc, rec, cfg.SensorCAEncKey,
 			api.WithNotificationChannels(notifyChannels),
-			api.WithSweepDefaults(sweepDefaults(cfg.Sweep))),
+			api.WithSweepDefaults(sweepDefaults(cfg.Sweep)),
+			api.WithSecureCookies(cfg.SessionCookieSecure)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

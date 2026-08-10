@@ -36,6 +36,10 @@ type Server struct {
 	// 비어 있어도 코어 API는 정상 동작한다 (05-notifications 10.1 실패 격리).
 	channels      NotificationChannels
 	sweepDefaults SweepDefaults
+
+	// secureCookies는 세션 쿠키에 Secure 플래그를 붙일지다 (SESSION_COOKIE_SECURE).
+	// 기본 false — 평문 HTTP 기본 설치를 깨지 않는다.
+	secureCookies bool
 }
 
 // Option은 NewServer의 선택 의존성 주입이다.
@@ -52,6 +56,13 @@ func WithNotificationChannels(ch NotificationChannels) Option {
 // 0 필드는 store의 기본값으로 폴백한다.
 func WithSweepDefaults(d SweepDefaults) Option {
 	return func(s *Server) { s.sweepDefaults = d }
+}
+
+// WithSecureCookies는 세션 쿠키의 Secure 플래그를 켠다 (SESSION_COOKIE_SECURE).
+// HTTPS 리버스 프록시로 TLS를 종단하는 배포에서만 켠다 — 평문 HTTP 접속에서 켜면
+// 브라우저가 쿠키를 저장하지 않아 로그인이 조용히 실패한다 (docs/manual/TLS.md).
+func WithSecureCookies(secure bool) Option {
+	return func(s *Server) { s.secureCookies = secure }
 }
 
 // NewServer는 모든 라우트가 등록된 HTTP 핸들러를 반환한다.

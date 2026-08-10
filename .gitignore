@@ -17,3 +17,7 @@ CLAUDE.local.md
 # 근본 차단은 frontend/next.config.ts의 agentRules: false이고, 이건 이중 방어다.
 frontend/AGENTS.md
 frontend/CLAUDE.md
+# HTTPS 리버스 프록시용 서버 인증서·개인키 (docs/manual/TLS.md).
+# 실제 키·인증서는 저장소에 절대 커밋하지 않는다.
+deploy/tls/*
+!deploy/tls/README.md
