@@ -90,7 +90,7 @@
 - **접근 IP 제한을 브라우저 IP 기준으로 걸려면 `ADMIN_IP_TRUSTED_PROXIES`가 사실상 필수다** — 브라우저→frontend→backend 중계 구조라 backend가 보는 출발지는 frontend 컨테이너다. compose 네트워크 대역은 `docker network inspect inherit_autocert_default --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'`로 확인한다.
 
 ## 검증 명령
-- backend: `go build ./...`, `go vet ./...`, 단위 테스트 `go test ./...` (backend/ 에서. 로컬 Go 없으면 Docker 경유)
+- backend: `go build ./...`, `go vet ./...`, 테스트는 **항상 전체** `go test -p 1 -count=1 ./...` (backend/ 에서. 로컬 Go 없으면 Docker 경유 — 패키지를 골라 돌리면 앞 패키지가 남긴 부트스트랩 계정 때문에 알림 팬아웃 테스트가 실패한다)
 - 라우트-OpenAPI 명세 정합: `make openapi-check` (backend/ 에서, DB 불필요 — backend/Makefile)
 - 센서 배포판: `sh scripts/build-sensor-dist.sh` (루트에서) 또는 `make sensor-dist` (backend/ 에서 — 같은 스크립트를 호출한다). Docker golang:1.25-alpine 경유 linux/windows amd64 정적 빌드 + SHA256SUMS → backend/dist/, gitignore 대상
 - 오프라인 반입 번들: `sh scripts/bundle-offline.sh` (루트에서, Docker 필요) → `dist/autocert-offline-<버전>.tar` + `.sha256`. 고객사 측은 번들 안에서 `sh load-offline.sh`. 절차 문서는 docs/manual/INSTALL.md 5.1
