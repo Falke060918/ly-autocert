@@ -129,7 +129,18 @@ func ScanEndpoint(ctx context.Context, ep Endpoint, timeout time.Duration) Obser
 	// InsecureSkipVerify: 인벤토리 수집 목적이므로 자기서명·만료·이름 불일치 인증서도
 	// 모두 수집한다. 검증(신뢰 판단)을 하지 않으며 이 결과를 신뢰 결정에 쓰지 않는다.
 	// 수집 전용임 — 스펙 7.1은 "발견된 모든 인증서"를 인벤토리 대상으로 본다.
-	conf := &tls.Config{InsecureSkipVerify: true} //nolint:gosec // 수집 전용, 신뢰 판단 아님
+	//
+	// MinVersion=TLS 1.0: 이것은 **우리 제품의 보안 설정이 아니라 관측 대상의 범위**다.
+	// Go 클라이언트 기본값(TLS 1.2)을 그대로 두면 TLS 1.0/1.1만 지원하는 레거시 장비가
+	// 핸드셰이크 실패로 Reachable=false가 되어 인증서가 조용히 누락된다 — 폐쇄망·레거시
+	// 환경이 이 제품의 대상이고, 그런 서버의 인증서야말로 관리 사각지대다.
+	// 스캐너는 인증서를 읽기만 하며 이 연결로 비밀을 주고받지 않는다. 이 tls.Config는
+	// 스캔 전용이고 제품의 다른 TLS 경로(웹훅·SMTP·센서 mTLS)와 공유하지 않는다 —
+	// 그쪽은 각자 MinVersion=TLS 1.2를 유지한다.
+	conf := &tls.Config{ //nolint:gosec // 수집 전용, 신뢰 판단 아님 — 대상 범위이지 우리 연결의 보안 등급이 아님
+		InsecureSkipVerify: true,
+		MinVersion:         tls.VersionTLS10,
+	}
 	tconn := tls.Client(raw, conf)
 	_ = raw.SetDeadline(time.Now().Add(timeout))
 	if err := tconn.HandshakeContext(ctx); err != nil {
