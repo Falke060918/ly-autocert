@@ -191,12 +191,12 @@ dist/autocert-offline-<버전>.tar.sha256    # 매체 손상 판별용
 매체를 서버에 복사한 뒤, 아래가 전부다.
 
 ```sh
-sha256sum -c autocert-offline-0.1.0.tar.sha256   # 매체 손상 확인
-tar xf autocert-offline-0.1.0.tar
-cd autocert-offline-0.1.0
+sha256sum -c autocert-offline-1.0.0.tar.sha256   # 매체 손상 확인
+tar xf autocert-offline-1.0.0.tar
+cd autocert-offline-1.0.0
 sh load-offline.sh                                # 체크섬 대조 + docker load
-tar xzf source/autocert-source-0.1.0.tar.gz       # autocert-0.1.0/ 으로 풀린다
-cd autocert-0.1.0
+tar xzf source/autocert-source-1.0.0.tar.gz       # autocert-1.0.0/ 으로 풀린다
+cd autocert-1.0.0
 ```
 
 `load-offline.sh`는 ① `SHA256SUMS` 전건 대조 ② `docker load` ③ 매니페스트의 이미지 태그가 실제로 적재됐는지 확인, 순서로 진행한다.
