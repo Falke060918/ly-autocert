@@ -43,6 +43,9 @@ type Server struct {
 	// sensorGatewayPort는 센서 등록 명령 예시에 넣을 게이트웨이 포트다.
 	// 기본값은 defaultSensorGatewayPort이고 WithSensorGatewayPort가 덮어쓴다.
 	sensorGatewayPort string
+	// scanSuggestedNetworks는 스캔 대상 제안에 실을 운영자 지정 대역이다
+	// (SCAN_SUGGESTED_NETWORKS — WithScanSuggestedNetworks). 비면 제안에서 생략된다.
+	scanSuggestedNetworks []string
 
 	// secureCookies는 세션 쿠키에 Secure 플래그를 붙일지다 (SESSION_COOKIE_SECURE).
 	// 기본 false — 평문 HTTP 기본 설치를 깨지 않는다.
@@ -85,6 +88,12 @@ func WithSensorGatewayPort(port string) Option {
 			s.sensorGatewayPort = p
 		}
 	}
+}
+
+// WithScanSuggestedNetworks는 SCAN_SUGGESTED_NETWORKS(정규화된 CIDR 목록)를
+// 스캔 대상 제안 API에 잇는다. 주입하지 않아도 최근 사용·파생 대역 제안은 동작한다.
+func WithScanSuggestedNetworks(networks []string) Option {
+	return func(s *Server) { s.scanSuggestedNetworks = networks }
 }
 
 // WithSecureCookies는 세션 쿠키의 Secure 플래그를 켠다 (SESSION_COOKIE_SECURE).
@@ -145,6 +154,8 @@ func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorC
 	s.protected("GET /api/v1/certificates", handleListCertificates(st), domain.AllRoles...)
 	// 리터럴 세그먼트가 {id} 와일드카드보다 우선 매칭된다 (Go 1.22+ ServeMux 규칙).
 	s.protected("GET /api/v1/certificates/summary", handleCertificateSummary(st), domain.AllRoles...)
+	// 발급 기관 분포·CA 트리 집계 — 읽기 전용, 전 역할 (summary와 같은 규약).
+	s.protected("GET /api/v1/certificates/issuers", handleCertificateIssuers(st), domain.AllRoles...)
 	// 내보내기는 화면 한 페이지가 아니라 인벤토리 전체(최대 50000행 — 도메인·지문·
 	// 유효기간)를 파일로 반출하는 경로다. 목록 조회와 달리 인증서 관리 책임이 있는
 	// 관리자급 2역할로 제한한다 — 7.11에서 "모든 인증서 관리"(System Administrator)와
@@ -159,7 +170,13 @@ func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorC
 	// 스캔 생성은 인벤토리를 바꾸므로 관리자·운영자급만. 상태 조회는 읽기 전용이라 전 역할.
 	s.protected("POST /api/v1/discovery/scans", handleCreateScan(disc, st),
 		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
+	// 스캔 Job 목록·대상 제안 — 읽기 전용이라 전 역할, 감사 이벤트 없음.
+	s.protected("GET /api/v1/discovery/scans", s.handleListScans, domain.AllRoles...)
+	s.protected("GET /api/v1/discovery/scan-suggestions", s.handleScanSuggestions, domain.AllRoles...)
 	s.protected("GET /api/v1/discovery/scans/{id}", handleGetScan(st), domain.AllRoles...)
+	// 취소는 발주와 같은 3역할. 전이 + discovery.scan.cancel 감사는 store가 동일 tx로.
+	s.protected("POST /api/v1/discovery/scans/{id}/cancel", handleCancelScan(disc, st),
+		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
 	// 전 포트 백그라운드 스윕 (04-port-autoscan 9.2). 발주·제어는 스캔과 같은 3역할,
 	// 조회는 읽기 전용이라 전 역할. 상태 전이는 discovery.sweep 감사를 남긴다(store).
 	s.protected("POST /api/v1/discovery/sweeps", s.handleCreateSweep,

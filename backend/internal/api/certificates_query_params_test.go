@@ -117,3 +117,24 @@ func TestParseListParamsInvalid(t *testing.T) {
 		})
 	}
 }
+
+func TestParseListParamsIssuerFilters(t *testing.T) {
+	r := httptest.NewRequest("GET",
+		"/api/v1/certificates?issuer_org=Acme%2C+Inc.&issued_by=6f2f9a1e-1b7c-4a44-9d2f-0a1b2c3d4e5f", nil)
+	in, perr := parseListParams(r)
+	if perr != nil {
+		t.Fatalf("perr = %+v, want nil", perr)
+	}
+	if in.IssuerOrg == nil || *in.IssuerOrg != "Acme, Inc." {
+		t.Errorf("issuer_org = %v", in.IssuerOrg)
+	}
+	if in.IssuedBy == nil || *in.IssuedBy != "6f2f9a1e-1b7c-4a44-9d2f-0a1b2c3d4e5f" {
+		t.Errorf("issued_by = %v", in.IssuedBy)
+	}
+
+	// UUID가 아닌 issued_by는 DB ::uuid 캐스트 500이 아니라 400이어야 한다.
+	r = httptest.NewRequest("GET", "/api/v1/certificates?issued_by=not-a-uuid", nil)
+	if _, perr := parseListParams(r); perr == nil || perr.code != "invalid_issued_by" {
+		t.Errorf("invalid issued_by perr = %+v, want invalid_issued_by", perr)
+	}
+}

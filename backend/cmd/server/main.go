@@ -153,6 +153,8 @@ func run(logger *slog.Logger) error {
 		Handler: api.NewServer(pool, authSvc, rec, cfg.SensorCAEncKey,
 			api.WithNotificationChannels(notifyChannels),
 			api.WithSweepDefaults(sweepDefaults(cfg.Sweep)),
+			// 스캔 대상 제안에 운영자 지정 대역(SCAN_SUGGESTED_NETWORKS)을 싣는다.
+			api.WithScanSuggestedNetworks(cfg.ScanSuggestedNetworks),
 			// 재스캔 스케줄러(discovery)를 API의 상태·수동 발주 엔드포인트에 잇는다.
 			api.WithRescanController(rescanCtl),
 			// 등록 명령 예시가 실제 게이트웨이 포트를 안내하게 한다.

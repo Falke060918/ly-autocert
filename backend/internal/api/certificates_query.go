@@ -133,6 +133,19 @@ func parseListParams(r *http.Request) (store.ListCertificatesInput, *paramError)
 		}
 		in.Unowned = &b
 	}
+	if v := q.Get("issuer_org"); v != "" {
+		if utf8.RuneCountInString(v) > maxSearchLen {
+			return in, &paramError{"invalid_issuer_org", "issuer_org는 200자 이하여야 합니다."}
+		}
+		in.IssuerOrg = &v
+	}
+	if v := q.Get("issued_by"); v != "" {
+		// 잘못된 형식은 DB ::uuid 캐스트 500으로 새지 않게 여기서 거른다.
+		if !isUUID(v) {
+			return in, &paramError{"invalid_issued_by", "issued_by는 인증서 id(UUID)여야 합니다."}
+		}
+		in.IssuedBy = &v
+	}
 	if v := q.Get("expires_within_days"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 || n > 3650 {

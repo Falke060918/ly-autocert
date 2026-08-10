@@ -686,3 +686,34 @@ func TestLoadWarningsNeverContainSecrets(t *testing.T) {
 		}
 	}
 }
+
+// TestLoadScanSuggestedNetworks는 SCAN_SUGGESTED_NETWORKS 파싱을 검증한다 —
+// 정규화(단일 IP → /32, 호스트 비트 정리)와 "그 항목만 버리고 경고" 규칙은
+// ADMIN_IP_*의 cidrList와 같다.
+func TestLoadScanSuggestedNetworks(t *testing.T) {
+	setRequired(t)
+	t.Setenv("SCAN_SUGGESTED_NETWORKS", "10.20.0.0/16, 192.168.10.5 ,bogus,")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"10.20.0.0/16", "192.168.10.5/32"}
+	if len(cfg.ScanSuggestedNetworks) != len(want) {
+		t.Fatalf("ScanSuggestedNetworks = %v, want %v", cfg.ScanSuggestedNetworks, want)
+	}
+	for i := range want {
+		if cfg.ScanSuggestedNetworks[i] != want[i] {
+			t.Errorf("ScanSuggestedNetworks[%d] = %q, want %q", i, cfg.ScanSuggestedNetworks[i], want[i])
+		}
+	}
+	// bogus 항목은 기동을 막지 않고 경고만 남긴다.
+	found := false
+	for _, w := range cfg.Warnings {
+		if strings.Contains(w, "SCAN_SUGGESTED_NETWORKS") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("warnings %v missing SCAN_SUGGESTED_NETWORKS entry", cfg.Warnings)
+	}
+}

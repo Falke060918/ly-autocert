@@ -267,3 +267,22 @@ func TestDescribeCAAndExpired(t *testing.T) {
 		t.Errorf("status = %q, want expired", d.Status)
 	}
 }
+
+// TestDescribeIssuerOrganization은 발급자 DN의 O 값 추출(0016 INSERT 경로)을 고정한다.
+// 값에 쉼표가 있어도 pkix.Name 필드를 직접 읽으므로 잘리지 않아야 한다
+// (issuer_dn 문자열 파싱이었다면 RFC2253 이스케이프에서 깨진다).
+func TestDescribeIssuerOrganization(t *testing.T) {
+	tmpl := serverTemplate()
+	tmpl.Subject.Organization = []string{"Acme, Inc."}
+	fx := newSelfSigned(t, tmpl) // 자체 서명 — issuer = subject
+	d := Describe(fx.cert, time.Now())
+	if d.IssuerOrganization == nil || *d.IssuerOrganization != "Acme, Inc." {
+		t.Errorf("issuer_organization = %v, want %q", d.IssuerOrganization, "Acme, Inc.")
+	}
+
+	// O가 없으면 nil이어야 한다 (빈 문자열 금지 — DB 필터·집계 기준).
+	plain := newSelfSigned(t, serverTemplate())
+	if d := Describe(plain.cert, time.Now()); d.IssuerOrganization != nil {
+		t.Errorf("issuer_organization = %q, want nil", *d.IssuerOrganization)
+	}
+}

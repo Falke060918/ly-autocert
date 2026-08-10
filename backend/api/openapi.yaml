@@ -142,6 +142,19 @@ paths:
           in: query
           description: 소유자 미지정 여부 (owner_id IS NULL 파생 필터)
           schema: { type: boolean }
+        - name: issuer_org
+          in: query
+          description: >
+            발급 기관(issuer_organization) 정확 일치 필터. 발급 기관 분포
+            (GET /certificates/issuers)에서 항목을 클릭해 들어오는 경로다.
+          schema: { type: string, maxLength: 200 }
+        - name: issued_by
+          in: query
+          description: >
+            지정한 CA 인증서가 발급한 인증서만 반환한다(값은 발급자 인증서 id).
+            매칭은 상세 응답 chain과 같은 규칙 — SKI=AKI 정확 일치 우선,
+            키 식별자가 없는 데이터는 issuer_dn = subject_dn 폴백.
+          schema: { type: string, format: uuid }
         - name: sort
           in: query
           description: 정렬 필드 (기본 not_after)
@@ -190,6 +203,30 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CertificateSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/certificates/issuers:
+    get:
+      operationId: getCertificateIssuers
+      summary: 발급 기관 분포·CA 트리 집계
+      description: >
+        organizations는 발급 기관(issuer_organization)별 비-CA 인증서 분포이고
+        ca_tree는 보유 CA의 루트→중간 2계층 트리다(노드별 직접 발급 리프 수 포함,
+        더 깊은 중간 CA는 루트 바로 아래로 평탄화). 트리 노드의 id를 목록 API의
+        issued_by= 필터에 넣으면 그 CA가 발급한 인증서 목록으로 이동한다 — 두 API가
+        같은 매칭 술어를 쓴다. status=replaced 인증서는 리프 수·분포에서 제외한다
+        (대시보드 요약과 같은 규약). 인증된 전 역할(6종) 접근 가능. 읽기 전용이라
+        감사 이벤트를 남기지 않는다.
+      tags: [certificates]
+      responses:
+        "200":
+          description: 발급 기관 집계
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CertificateIssuers"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -245,6 +282,14 @@ paths:
         - name: unowned
           in: query
           schema: { type: boolean }
+        - name: issuer_org
+          in: query
+          description: 발급 기관 정확 일치 필터 (목록과 같은 의미)
+          schema: { type: string, maxLength: 200 }
+        - name: issued_by
+          in: query
+          description: 지정한 CA 인증서가 발급한 인증서만 (목록과 같은 의미)
+          schema: { type: string, format: uuid }
         - name: sort
           in: query
           description: 정렬 필드 (기본 not_after)
@@ -682,11 +727,75 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "409":
+          description: >
+            동일 정규화 요청(실행기·대상·포트)이 이미 활성(pending/leased/running)이다
+            (duplicate_scan — 버튼 연타 가드). job_id가 기존 활성 Job을 가리킨다.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DuplicateScan" }
         "422":
           description: sensor_id가 존재하지 않거나 active 상태가 아닌 센서
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+    get:
+      operationId: listDiscoveryScans
+      summary: 스캔 Job 목록 조회 (상태·출처 필터·페이지네이션)
+      description: >
+        최신 생성 순. 스윕 청크·재스캔 발주도 scan_jobs 행이므로 함께 나온다 —
+        origin으로 구분한다. 읽기 전용 — 전 역할, 감사 이벤트 없음.
+      tags: [discovery]
+      parameters:
+        - name: status
+          in: query
+          description: pending/leased/running/completed/failed/canceled (반복·쉼표 구분 허용)
+          schema: { type: string }
+        - name: origin
+          in: query
+          description: manual/sweep/rescan (반복·쉼표 구분 허용)
+          schema: { type: string }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: 스캔 Job 목록
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScanJobList" }
+        "400":
+          description: 잘못된 쿼리 파라미터
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/discovery/scan-suggestions:
+    get:
+      operationId: getScanSuggestions
+      summary: 스캔 대상 제안 (최근 사용·파생 대역·운영자 지정 대역)
+      description: >
+        수기 CIDR 입력을 줄이기 위한 제안 3종 — 최근 수동 스캔의 대상 원문(최근 사용 순),
+        발견된 네트워크 대상의 IPv4 주소를 /24로 묶은 파생 대역(대상 수 내림차순),
+        SCAN_SUGGESTED_NETWORKS 운영자 지정 대역. 제안일 뿐 스캔 범위를 제한하지
+        않는다. 읽기 전용 — 전 역할, 감사 이벤트 없음.
+      tags: [discovery]
+      responses:
+        "200":
+          description: 스캔 대상 제안
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScanSuggestions" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
   /api/v1/discovery/scans/{id}:
     get:
       operationId: getDiscoveryScan
@@ -709,6 +818,45 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           description: 존재하지 않는 Job
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/discovery/scans/{id}/cancel:
+    post:
+      operationId: cancelDiscoveryScan
+      summary: 스캔 Job 취소
+      description: >
+        pending은 즉시 취소하고, 서버 실행 running은 실행 goroutine의 ctx를 끊는다.
+        센서가 이미 집어간 작업(leased/running)은 409다 — 센서를 실제로 멈출 수 없어
+        "취소됐는데 계속 도는" 거짓 상태를 만들지 않는다. 스윕이 발주한 청크도 409 —
+        스윕 pause/cancel로만 제어한다. discovery.scan.cancel 감사 이벤트를 상태
+        전이와 같은 트랜잭션으로 남긴다. 허용 역할은
+        system_administrator·pki_administrator·operator다.
+      tags: [discovery]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 취소된 스캔 Job
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScanJob" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: 존재하지 않는 Job
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: >
+            취소할 수 없는 상태(scan_state — 종료됨·센서 실행 중) 또는 스윕 자식
+            청크(sweep_chunk)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1730,6 +1878,12 @@ components:
         serial_number: { type: string }
         subject_dn: { type: string }
         issuer_dn: { type: string }
+        issuer_organization:
+          type: string
+          nullable: true
+          description: >
+            발급자 DN의 O(Organization) 값 (0016). 신규 행은 x509 파서가 채우고
+            0016 이전 행은 issuer_dn에서 소급 백필됐다. O가 없으면 null.
         common_name: { type: string }
         sans:
           type: array
@@ -1859,6 +2013,53 @@ components:
         dispatched_endpoints:
           type: integer
           description: 이번 배치가 claim한 엔드포인트 수. 0이면 지금 재확인할 것이 없다.
+    IssuerOrgCount:
+      type: object
+      required: [organization, count]
+      properties:
+        organization:
+          type: string
+          nullable: true
+          description: null이면 발급자 DN에 O가 없는 인증서 묶음
+        count: { type: integer }
+    CATreeNode:
+      type: object
+      description: >
+        CA 트리 1노드. 루트(자체 서명 CA) 아래에 그 계보의 중간 CA가 평탄화되어
+        붙는다. 인벤토리에 없는 상위는 stored=false·id null로 subject_dn만 안다
+        (체인 항목과 같은 규약).
+      required: [id, stored, subject_dn, common_name, not_after, status, self_signed, leaf_count, children]
+      properties:
+        id: { type: string, format: uuid, nullable: true }
+        stored: { type: boolean }
+        subject_dn: { type: string }
+        common_name: { type: string, nullable: true }
+        not_after: { type: string, format: date-time, nullable: true }
+        status:
+          type: string
+          nullable: true
+          enum: [active, expired, revoked, replaced, unknown, null]
+        self_signed: { type: boolean }
+        leaf_count:
+          type: integer
+          description: 이 CA가 직접 발급한 비-CA 인증서 수 (replaced 제외)
+        children:
+          type: array
+          items: { $ref: "#/components/schemas/CATreeNode" }
+    CertificateIssuers:
+      type: object
+      required: [request_id, organizations, ca_tree, unmatched_leaf_count]
+      properties:
+        request_id: { type: string }
+        organizations:
+          type: array
+          items: { $ref: "#/components/schemas/IssuerOrgCount" }
+        ca_tree:
+          type: array
+          items: { $ref: "#/components/schemas/CATreeNode" }
+        unmatched_leaf_count:
+          type: integer
+          description: 어떤 보유 CA와도 발급 관계가 잡히지 않는 비-CA 인증서 수 (replaced 제외)
     CertificateSummary:
       type: object
       description: >
@@ -2037,6 +2238,55 @@ components:
           description: >
             지정하면 서버 직접 실행 대신 해당 센서가 스캔한다 (Phase 3a).
             active 센서만 허용 — 아니면 422. pending Job만 만들어지고 센서가 pull 리스로 가져간다.
+    DuplicateScan:
+      type: object
+      description: 409 duplicate_scan 응답 — 표준 오류 + 기존 활성 Job id.
+      required: [error, job_id]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, enum: [duplicate_scan] }
+            message: { type: string }
+        job_id:
+          type: string
+          description: 이미 활성인 동일 요청 Job id. 극단 경합으로 특정하지 못하면 빈 문자열.
+        request_id: { type: string }
+    ScanJobList:
+      type: object
+      required: [request_id, items, total, page, page_size]
+      properties:
+        request_id: { type: string }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/ScanJob" }
+        total: { type: integer, description: 필터 적용 후 전체 건수 }
+        page: { type: integer }
+        page_size: { type: integer }
+    DerivedNetwork:
+      type: object
+      required: [cidr, target_count]
+      properties:
+        cidr: { type: string, description: 발견된 대상에서 파생한 /24 대역 }
+        target_count: { type: integer, description: 이 대역에서 이미 발견된 대상 수 }
+    ScanSuggestions:
+      type: object
+      required: [request_id, recent_targets, derived_networks, configured_networks]
+      properties:
+        request_id: { type: string }
+        recent_targets:
+          type: array
+          items: { type: string }
+          description: 최근 수동 스캔의 대상 원문 (IP/CIDR, 최근 사용 순·중복 제거, 최대 10)
+        derived_networks:
+          type: array
+          items: { $ref: "#/components/schemas/DerivedNetwork" }
+          description: 발견된 대상의 /24 파생 대역 (대상 수 내림차순, 최대 20)
+        configured_networks:
+          type: array
+          items: { type: string }
+          description: SCAN_SUGGESTED_NETWORKS 운영자 지정 대역 (정규화된 CIDR)
     ScanAccepted:
       type: object
       required: [job_id, status, total_endpoints]
@@ -2051,16 +2301,23 @@ components:
       type: object
       description: 스캔 Job 상태·진행률·결과 요약
       required:
-        [id, status, executor_type, targets, ports, total_endpoints, scanned_endpoints,
+        [id, status, origin, executor_type, targets, ports, total_endpoints, scanned_endpoints,
          reachable_endpoints, certificates_found, certificates_new, created_at]
       properties:
         id: { type: string, format: uuid }
         status:
           type: string
-          enum: [pending, leased, running, completed, failed]
+          enum: [pending, leased, running, completed, failed, canceled]
           description: >
             leased = 센서가 Job을 수령했고 아직 실행 보고(running 하트비트) 전인 상태 (00-spec 7.8).
             리스 만료까지 running 전이가 없으면 서버가 failed로 회수한다.
+            canceled = 취소 API로 종료된 상태 (0017 — pending 또는 서버 실행 running만 취소 가능).
+        origin:
+          type: string
+          enum: [manual, sweep, rescan]
+          description: >
+            발주 출처 (0015). manual = 사람 발주, sweep = 전 포트 스윕의 자식 청크,
+            rescan = 주기 재스캔 스케줄러 발주.
         executor_type:
           type: string
           enum: [server, sensor]
