@@ -3,6 +3,15 @@
 > **문서 상태**: 리버스 프록시 오버레이(`docker-compose.https.yml`) + 세션 쿠키 Secure 설정 기준.
 > 이 구성은 **선택**이다. 적용하지 않으면 기존 HTTP 구성 그대로 동작한다 (INSTALL.md 5.3절).
 
+> **먼저 읽을 것 — 접속 방식은 설치 문답에서 정한다.**
+> `install.sh`는 설치·재기동·패치 어느 경로에서도 **HTTP / HTTPS 2지선다**를 묻고, 그 결과를 `.env`의
+> `AUTOCERT_SCHEME`에 기록한다. **"둘 다"는 제공하지 않는다** — 평문 경로를 함께 열면 그쪽이 상용
+> 경로가 되고 세션 쿠키의 `Secure`도 함께 내려야 해서 TLS가 장식이 된다. HTTPS 구성은 80→443
+> 리다이렉트를 이미 포함하므로 실사용에 불편이 없다.
+> 3장대로 인증서를 `deploy/tls/`에 둔 뒤 `install.sh` → **[설정 변경·재기동]** → 접속 방식 **HTTPS**가
+> 정규 경로다. 인자로 지정하려면 `--mode reconfigure --scheme https`이고, 옛 인자 `--mode https`는
+> 같은 뜻의 별칭으로 계속 받는다. 4장 이후는 그 스크립트가 대신 하는 일의 정본이자 수동 절차다.
+
 ## 1. 개요
 
 기본 설치의 웹 콘솔(3000)과 REST API(8080)는 **평문 HTTP**다. 폐쇄망이라도 관리 콘솔에는
@@ -81,6 +90,16 @@ deploy/tls/server.key   # 개인키 PEM           권한 600
 - 파일 이름은 고정이다 (`deploy/nginx/autocert.conf`가 이 이름으로 읽는다).
 - `deploy/tls/`는 **git 미추적**이다(`.gitignore`). 실제 키·인증서를 저장소에 커밋하지 않는다.
 - 컨테이너에는 **읽기 전용(`:ro`)** 으로 마운트된다.
+- **이 두 파일은 어떤 반입 패키지에도 들어 있지 않다**(고객사 파일이다). 업그레이드 때 신버전
+  디렉터리에 없으면 HTTPS가 뜨지 않으므로, `install.sh`의 [패치] 모드가 구버전 디렉터리에서
+  **자동으로 승계**한다 (INSTALL.md 5.1.4절). 손으로 올릴 때는 `.env`와 함께 직접 복사한다.
+
+`install.sh`에서 접속 방식을 HTTPS로 고르면 위 배치를 스크립트가 확인·대행한다.
+
+- 파일이 없으면 경로를 물어(직접 입력 또는 방향키 파일 탐색기) `deploy/tls/`로 복사하고 권한을 맞춘다(crt 644 / key 600).
+- **인증서와 개인키의 짝**(공개키 일치), PEM 형식, 만료일, **개인키 암호 여부**를 미리 검사한다 — 어긋나면 그 자리에서 알린다. 인증서 내용은 화면에 출력하지 않는다.
+- 접속 FQDN(`AUTOCERT_PUBLIC_HOST`)의 기본값을 **인증서 SAN의 첫 DNS 이름**(없으면 CN)에서 뽑아 제시한다.
+- 인증서를 끝내 확보하지 못하면 경고 후 **HTTP 구성으로 진행**한다(기동이 깨지는 것보다 낫다). 나중에 파일을 두고 [설정 변경·재기동]에서 다시 고른다.
 
 ## 4. 기동
 
@@ -134,7 +153,9 @@ curl -k -i -X POST https://<서버 주소>/api/v1/auth/login \
 
 | 설정 | 값 | 비고 |
 | --- | --- | --- |
-| `SESSION_COOKIE_SECURE` | `true` | 오버레이가 자동으로 켠다. `.env`에 명시하면 그 값이 우선한다 |
+| `AUTOCERT_SCHEME` | `https` | 이 설치의 **접속 방식 정본**. `install.sh`가 문답 결과를 기록하고 다음 실행·패치에서 먼저 읽는다. 이 값이 없는 옛 설치는 흔적(compose 파일 라벨 → `SESSION_COOKIE_SECURE` → `HTTPS_PORT` → `proxy` 컨테이너)으로 추정한다. **손으로 이 줄만 고쳐도 오버레이는 따라오지 않는다** |
+| `AUTOCERT_PUBLIC_HOST` | `autocert.example.internal` | 브라우저 접속 주소(FQDN). 기본값은 서버 인증서 SAN의 첫 DNS 이름이며, 완료 안내와 `NOTIFY_BASE_URL` 생성에 쓴다 |
+| `SESSION_COOKIE_SECURE` | `true` | 오버레이가 자동으로 켠다. `install.sh`에서 HTTPS를 고르면 함께 `true`로, HTTP를 고르면 `false`로 되돌린다 |
 | `NOTIFY_BASE_URL` | `https://autocert.example.internal` | 알림 본문 딥링크 기준 URL. **http로 두면 알림 메일의 링크가 평문 주소로 나간다** — HTTPS 전환 시 함께 바꾼다. 포트가 443이면 포트 표기는 생략한다 (INSTALL.md 5.2.1) |
 | `BACKEND_INTERNAL_URL` | `http://backend:8080` (그대로) | 컨테이너 내부 중계 주소다. 브라우저 접속 주소와 무관하므로 **바꾸지 않는다** (INSTALL.md 5.4) |
 | HSTS | 프록시에서 설정 | `deploy/nginx/autocert.conf`에 주석으로 준비되어 있다. 웹 콘솔(Next.js) 쪽 헤더 설정은 건드리지 않아도 된다 |
@@ -198,6 +219,8 @@ docker compose -f docker-compose.yml -f docker-compose.https.yml exec proxy ngin
 | nginx가 뜨지 않고 `cannot load certificate` | `deploy/tls/server.crt`·`server.key`가 없거나 형식이 잘못됨 | 파일 존재·PEM 형식 확인. 키에 암호가 걸려 있으면 제거한다 |
 | 인증서 업로드가 `413`으로 거부됨 | 프록시의 본문 크기 상한 | `autocert.conf`의 `client_max_body_size`(기본 4m)를 확인한다. 제품 상한은 1 MiB다 |
 | 센서가 연결되지 않는다 | 센서 게이트웨이(8443)를 프록시 뒤로 넣었다 | 8443은 mTLS라 종단하면 안 된다. 오버레이 기본값처럼 직접 노출한다 |
+| 업그레이드 후 HTTP로 떴다 | 구버전에 `AUTOCERT_SCHEME`도 `deploy/tls`도 없어 HTTPS로 판정되지 않았다(옛 버전에서 손으로 오버레이만 얹은 설치) | 인증서 두 파일을 신버전의 `deploy/tls/`에 두고 `install.sh` → [설정 변경·재기동] → **HTTPS**. 이후에는 `.env`에 기록되어 다시 묻지 않는다 |
+| 기동은 됐는데 `HTTPS(443)가 응답하지 않는다` 로 설치가 실패한다 | 프록시가 인증서를 읽지 못했다(암호 걸린 개인키·형식 오류) 또는 443을 다른 프로세스가 점유했다 | `docker compose logs proxy --tail=50`. 개인키 암호는 제거하고(2장), 포트 점유는 `HTTPS_PORT`로 옮긴다 |
 
 프록시 로그: `docker compose -f docker-compose.yml -f docker-compose.https.yml logs -f proxy`
 
