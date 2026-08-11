@@ -272,7 +272,7 @@ func TestDiscoveryPortPresetsAndScanPortSpec(t *testing.T) {
 		}
 	})
 
-	t.Run("port_spec drives the scan and all is rejected", func(t *testing.T) {
+	t.Run("port_spec drives the scan and all is promoted", func(t *testing.T) {
 		// 192.0.2.0/24는 문서화 전용 대역(TEST-NET-1)이라 실제로 응답하지 않는다.
 		resp := env.do(t, http.MethodPost, "/api/v1/discovery/scans", token,
 			map[string]any{"targets": []string{"192.0.2.10"}, "port_spec": "8443,9443", "timeout_ms": 100})
@@ -289,12 +289,31 @@ func TestDiscoveryPortPresetsAndScanPortSpec(t *testing.T) {
 			t.Errorf("total_endpoints = %d, want 2", created.TotalEndpoints)
 		}
 
-		for _, spec := range []string{"all", "web,all", "8443-"} {
+		// all 프리셋은 더 이상 400이 아니다 — 임계를 넘으므로 스윕으로 자동 승격된다.
+		for _, spec := range []string{"all", "web,all"} {
 			resp := env.do(t, http.MethodPost, "/api/v1/discovery/scans", token,
 				map[string]any{"targets": []string{"192.0.2.10"}, "port_spec": spec})
-			if resp.StatusCode != http.StatusBadRequest {
-				t.Errorf("scan with port_spec %q = %d, want 400", spec, resp.StatusCode)
+			if resp.StatusCode != http.StatusAccepted {
+				t.Errorf("scan with port_spec %q = %d, want 202 (auto-promoted)", spec, resp.StatusCode)
+				continue
 			}
+			var out struct {
+				Mode     string `json:"mode"`
+				Promoted bool   `json:"promoted"`
+				SweepID  string `json:"sweep_id"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+				t.Fatalf("decode promoted scan: %v", err)
+			}
+			if out.Mode != "sweep" || !out.Promoted || out.SweepID == "" {
+				t.Errorf("port_spec %q = %+v, want a promoted sweep", spec, out)
+			}
+		}
+		// 문법 오류는 그대로 400이다(승격은 크기 판정일 뿐 파서를 느슨하게 하지 않는다).
+		resp = env.do(t, http.MethodPost, "/api/v1/discovery/scans", token,
+			map[string]any{"targets": []string{"192.0.2.10"}, "port_spec": "8443-"})
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("scan with malformed port_spec = %d, want 400", resp.StatusCode)
 		}
 	})
 }

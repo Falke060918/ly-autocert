@@ -107,9 +107,13 @@ type SweepInput struct {
 	RatePPS        int      // 0이면 DefaultSweepRatePPS
 	ChunkEndpoints int      // 0이면 DefaultSweepChunkEndpoints
 	MaxDays        int      // 0이면 DefaultSweepMaxDays
-	ActorID        *string
-	RequestID      *string
-	SourceIP       *string
+	// Promoted는 사용자가 단발 스캔을 요청했으나 총 엔드포인트 수가 임계를 넘어
+	// 스윕으로 자동 승격된 경우다. 감사에만 실린다 — 사용자가 누른 것과 실제로
+	// 만들어진 것이 다르므로 그 사실이 기록에 남아야 한다.
+	Promoted  bool
+	ActorID   *string
+	RequestID *string
+	SourceIP  *string
 }
 
 // SweepProgress는 자식 scan_jobs 집계에서 파생한 진행률이다(저장하지 않는다).
@@ -325,6 +329,21 @@ func (s *Store) CreateSweep(ctx context.Context, in SweepInput) (*Sweep, error) 
 		return nil, fmt.Errorf("store: insert scan sweep: %w", err)
 	}
 
+	after := map[string]any{
+		"phase":           "created",
+		"targets":         in.Targets,
+		"port_spec":       in.PortSpec,
+		"executor_scope":  in.ExecutorScope,
+		"total_endpoints": totalEndpoints,
+		"total_chunks":    totalChunks,
+		"rate_pps":        ratePPS,
+		"chunk_endpoints": chunkEndpoints,
+	}
+	if in.Promoted {
+		// 단발 스캔 요청이 승격된 것임을 남긴다(사용자가 누른 것과 만들어진 것이 다르다).
+		after["promoted"] = true
+	}
+
 	// 감사 삽입은 트랜잭션의 마지막 문장이어야 한다 (docs/GOTCHAS.md).
 	if err := audit.Insert(ctx, tx, audit.Event{
 		Type:       EventDiscoverySweep,
@@ -332,18 +351,9 @@ func (s *Store) CreateSweep(ctx context.Context, in SweepInput) (*Sweep, error) 
 		TargetType: "scan_sweep",
 		TargetID:   &id,
 		RequestID:  in.RequestID,
-		After: map[string]any{
-			"phase":           "created",
-			"targets":         in.Targets,
-			"port_spec":       in.PortSpec,
-			"executor_scope":  in.ExecutorScope,
-			"total_endpoints": totalEndpoints,
-			"total_chunks":    totalChunks,
-			"rate_pps":        ratePPS,
-			"chunk_endpoints": chunkEndpoints,
-		},
-		Result:   domain.AuditSuccess,
-		SourceIP: in.SourceIP,
+		After:      after,
+		Result:     domain.AuditSuccess,
+		SourceIP:   in.SourceIP,
 	}); err != nil {
 		return nil, err
 	}

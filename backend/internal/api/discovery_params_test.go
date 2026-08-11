@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/discovery"
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/store"
 )
 
 // 단발 스캔의 포트 결정 규칙 (04-port-autoscan 9.2): port_spec > ports > common.
@@ -54,10 +55,17 @@ func TestResolveScanPortsPriority(t *testing.T) {
 		}
 	})
 
-	t.Run("all preset is rejected for single scans", func(t *testing.T) {
+	// all 프리셋은 더 이상 거부하지 않는다 — 크기 판정은 planScan의 자동 승격이
+	// 담당하므로 파서는 요청을 그대로 펼친다.
+	t.Run("all preset is accepted", func(t *testing.T) {
 		for _, spec := range []string{"all", "web,all", " ALL "} {
-			if _, err := resolveScanPorts(spec, nil); !errors.Is(err, discovery.ErrInvalidScanInput) {
-				t.Errorf("resolveScanPorts(%q) error = %v, want ErrInvalidScanInput", spec, err)
+			ports, err := resolveScanPorts(spec, nil)
+			if err != nil {
+				t.Errorf("resolveScanPorts(%q) error = %v, want nil", spec, err)
+				continue
+			}
+			if len(ports) != 65535 {
+				t.Errorf("resolveScanPorts(%q) = %d ports, want 65535", spec, len(ports))
 			}
 		}
 	})
@@ -115,6 +123,116 @@ func TestScanInputMessageFallsBackForUnwrappedError(t *testing.T) {
 	}
 	if got == "" {
 		t.Error("message = \"\", 사용자에게 보일 문구가 필요합니다")
+	}
+}
+
+// 자동 승격 판정: 총 엔드포인트 수(IP × 포트)가 임계를 **넘을 때만** 스윕이다.
+// 임계는 SCAN_SWEEP_CHUNK_ENDPOINTS(청크 1개 분량)이므로 딱 1청크로 끝나는
+// 요청은 단발로 남는다. DB가 필요 없다.
+func TestPlanScanPromotion(t *testing.T) {
+	// 임계 8: /30(4 IP) × 포트 수로 경계를 정확히 짚기 위한 값이다.
+	srv := newServer(nil, nil, nil, nil, WithSweepDefaults(SweepDefaults{
+		RatePPS: 10, ChunkEndpoints: 8, MaxDays: 30,
+	}))
+
+	t.Run("at the threshold it stays a single scan", func(t *testing.T) {
+		plan, err := srv.planScan(createScanRequest{
+			Targets: []string{"10.9.0.0/30"}, Ports: []int{443, 8443},
+		})
+		if err != nil {
+			t.Fatalf("plan: %v", err)
+		}
+		if plan.TotalEndpoints != 8 {
+			t.Fatalf("total_endpoints = %d, want 8", plan.TotalEndpoints)
+		}
+		if plan.Promoted {
+			t.Error("promoted = true at the threshold, want false (> only)")
+		}
+		if plan.RatePPS != discovery.DefaultScanRatePPS {
+			t.Errorf("rate_pps = %d, want %d (single scan)", plan.RatePPS, discovery.DefaultScanRatePPS)
+		}
+		if plan.TotalChunks != 0 {
+			t.Errorf("total_chunks = %d, want 0 for a single scan", plan.TotalChunks)
+		}
+	})
+
+	t.Run("over the threshold it promotes to a sweep", func(t *testing.T) {
+		plan, err := srv.planScan(createScanRequest{
+			Targets: []string{"10.9.0.0/30"}, Ports: []int{443, 8443, 9443},
+		})
+		if err != nil {
+			t.Fatalf("plan: %v", err)
+		}
+		if !plan.Promoted {
+			t.Fatalf("promoted = false for %d endpoints (threshold %d), want true",
+				plan.TotalEndpoints, plan.Threshold)
+		}
+		if plan.RatePPS != 10 {
+			t.Errorf("rate_pps = %d, want the sweep rate 10", plan.RatePPS)
+		}
+		if plan.TotalChunks < 1 {
+			t.Errorf("total_chunks = %d, want >= 1 on the sweep path", plan.TotalChunks)
+		}
+		if plan.ETASeconds != float64(plan.TotalEndpoints)/10 {
+			t.Errorf("eta = %v, want endpoints/rate", plan.ETASeconds)
+		}
+	})
+
+	// all 프리셋은 거부가 아니라 승격이다 (예전에는 400이었다).
+	t.Run("all preset promotes instead of failing", func(t *testing.T) {
+		plan, err := srv.planScan(createScanRequest{
+			Targets: []string{"10.9.0.1"}, PortSpec: "all",
+		})
+		if err != nil {
+			t.Fatalf("plan: %v", err)
+		}
+		if !plan.Promoted || plan.TotalEndpoints != 65535 {
+			t.Errorf("plan = {promoted:%v, endpoints:%d}, want {true, 65535}",
+				plan.Promoted, plan.TotalEndpoints)
+		}
+	})
+
+	t.Run("defaults fall back to the store constants", func(t *testing.T) {
+		bare := newServer(nil, nil, nil, nil)
+		plan, err := bare.planScan(createScanRequest{Targets: []string{"10.9.0.1"}})
+		if err != nil {
+			t.Fatalf("plan: %v", err)
+		}
+		if plan.Threshold != store.DefaultSweepChunkEndpoints {
+			t.Errorf("threshold = %d, want %d", plan.Threshold, store.DefaultSweepChunkEndpoints)
+		}
+		if plan.MaxDays != store.DefaultSweepMaxDays {
+			t.Errorf("max_days = %d, want %d", plan.MaxDays, store.DefaultSweepMaxDays)
+		}
+	})
+
+	t.Run("invalid input is a scan input error", func(t *testing.T) {
+		if _, err := srv.planScan(createScanRequest{Targets: []string{"not-an-ip"}}); !errors.Is(err, discovery.ErrInvalidScanInput) {
+			t.Errorf("error = %v, want ErrInvalidScanInput", err)
+		}
+		if _, err := srv.planScan(createScanRequest{Targets: []string{"10.9.0.1"}, PortSpec: "8000-"}); !errors.Is(err, discovery.ErrInvalidScanInput) {
+			t.Errorf("error = %v, want ErrInvalidScanInput", err)
+		}
+	})
+}
+
+// 스윕 행·미리보기에 실을 포트 사양 원문. 정수 목록 입력도 같은 문법으로 되돌아와야
+// 청크 재생(port_spec 재파싱)이 가능하다.
+func TestEffectivePortSpec(t *testing.T) {
+	cases := []struct {
+		spec  string
+		ports []int
+		want  string
+	}{
+		{" web ", nil, "web"},
+		{"", []int{443, 8443}, "443,8443"},
+		{"", nil, discovery.DefaultPortSpec},
+		{"all", []int{443}, "all"},
+	}
+	for _, c := range cases {
+		if got := effectivePortSpec(c.spec, c.ports); got != c.want {
+			t.Errorf("effectivePortSpec(%q, %v) = %q, want %q", c.spec, c.ports, got, c.want)
+		}
 	}
 }
 

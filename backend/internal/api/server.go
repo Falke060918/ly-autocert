@@ -175,7 +175,12 @@ func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorC
 	s.protected("GET /api/v1/servers", handleListServers(st), domain.AllRoles...)
 	s.protected("GET /api/v1/servers/{id}", handleGetServer(st), domain.AllRoles...)
 	// 스캔 생성은 인벤토리를 바꾸므로 관리자·운영자급만. 상태 조회는 읽기 전용이라 전 역할.
-	s.protected("POST /api/v1/discovery/scans", handleCreateScan(disc, st),
+	// 총 엔드포인트 수가 임계를 넘으면 단발 대신 스윕으로 자동 승격한다(mode/promoted).
+	s.protected("POST /api/v1/discovery/scans", s.handleCreateScan(disc),
+		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
+	// 미리보기는 아무것도 만들지 않지만(감사 없음) 발주 폼의 사전 계산이라 발주와
+	// 같은 3역할이다. 리터럴 세그먼트라 {id} 라우트보다 우선 매칭된다.
+	s.protected("POST /api/v1/discovery/scans/preview", s.handleScanPreview,
 		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
 	// 스캔 Job 목록·대상 제안 — 읽기 전용이라 전 역할, 감사 이벤트 없음.
 	s.protected("GET /api/v1/discovery/scans", s.handleListScans, domain.AllRoles...)

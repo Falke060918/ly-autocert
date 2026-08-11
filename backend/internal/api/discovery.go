@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,20 +33,16 @@ type createScanRequest struct {
 	SensorID *string `json:"sensor_id"`
 }
 
-// resolveScanPorts는 단발 스캔의 포트를 정한다 (04-port-autoscan 9.2).
+// resolveScanPorts는 스캔 요청의 포트를 정한다 (04-port-autoscan 9.2).
 //
 //	port_spec 지정 → 파싱 / 아니면 ports 지정 → 그대로 / 아니면 기본값 common
 //
 // 기본값은 [443]이 아니라 common 프리셋(26개)이다 — 설계 6.1의 기본값 변경.
-// all 프리셋은 대상 1개만으로도 6.5만 엔드포인트라 즉시 스캔의 응답성 전제를
-// 깨므로 단발 스캔에서는 거부한다(스윕 전용, 설계 4.2).
+// all 프리셋도 여기서 받는다: 예전에는 "스윕 전용"이라며 400으로 거부했지만,
+// 지금은 총 엔드포인트 수가 임계를 넘으면 planScan이 스윕으로 자동 승격하므로
+// 사용자가 요청을 다시 쓸 이유가 없다. 응답성 전제는 승격이 지킨다.
 func resolveScanPorts(spec string, ports []int) ([]int, error) {
 	if s := strings.TrimSpace(spec); s != "" {
-		if hasAllPreset(s) {
-			return nil, fmt.Errorf("%w: 프리셋 %q는 전 포트 백그라운드 스윕 전용입니다. "+
-				"POST /api/v1/discovery/sweeps를 쓰거나 범위를 좁히십시오",
-				discovery.ErrInvalidScanInput, discovery.PresetAll)
-		}
 		return discovery.ParsePortSpec(s)
 	}
 	if len(ports) > 0 {
@@ -54,14 +51,21 @@ func resolveScanPorts(spec string, ports []int) ([]int, error) {
 	return discovery.ParsePortSpec(discovery.DefaultPortSpec)
 }
 
-// hasAllPreset은 포트 사양에 all 프리셋 토큰이 들어 있는지 본다.
-func hasAllPreset(spec string) bool {
-	for _, raw := range strings.Split(spec, ",") {
-		if strings.ToLower(strings.TrimSpace(raw)) == discovery.PresetAll {
-			return true
-		}
+// effectivePortSpec은 스윕 행·미리보기에 실을 포트 사양 **원문**을 만든다.
+// port_spec을 그대로 쓰되, 정수 목록(ports)만 온 하위 호환 입력은 같은 문법의
+// 문자열로 되돌린다 — scan_sweeps.port_spec은 청크 재생·감사의 근거라 비면 안 된다.
+func effectivePortSpec(spec string, ports []int) string {
+	if s := strings.TrimSpace(spec); s != "" {
+		return s
 	}
-	return false
+	if len(ports) == 0 {
+		return discovery.DefaultPortSpec
+	}
+	parts := make([]string, 0, len(ports))
+	for _, p := range ports {
+		parts = append(parts, strconv.Itoa(p))
+	}
+	return strings.Join(parts, ",")
 }
 
 // invalidScanInputPrefix는 파서가 오류를 감쌀 때 붙는 내부 센티널 접두사다
@@ -87,18 +91,37 @@ func writeScanInputError(w http.ResponseWriter, r *http.Request, err error) {
 	writeError(w, r, http.StatusBadRequest, "invalid_scan_request", scanInputMessage(err))
 }
 
+// 스캔 요청이 실제로 만들어 낸 작업의 종류다 (createScanResponse.Mode).
+const (
+	scanModeScan  = "scan"  // 단발 scan_jobs 1건
+	scanModeSweep = "sweep" // 자동 승격된 scan_sweeps 1건
+)
+
 type createScanResponse struct {
-	JobID          string `json:"job_id"`
-	Status         string `json:"status"`
-	TotalEndpoints int    `json:"total_endpoints"`
-	RequestID      string `json:"request_id"`
+	// Mode는 실제로 만들어진 작업이다 — scan(단발) 또는 sweep(자동 승격).
+	// 화면은 job_id/sweep_id 중 어느 쪽을 추적할지 이 값으로 정한다.
+	Mode string `json:"mode"`
+	// Promoted는 단발 스캔 요청이 임계 초과로 스윕이 되었음을 알린다.
+	// 사용자가 누른 것과 만들어진 것이 다르므로 화면이 그 사실을 알려야 한다.
+	Promoted bool   `json:"promoted"`
+	JobID    string `json:"job_id,omitempty"`
+	SweepID  string `json:"sweep_id,omitempty"`
+	Status   string `json:"status"`
+	// TotalEndpoints는 IP 수 × 포트 수다. 승격 경로는 수천만이라 int64다.
+	TotalEndpoints    int64      `json:"total_endpoints"`
+	TotalChunks       int        `json:"total_chunks,omitempty"`
+	EstimatedFinishAt *time.Time `json:"estimated_finish_at,omitempty"`
+	RequestID         string     `json:"request_id"`
 }
 
 // handleCreateScan은 POST /api/v1/discovery/scans를 처리한다.
 // 스캔 Job을 만들어 즉시 job id를 반환하고(202), 실제 스캔은 백그라운드에서 돈다.
+// 총 엔드포인트 수가 임계(SCAN_SWEEP_CHUNK_ENDPOINTS)를 넘으면 단발 대신
+// **스윕으로 자동 승격**한다 — 응답의 mode/promoted가 그 사실을 실어 나른다.
 // sensor_id가 있으면 센서 위임 pending Job만 만든다(실행은 센서 pull 리스, 00-spec 7.8).
-// 생성은 감사 이벤트를 남긴다(store.CreateScanJob 내부). 허용 역할은 라우트에서 강제한다.
-func handleCreateScan(mgr *discovery.Manager, st *store.Store) http.HandlerFunc {
+// 생성은 감사 이벤트를 남긴다(store.CreateScanJob / CreateSweep 내부).
+// 허용 역할은 라우트에서 강제한다.
+func (s *Server) handleCreateScan(mgr *discovery.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		reqIDStr := ""
@@ -113,26 +136,31 @@ func handleCreateScan(mgr *discovery.Manager, st *store.Store) http.HandlerFunc 
 				"요청 본문을 JSON으로 파싱할 수 없습니다.")
 			return
 		}
-		ports, err := resolveScanPorts(req.PortSpec, req.Ports)
+		plan, err := s.planScan(req)
 		if err != nil {
 			// 파서의 한국어 사유만 전달한다(내부 접두사는 로그행).
 			writeScanInputError(w, r, err)
 			return
 		}
-		req.Ports = ports
+		req.Ports = plan.Ports
 
 		// 센서 위임 스캔: 존재하고 active인 센서만 허용한다. 무효·비활성은 422 —
 		// 형식 오류(400)와 구분해, 폼 입력이 아니라 선택한 센서가 문제임을 드러낸다.
 		if req.SensorID != nil && *req.SensorID == "" {
 			req.SensorID = nil
 		}
-		if req.SensorID != nil && !checkActiveSensor(w, r, st, *req.SensorID) {
+		if req.SensorID != nil && !checkActiveSensor(w, r, s.store, *req.SensorID) {
 			return
 		}
 
 		var actorID *string
 		if u := userFrom(ctx); u != nil {
 			actorID = &u.ID
+		}
+
+		if plan.Promoted {
+			s.createPromotedSweep(w, r, req, plan, actorID)
+			return
 		}
 
 		res, err := mgr.Start(ctx, store.ScanInput{
@@ -170,9 +198,10 @@ func handleCreateScan(mgr *discovery.Manager, st *store.Store) http.HandlerFunc 
 		}
 
 		writeJSON(w, http.StatusAccepted, createScanResponse{
+			Mode:           scanModeScan,
 			JobID:          res.JobID,
 			Status:         store.ScanStatusPending,
-			TotalEndpoints: res.TotalEndpoints,
+			TotalEndpoints: int64(res.TotalEndpoints),
 			RequestID:      reqIDStr,
 		})
 	}
@@ -186,6 +215,198 @@ type duplicateScanResponse struct {
 	// 극단 경합으로 특정하지 못하면 빈 문자열이다(재시도하면 된다).
 	JobID     string `json:"job_id"`
 	RequestID string `json:"request_id,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
+// 단발 스캔 ↔ 스윕 자동 승격과 미리보기
+// ---------------------------------------------------------------------------
+
+// scanPlan은 스캔 요청 하나를 서버 파서로 펼친 결과와 승격 판정이다.
+// 미리보기(POST /discovery/scans/preview)와 실제 발주(POST /discovery/scans)가
+// **같은 함수**로 계산한다 — 두 경로가 갈라지면 화면이 보여준 숫자와 실제로 도는
+// 작업이 달라진다. 포트·IP 파서는 서버 한 곳이 정본이다(설계 9.3).
+type scanPlan struct {
+	Targets  []string // 입력 원문(재현·감사용)
+	IPs      []string // 전개된 개별 IP (중복 제거됨)
+	Ports    []int    // 전개된 포트
+	PortSpec string   // 유효 포트 사양(입력이 비면 common)
+	// TotalEndpoints는 IP 수 × 포트 수다. all 프리셋 × 대역이면 수천만이라 int64다.
+	TotalEndpoints int64
+	// Threshold는 승격 임계(SCAN_SWEEP_CHUNK_ENDPOINTS = 청크 1개 분량)다.
+	// 이 값을 **넘을 때만** 승격한다 — 딱 1청크로 끝나는 요청은 단발로 돈다.
+	Threshold int
+	Promoted  bool
+	// RatePPS·ETASeconds는 승격 여부에 따라 실제로 적용될 레이트와 그에 따른 예상 소요다.
+	RatePPS    int
+	ETASeconds float64
+	// TotalChunks·MaxDays는 승격 경로에서만 의미가 있다(스윕 청크 격자·ETA 상한).
+	TotalChunks int
+	MaxDays     int
+}
+
+// planScan은 요청을 파싱해 승격 여부까지 판정한다. 입력 오류는
+// discovery.ErrInvalidScanInput으로 감싸 반환한다(핸들러가 400 매핑).
+//
+// IP 전개에 expandSweepIPs(포트 1개짜리 Expand)를 쓰는 이유는 스윕 생성과 같다 —
+// 검증(CIDR 형식·호스트비트·개수 상한)이 스캐너와 같은 구현이어야 하기 때문이다.
+// 단발 경로가 다시 Expand를 호출해도 같은 파서라 결과가 어긋나지 않는다.
+func (s *Server) planScan(req createScanRequest) (*scanPlan, error) {
+	ports, err := resolveScanPorts(req.PortSpec, req.Ports)
+	if err != nil {
+		return nil, err
+	}
+	ips, err := expandSweepIPs(req.Targets)
+	if err != nil {
+		return nil, err
+	}
+
+	p := &scanPlan{
+		Targets:        req.Targets,
+		IPs:            ips,
+		Ports:          ports,
+		PortSpec:       effectivePortSpec(req.PortSpec, req.Ports),
+		TotalEndpoints: int64(len(ips)) * int64(len(ports)),
+		Threshold:      orDefaultInt(s.sweepDefaults.ChunkEndpoints, store.DefaultSweepChunkEndpoints),
+		MaxDays:        orDefaultInt(s.sweepDefaults.MaxDays, store.DefaultSweepMaxDays),
+	}
+	p.Promoted = p.TotalEndpoints > int64(p.Threshold)
+
+	p.RatePPS = discovery.DefaultScanRatePPS
+	if p.Promoted {
+		p.RatePPS = orDefaultInt(s.sweepDefaults.RatePPS, store.DefaultSweepRatePPS)
+		p.TotalChunks = store.SweepChunkCount(len(ips), len(ports), p.Threshold)
+	}
+	p.ETASeconds = float64(p.TotalEndpoints) / float64(p.RatePPS)
+	return p, nil
+}
+
+// createPromotedSweep은 임계를 넘은 단발 스캔 요청을 스윕으로 발주한다.
+// 레이트·청크·ETA 상한은 전부 기존 스윕 경로 그대로다 — 승격은 "어느 엔진으로
+// 보낼지"만 정하고 실행 규칙을 새로 만들지 않는다. 감사는 store.CreateSweep이
+// discovery.sweep 이벤트로 남기며 승격 사실(promoted)을 함께 싣는다.
+func (s *Server) createPromotedSweep(w http.ResponseWriter, r *http.Request,
+	req createScanRequest, plan *scanPlan, actorID *string) {
+	scope := domain.ExecutorScopeServer
+	if req.SensorID != nil {
+		scope = sensorScopePrefix + *req.SensorID
+	}
+
+	sweep, err := s.store.CreateSweep(r.Context(), store.SweepInput{
+		Targets:        plan.Targets,
+		IPCount:        len(plan.IPs),
+		PortSpec:       plan.PortSpec,
+		PortCount:      len(plan.Ports),
+		ExecutorScope:  scope,
+		RatePPS:        s.sweepDefaults.RatePPS,
+		ChunkEndpoints: s.sweepDefaults.ChunkEndpoints,
+		MaxDays:        s.sweepDefaults.MaxDays,
+		Promoted:       true,
+		ActorID:        actorID,
+		RequestID:      requestIDFrom(r.Context()),
+		SourceIP:       clientIP(r),
+	})
+	var tooLong *store.SweepTooLongError
+	if errors.As(err, &tooLong) {
+		// 실제 소요 일수를 담은 메시지를 그대로 전달한다 — 스윕 생성과 같은 규약이다.
+		writeError(w, r, http.StatusUnprocessableEntity, "sweep_too_long", tooLong.Error())
+		return
+	}
+	if err != nil {
+		slog.Error("discovery: promote scan to sweep failed", "error", err.Error(),
+			"request_id", deref(requestIDFrom(r.Context())))
+		writeError(w, r, http.StatusInternalServerError, "internal_error",
+			"스캔 작업을 시작할 수 없습니다.")
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, createScanResponse{
+		Mode:              scanModeSweep,
+		Promoted:          true,
+		SweepID:           sweep.ID,
+		Status:            sweep.Status,
+		TotalEndpoints:    sweep.TotalEndpoints,
+		TotalChunks:       sweep.TotalChunks,
+		EstimatedFinishAt: sweep.EstimatedFinishAt,
+		RequestID:         deref(requestIDFrom(r.Context())),
+	})
+}
+
+// scanPreviewResponse는 POST /api/v1/discovery/scans/preview의 응답이다.
+// 포트 목록 자체는 싣지 않는다 — all 프리셋이면 6.5만 개다. 프리셋의 실제 포트가
+// 필요하면 GET /discovery/port-presets가 정본이다.
+type scanPreviewResponse struct {
+	RequestID string `json:"request_id"`
+	// Mode/Promoted는 이대로 발주하면 무엇이 만들어지는지다(scan | sweep).
+	Mode               string    `json:"mode"`
+	Promoted           bool      `json:"promoted"`
+	PromotionThreshold int       `json:"promotion_threshold"`
+	Targets            []string  `json:"targets"`
+	IPCount            int       `json:"ip_count"`
+	PortSpec           string    `json:"port_spec"`
+	PortCount          int       `json:"port_count"`
+	TotalEndpoints     int64     `json:"total_endpoints"`
+	RatePPS            int       `json:"rate_pps"`
+	EstimatedSeconds   int64     `json:"estimated_seconds"`
+	EstimatedFinishAt  time.Time `json:"estimated_finish_at"`
+	// TotalChunks는 승격 경로에서만 0이 아니다.
+	TotalChunks int `json:"total_chunks"`
+	MaxDays     int `json:"max_days"`
+	// TooLong이 true면 이대로 발주해도 422(sweep_too_long)로 거부된다.
+	// 미리보기는 거부하지 않고 **알려 준다** — 그게 미리보기의 목적이다.
+	TooLong bool   `json:"too_long"`
+	Message string `json:"message,omitempty"`
+}
+
+// handleScanPreview는 POST /api/v1/discovery/scans/preview다.
+// 아무것도 만들지 않고 파싱·승격 판정 결과만 돌려주는 **조회**라 감사 이벤트를
+// 남기지 않는다 (00-spec 7.12의 기록 대상은 변경이다). GET이 아니라 POST인 이유는
+// 대상 목록이 URL 길이 상한을 넘기 때문이고, 권한은 발주와 같은 3역할이다 —
+// 스캔을 만들 수 없는 역할에게 발주 폼의 사전 계산만 열어 줄 이유가 없다.
+// sensor_id는 여기서 검증하지 않는다(크기·소요 계산에 영향이 없다).
+func (s *Server) handleScanPreview(w http.ResponseWriter, r *http.Request) {
+	var req createScanRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxScanRequestBytes))
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request",
+			"요청 본문을 JSON으로 파싱할 수 없습니다.")
+		return
+	}
+	plan, err := s.planScan(req)
+	if err != nil {
+		writeScanInputError(w, r, err)
+		return
+	}
+
+	res := scanPreviewResponse{
+		RequestID:          deref(requestIDFrom(r.Context())),
+		Mode:               scanModeScan,
+		Promoted:           plan.Promoted,
+		PromotionThreshold: plan.Threshold,
+		Targets:            plan.Targets,
+		IPCount:            len(plan.IPs),
+		PortSpec:           plan.PortSpec,
+		PortCount:          len(plan.Ports),
+		TotalEndpoints:     plan.TotalEndpoints,
+		RatePPS:            plan.RatePPS,
+		EstimatedSeconds:   int64(math.Ceil(plan.ETASeconds)),
+		EstimatedFinishAt:  time.Now().UTC().Add(time.Duration(plan.ETASeconds * float64(time.Second))),
+		TotalChunks:        plan.TotalChunks,
+		MaxDays:            plan.MaxDays,
+	}
+	if res.Targets == nil {
+		res.Targets = []string{}
+	}
+	if plan.Promoted {
+		res.Mode = scanModeSweep
+		// ETA 상한 판정은 store.CreateSweep과 같은 식이어야 한다 — 미리보기가
+		// "괜찮다"고 한 요청이 발주에서 422가 나면 미리보기를 믿을 수 없다.
+		if days := plan.ETASeconds / 86400; days > float64(plan.MaxDays) {
+			tooLong := &store.SweepTooLongError{EstimatedDays: days, MaxDays: plan.MaxDays}
+			res.TooLong = true
+			res.Message = tooLong.Error()
+		}
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 type scanJobResponse struct {
