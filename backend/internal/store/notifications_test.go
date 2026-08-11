@@ -321,9 +321,11 @@ func TestDetectPayloadCarriesOnlyPublicFields(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
 		t.Fatalf("decode payload: %v", err)
 	}
+	// 새 키를 추가할 때는 이 목록을 함께 고친다 — 원문·개인키가 payload에 실릴
+	// 수 없다는 성질을 이 화이트리스트가 지킨다(0020 is_ca는 공개 분류값이다).
 	want := map[string]bool{
 		"certificate_id": true, "common_name": true, "not_after": true, "days_remaining": true,
-		"environment": true, "owner": true, "location_count": true,
+		"environment": true, "owner": true, "location_count": true, "is_ca": true,
 	}
 	for k := range m {
 		if !want[k] {
@@ -1446,5 +1448,152 @@ func TestNotificationPolicyCRUD(t *testing.T) {
 	}
 	if strings.Contains(afterValue, "noc@example.test") {
 		t.Error("audit value copied a recipient email address")
+	}
+}
+
+// ===== CA 전용 임계값 (0020) =====
+
+// TestDetectUsesCAThresholdsForCACertificates는 0020의 핵심 성질을 고정한다:
+// ca_thresholds가 있으면 certificate_type='ca'인 인증서만 그 목록으로 판정하고,
+// 리프는 thresholds 그대로다. 하나의 정책·사건 종류를 그대로 공유하므로
+// 기존 채널·수신자 설정이 CA에도 그대로 적용된다.
+func TestDetectUsesCAThresholdsForCACertificates(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool)
+	ctx := context.Background()
+	isolateNotificationPolicies(t, pool)
+
+	// 둘 다 잔여 200일 — 리프 임계값(30)에는 못 미치고 CA 임계값(365)에는 걸린다.
+	notAfter := time.Now().Add(200*24*time.Hour + time.Hour)
+	caID := newNotifyCert(t, pool, "ca-threshold-ca.example.test", notifyCertOpts{
+		NotAfter: notAfter, Type: "ca",
+	})
+	leafID := newNotifyCert(t, pool, "ca-threshold-leaf.example.test", notifyCertOpts{
+		NotAfter: notAfter,
+	})
+	newNotifyPolicy(t, st, pool, NotificationPolicyInput{
+		Enabled:      true,
+		EventTypes:   []string{NotifyEventCertExpiring},
+		Thresholds:   []int{30},
+		CAThresholds: []int{365},
+		Channels:     []string{NotifyChannelInbox},
+	})
+
+	events, err := st.DetectExpiryEvents(ctx, DetectModeSend)
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+
+	caKey := fmt.Sprintf("certificate.expiring:%s:365", caID)
+	e := findEvent(events, caKey)
+	if e == nil {
+		t.Fatalf("CA did not fire at its own threshold (%s)", caKey)
+	}
+	if !e.Payload.IsCA {
+		t.Error("payload is_ca = false for a CA certificate")
+	}
+	if n, days := countCertEvents(t, pool, caID); n != 1 || days[0] != 365 {
+		t.Errorf("CA has %d events %v, want exactly 1 at threshold 365", n, days)
+	}
+	if n, _ := countCertEvents(t, pool, leafID); n != 0 {
+		t.Errorf("leaf fired %d events at D-200 although its threshold is 30", n)
+	}
+}
+
+// TestDetectSkipsCAWhenCAThresholdsEmpty는 '{}'(CA 알림 끔)와 NULL(미설정)이
+// 다른 뜻임을 고정한다 — 빈 배열이면 CA만 조용해지고 리프는 그대로 발화한다.
+func TestDetectSkipsCAWhenCAThresholdsEmpty(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool)
+	ctx := context.Background()
+	isolateNotificationPolicies(t, pool)
+
+	notAfter := time.Now().Add(5*24*time.Hour + time.Hour)
+	caID := newNotifyCert(t, pool, "ca-silent-ca.example.test", notifyCertOpts{
+		NotAfter: notAfter, Type: "ca",
+	})
+	leafID := newNotifyCert(t, pool, "ca-silent-leaf.example.test", notifyCertOpts{
+		NotAfter: notAfter,
+	})
+	newNotifyPolicy(t, st, pool, NotificationPolicyInput{
+		Enabled:      true,
+		EventTypes:   []string{NotifyEventCertExpiring},
+		Thresholds:   []int{7},
+		CAThresholds: []int{},
+		Channels:     []string{NotifyChannelInbox},
+	})
+
+	if _, err := st.DetectExpiryEvents(ctx, DetectModeSend); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if n, _ := countCertEvents(t, pool, caID); n != 0 {
+		t.Errorf("CA fired %d events although ca_thresholds is empty", n)
+	}
+	if n, days := countCertEvents(t, pool, leafID); n != 1 || days[0] != 7 {
+		t.Errorf("leaf has %d events %v, want exactly 1 at threshold 7", n, days)
+	}
+}
+
+// TestNotificationPolicyCAThresholdsRoundTrip은 3상태(NULL·빈 배열·값)가
+// 저장·조회·부분수정을 오가며 무너지지 않는지 본다. NULL이 빈 배열로 접히면
+// "미설정"이 "CA 알림 끔"으로 조용히 바뀐다.
+func TestNotificationPolicyCAThresholdsRoundTrip(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool)
+	ctx := context.Background()
+
+	reqID := "test-req-notify-cath-" + randomHex(t, 6)
+	t.Cleanup(func() { cleanupAuditByRequestID(pool, reqID) })
+
+	p := newNotifyPolicy(t, st, pool, NotificationPolicyInput{
+		Enabled:    true,
+		EventTypes: []string{NotifyEventCertExpiring},
+		Thresholds: []int{30},
+		Channels:   []string{NotifyChannelInbox},
+	})
+	if p.CAThresholds != nil {
+		t.Errorf("ca_thresholds on create = %v, want nil (미설정)", p.CAThresholds)
+	}
+
+	set := []int{365, 180}
+	updated, err := st.UpdateNotificationPolicy(ctx, p.ID, NotificationPolicyPatch{
+		CAThresholds: &set, RequestID: &reqID,
+	})
+	if err != nil {
+		t.Fatalf("set ca_thresholds: %v", err)
+	}
+	if len(updated.CAThresholds) != 2 || updated.CAThresholds[0] != 365 {
+		t.Fatalf("ca_thresholds after set = %v, want [365 180]", updated.CAThresholds)
+	}
+
+	empty := []int{}
+	updated, err = st.UpdateNotificationPolicy(ctx, p.ID, NotificationPolicyPatch{
+		CAThresholds: &empty, RequestID: &reqID,
+	})
+	if err != nil {
+		t.Fatalf("empty ca_thresholds: %v", err)
+	}
+	if updated.CAThresholds == nil || len(updated.CAThresholds) != 0 {
+		t.Fatalf("ca_thresholds after empty = %v, want an empty non-nil slice", updated.CAThresholds)
+	}
+
+	var none []int
+	updated, err = st.UpdateNotificationPolicy(ctx, p.ID, NotificationPolicyPatch{
+		CAThresholds: &none, RequestID: &reqID,
+	})
+	if err != nil {
+		t.Fatalf("clear ca_thresholds: %v", err)
+	}
+	if updated.CAThresholds != nil {
+		t.Errorf("ca_thresholds after clear = %v, want nil", updated.CAThresholds)
+	}
+
+	// 조회 경로도 같은 3상태를 본다(스캔이 NULL을 빈 배열로 접지 않는다).
+	got, err := st.GetNotificationPolicy(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("get policy: %v", err)
+	}
+	if got.CAThresholds != nil {
+		t.Errorf("get ca_thresholds = %v, want nil", got.CAThresholds)
 	}
 }

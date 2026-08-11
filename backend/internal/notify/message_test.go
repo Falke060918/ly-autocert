@@ -48,6 +48,37 @@ func TestBuildCertExpiryMessage(t *testing.T) {
 	}
 }
 
+// TestBuildCertExpiryMessageMarksCA는 CA 만료가 리프와 구분되어 나가는지 본다.
+// 사건 종류(EventID)는 그대로여야 한다 — 종류를 나누면 기존 정책·웹훅 수신 측이
+// CA 만료를 통째로 놓친다.
+func TestBuildCertExpiryMessageMarksCA(t *testing.T) {
+	f := testFacts()
+	f.IsCA = true
+	m := BuildCertExpiryMessage(f)
+
+	if !strings.Contains(m.Title, "발급 기관") {
+		t.Errorf("CA title must say so: %q", m.Title)
+	}
+	if m.EventID != EventCertExpiring {
+		t.Errorf("event id = %q, want %q (CA must not create a new event type)", m.EventID, EventCertExpiring)
+	}
+	if !strings.Contains(m.TextBody, "하위 인증서") {
+		t.Errorf("CA body must explain the blast radius:\n%s", m.TextBody)
+	}
+	if m.Data["is_ca"] != true {
+		t.Errorf("data is_ca = %#v, want true", m.Data["is_ca"])
+	}
+
+	// 리프는 CA 문구가 붙지 않고, is_ca 키는 그래도 실린다(수신 측이 키 존재로 판정하지 않게).
+	leaf := BuildCertExpiryMessage(testFacts())
+	if strings.Contains(leaf.Title, "발급 기관") || strings.Contains(leaf.TextBody, "하위 인증서") {
+		t.Errorf("leaf message must not carry CA wording: %q\n%s", leaf.Title, leaf.TextBody)
+	}
+	if leaf.Data["is_ca"] != false {
+		t.Errorf("leaf data is_ca = %#v, want false", leaf.Data["is_ca"])
+	}
+}
+
 func TestBuildCertExpiryMessageOmitsEmptyOptionalFields(t *testing.T) {
 	f := testFacts()
 	f.Environment = ""

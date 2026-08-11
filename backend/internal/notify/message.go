@@ -54,6 +54,11 @@ type CertExpiryFacts struct {
 	Environment   string
 	OwnerDisplay  string
 	LocationCount int
+	// IsCA는 대상이 발급 기관(CA) 인증서인지다. 만료의 파급 범위가 다르므로
+	// (그 CA가 발급한 인증서 전부가 함께 신뢰를 잃는다) 제목·본문에 그 사실을 밝힌다.
+	// 영향 건수는 싣지 않는다 — 탐지 시점과 발송 시점 사이에 변하는 값이라
+	// 인벤토리 화면이 정본이고, 여기서는 딥링크로 넘긴다.
+	IsCA bool
 	// DeepLink는 상세 화면 URL이다. NOTIFY_BASE_URL이 비면 빈 문자열이고 본문에서 생략된다.
 	DeepLink string
 }
@@ -72,19 +77,25 @@ func BuildCertExpiryMessage(f CertExpiryFacts) Message {
 	// 경계는 탐지 쿼리(not_after >= now() = 임박 / not_after < now() = 만료)와 같다.
 	now := time.Now()
 	expired := now.After(f.NotAfter)
-	title := fmt.Sprintf("[인증서 만료 D-%d] %s", f.DaysRemaining, cn)
+	// CA는 제목 앞에서 구분한다 — 사건 종류를 나누면 기존 정책·웹훅 수신 측이
+	// 새 종류를 모르는 채 CA 만료를 통째로 놓친다(사건은 그대로, 표기만 다르다).
+	kind := "인증서"
+	if f.IsCA {
+		kind = "발급 기관(CA) 인증서"
+	}
+	title := fmt.Sprintf("[%s 만료 D-%d] %s", kind, f.DaysRemaining, cn)
 	event := EventCertExpiring
 	if expired {
-		title = fmt.Sprintf("[인증서 만료] %s", cn)
+		title = fmt.Sprintf("[%s 만료] %s", kind, cn)
 		event = EventCertExpired
 	}
 
 	notAfter := f.NotAfter.UTC().Format(time.RFC3339)
 	var b strings.Builder
 	if expired {
-		b.WriteString("인증서가 만료되었습니다.\n\n")
+		fmt.Fprintf(&b, "%s가 만료되었습니다.\n\n", kind)
 	} else {
-		b.WriteString("인증서 만료가 임박했습니다.\n\n")
+		fmt.Fprintf(&b, "%s 만료가 임박했습니다.\n\n", kind)
 	}
 	fmt.Fprintf(&b, "- 공통 이름(CN): %s\n", cn)
 	fmt.Fprintf(&b, "- 인증서 ID: %s\n", id)
@@ -110,6 +121,11 @@ func BuildCertExpiryMessage(f CertExpiryFacts) Message {
 	if link != "" {
 		fmt.Fprintf(&b, "- 상세 보기: %s\n", link)
 	}
+	if f.IsCA {
+		b.WriteString("\n이 인증서는 발급 기관(CA)입니다. 만료되면 이 CA가 발급한 하위 인증서가\n" +
+			"전부 함께 신뢰를 잃으므로, 새 CA 발급·배포와 하위 인증서 재발급 일정을\n" +
+			"미리 잡으십시오. 영향 범위는 발급 기관 화면에서 확인할 수 있습니다.\n")
+	}
 
 	data := map[string]any{
 		"event":          event,
@@ -118,6 +134,9 @@ func BuildCertExpiryMessage(f CertExpiryFacts) Message {
 		"not_after":      notAfter,
 		"days_remaining": f.DaysRemaining,
 		"location_count": f.LocationCount,
+		// 웹훅 수신 측이 CA만 따로 라우팅할 수 있게 항상 싣는다(있다가 없다가 하면
+		// 수신 측이 키 존재로 판정하게 된다).
+		"is_ca": f.IsCA,
 	}
 	if env != "" {
 		data["environment"] = env
