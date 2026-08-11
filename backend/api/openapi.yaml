@@ -443,6 +443,54 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/certificates/{id}/impact:
+    get:
+      operationId: getCertificateImpact
+      summary: 영향 범위 집계 — 이 인증서(주로 CA)가 만료되면 무엇이 죽는가
+      description: |
+        부모-자식 관계는 저장하지 않는다. 발급 관계(AKI = SKI 정확 일치 우선, 키
+        식별자가 없으면 issuer_dn = subject_dn 폴백)를 **재귀적으로 전이 확장**해
+        조회 시점에 계산한다 — 위험 판정·서버 축과 같이 마이그레이션이 없다.
+
+        목록 API의 issued_by=는 **직계 1단계**만 보는 반면 여기는 계열 전체다.
+        GET /servers의 issued_by=도 같은 계열 술어를 쓰므로 이 응답의 server_count는
+        GET /servers?issued_by={id}의 total과 정확히 같다.
+
+        집합 규약: 영향 집합 = 대상 인증서 자신 + 전이적 자손이고, 리프 수·도메인·
+        서버·만료 분포는 그중 status=replaced를 뺀 것 위에서 센다(대시보드 요약과
+        같은 규약). descendant_ca_count만 replaced를 포함한다 — CA 트리가 교체된 CA도
+        이력으로 보여주는 것과 같다. 대상이 CA가 아니어도 404가 아니다(자손 0건 +
+        자기 배포분).
+
+        도메인·서버 목록은 페이지네이션하지 않고 list_limit(200)에서 자르며
+        넘치면 domains_truncated·servers_truncated가 true다. 전체를 훑어야 하면
+        인증서는 GET /certificates?issued_by=(직계), 서버는 GET /servers?issued_by=
+        (계열 전체)로 이동한다.
+
+        인증된 전 역할(6종) 접근 가능. 읽기 전용이라 감사 이벤트를 남기지 않으며
+        응답에 인증서 원문(PEM/DER)·개인키는 포함되지 않는다.
+      tags: [certificates]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 영향 범위 집계
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CertificateImpact"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: 해당 id의 인증서 없음 (잘못된 uuid 형식 포함)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /api/v1/servers:
     get:
       operationId: listServers
@@ -492,6 +540,16 @@ paths:
             true면 구버전 잔존이 있는 서버만 — 현재 인증서와 다른 위치 행이
             아직 남아 있다(교체 후 옛 인증서가 어딘가 붙어 있음).
           schema: { type: boolean }
+        - name: issued_by
+          in: query
+          description: >
+            지정한 CA **계열**의 인증서를 지금 쓰고 있는 서버만.
+            GET /certificates의 같은 이름 필터가 직계 1단계만 보는 것과 달리
+            여기는 전이적이다 — 하위 CA가 발급한 것까지 전부 포함한다
+            ("이 CA가 만료되면 어느 서버가 죽나"). 판정은 SQL 술어라 total·page가
+            필터를 반영하며, 이 total은 GET /certificates/{id}/impact 응답의
+            server_count와 같다.
+          schema: { type: string, format: uuid }
         - name: sort
           in: query
           description: >
@@ -2656,6 +2714,97 @@ components:
         unmatched_leaf_count:
           type: integer
           description: 어떤 보유 CA와도 발급 관계가 잡히지 않는 비-CA 인증서 수 (replaced 제외)
+    ImpactSubject:
+      type: object
+      description: 영향을 물은 인증서 자신의 요약 (원문 없음)
+      required: [id, common_name, subject_dn, not_after, status, certificate_type, self_signed, is_ca]
+      properties:
+        id: { type: string, format: uuid }
+        common_name: { type: string }
+        subject_dn: { type: string }
+        not_after: { type: string, format: date-time }
+        status: { type: string, enum: [active, expired, revoked, replaced, unknown] }
+        certificate_type:
+          type: string
+          enum: [server, client, ca, code_signing, email, other]
+        self_signed: { type: boolean }
+        is_ca: { type: boolean, description: certificate_type = ca. false여도 조회는 성공한다 }
+    ImpactExpiry:
+      type: object
+      description: >
+        영향 집합(자신 포함, replaced 제외)의 만료 분포. within_* 값은 누적이며
+        (within_30d는 within_7d를 포함) 이미 만료된 것은 구간에서 빠진다 —
+        대시보드 요약과 같은 규약.
+      required: [expired, within_7d, within_30d, within_90d]
+      properties:
+        expired: { type: integer }
+        within_7d: { type: integer }
+        within_30d: { type: integer }
+        within_90d: { type: integer }
+    ImpactDomain:
+      type: object
+      description: >
+        영향받는 도메인 1건. 이름은 **비-CA 인증서의** common_name과 SAN을 합쳐
+        소문자로 정규화한 값이다 — CA의 CN은 도메인이 아니라 집계에서 뺀다.
+        SAN에 실린 IP·메일 주소는 파서가 넣은 대로 들어온다.
+      required: [name, certificate_count, server_count]
+      properties:
+        name: { type: string }
+        certificate_count: { type: integer }
+        server_count:
+          type: integer
+          description: >
+            그 이름의 인증서가 지금 붙어 있는 서버 수. 0일 수 있다 —
+            업로드만 되고 어디에도 배포되지 않은 인증서.
+    CertificateImpact:
+      type: object
+      required:
+        [request_id, certificate, descendant_ca_count, descendant_leaf_count,
+         certificate_count, max_depth, endpoint_count, server_count, domain_count,
+         expiry, domains, domains_truncated, servers, servers_truncated, list_limit]
+      properties:
+        request_id: { type: string }
+        certificate: { $ref: "#/components/schemas/ImpactSubject" }
+        descendant_ca_count:
+          type: integer
+          description: 전이적 자손 CA 수 (자신 제외, replaced 포함 — CA 트리와 같은 규약)
+        descendant_leaf_count:
+          type: integer
+          description: 전이적 자손 비-CA 인증서 수 (replaced 제외)
+        certificate_count:
+          type: integer
+          description: 영향 집합 전체 크기 (자신 포함, replaced 제외)
+        max_depth:
+          type: integer
+          description: 자손까지의 최대 발급 단계. 자손이 없으면 0
+        endpoint_count:
+          type: integer
+          description: 영향 집합이 지금 붙어 있는 (호스트, 포트) 수
+        server_count:
+          type: integer
+          description: GET /servers?issued_by={id}의 total과 같다 (같은 계열 술어)
+        domain_count: { type: integer, description: 영향받는 고유 도메인 수 }
+        expiry: { $ref: "#/components/schemas/ImpactExpiry" }
+        domains:
+          type: array
+          description: certificate_count 내림차순 → 이름 오름차순, 최대 list_limit건
+          items: { $ref: "#/components/schemas/ImpactDomain" }
+        domains_truncated:
+          type: boolean
+          description: domain_count가 list_limit을 넘어 잘렸는지
+        servers:
+          type: array
+          description: >
+            서버 목록 API와 같은 행 모양·같은 정렬(기본 만료 임박순)이다 —
+            "영향받는 서버 N곳"을 눌러 GET /servers?issued_by=로 넘어가도
+            첫 페이지가 같은 순서로 이어진다. 최대 list_limit건.
+          items: { $ref: "#/components/schemas/ServerListItem" }
+        servers_truncated:
+          type: boolean
+          description: server_count가 list_limit을 넘어 잘렸는지
+        list_limit:
+          type: integer
+          description: domains·servers에 실은 최대 행 수 (*_truncated의 기준)
     CertificateSummary:
       type: object
       description: >
