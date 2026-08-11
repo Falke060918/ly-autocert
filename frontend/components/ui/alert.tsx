@@ -11,6 +11,8 @@ const alertVariants = cva(
         default: "bg-card text-card-foreground",
         destructive:
           "bg-card text-destructive *:data-[slot=alert-description]:text-destructive/90 *:[svg]:text-current",
+        // 실패는 아니지만 그대로 두면 거부되거나 놓치는 상태 — 색은 warn 토큰만 쓴다.
+        warn: "bg-card text-warn *:data-[slot=alert-description]:text-warn/90 *:[svg]:text-current",
       },
     },
     defaultVariants: {

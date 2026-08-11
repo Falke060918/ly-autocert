@@ -303,10 +303,31 @@ export interface ScanRequest {
   sensor_id?: string;
 }
 
+/** 스캔 요청이 실제로 만들어 낸 작업의 종류 (createScanResponse.mode). */
+export type ScanMode = "scan" | "sweep";
+
+/**
+ * 스캔 발주 202 응답.
+ *
+ * **job_id는 옵셔널이다** — 총 엔드포인트 수가 서버 임계를 넘으면 단발 대신
+ * 스윕으로 자동 승격되고, 그때는 job_id 없이 sweep_id만 실린다. job_id를 필수로
+ * 보고 폴링하면 승격된 요청의 추적이 그 자리에서 끊긴다. 어느 쪽을 추적할지는
+ * **mode로 분기**한다.
+ */
 export interface ScanAccepted {
-  job_id: string;
-  status: "pending";
+  mode: ScanMode;
+  /** 사용자가 누른 것(단발)과 만들어진 것(스윕)이 다를 때 true. */
+  promoted: boolean;
+  /** mode가 scan일 때만 실린다. */
+  job_id?: string;
+  /** mode가 sweep(자동 승격)일 때만 실린다. */
+  sweep_id?: string;
+  /** 단발이면 "pending", 승격이면 스윕 상태("queued")다. */
+  status: string;
   total_endpoints: number;
+  /** 승격 경로에서만 실린다. */
+  total_chunks?: number;
+  estimated_finish_at?: string;
   request_id?: string;
 }
 
