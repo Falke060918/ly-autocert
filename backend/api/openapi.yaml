@@ -167,6 +167,8 @@ paths:
             "danger 항목이 하나라도 있는" 인증서이고 warn은 "warn은 있지만 danger는
             없는" 인증서다. ok는 위험 항목이 하나도 없다는 뜻이다.
             집계(GET /certificates/risks)의 severities에서 클릭해 들어오는 경로다.
+            **여기의 risk는 판정 심각도이며 만료 임박도가 아니다** —
+            GET /servers의 sort=risk(=min(not_after))와는 다른 축이다.
           schema:
             type: string
             enum: [danger, warn, info, ok]
@@ -434,6 +436,122 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           description: 해당 id의 인증서 없음 (잘못된 uuid 형식 포함)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/servers:
+    get:
+      operationId: listServers
+      summary: 서버(엔드포인트) 축 목록 — 호스트 1행
+      description: |
+        같은 인증서가 여러 서버에 배포되어 있으면 그중 곧 만료인 서버도 있고 아닌
+        서버도 있다. 인증서 목록(GET /certificates)은 인증서 1행이라 이 관계를
+        뭉갠다 — 이 API는 같은 인벤토리를 호스트 1행으로 되짚는다.
+
+        행 단위는 targets 1행 = (executor_scope, ip_address)다. 다중 세그먼트에서
+        사설 IP가 겹칠 수 있어 scope가 호스트 동일성의 일부다(0010).
+
+        엔드포인트 집합은 "제거되지 않은 network_endpoint 위치 + 은퇴하지 않은
+        재스캔 모니터"의 합집합이고, 각 엔드포인트의 현재 인증서는 2단으로 정한다 —
+        endpoint_monitors.current_fingerprint가 있으면 관측 확정, 없으면(재스캔 OFF
+        이거나 아직 미실행) 가장 최근 확인된 live 위치로 **추정**한다. 추정으로
+        채워진 엔드포인트 수는 estimated_count로 내려간다(화면의 '추정' 배지 근거).
+
+        전 엔드포인트를 목록에 싣는 옵션은 두지 않는다 — 확장은 GET /servers/{id}
+        지연 로드이고 목록에는 포트 미리보기 5개만 담는다. 인증된 전 역할(6종)
+        접근 가능하며 읽기 전용이라 감사 이벤트를 남기지 않는다.
+      tags: [certificates]
+      parameters:
+        - name: q
+          in: query
+          description: 호스트명·IP·현재 인증서 CN 부분 일치 (대소문자 무시)
+          schema: { type: string, maxLength: 200 }
+        - name: expired
+          in: query
+          description: >
+            EXISTS 의미다 — true면 이미 만료된 인증서가 하나라도 붙어 있는 서버,
+            false면 하나도 없는 서버.
+          schema: { type: boolean }
+        - name: expires_within_days
+          in: query
+          description: >
+            EXISTS 의미다 — 오늘부터 N일 이내 만료가 하나라도 있는 서버
+            (이미 만료된 것은 제외).
+          schema: { type: integer, minimum: 1, maximum: 3650 }
+        - name: scope
+          in: query
+          description: targets.executor_scope 정확 일치 — server 또는 sensor:&lt;센서 id&gt;
+          schema: { type: string }
+        - name: mismatch
+          in: query
+          description: >
+            true면 구버전 잔존이 있는 서버만 — 현재 인증서와 다른 위치 행이
+            아직 남아 있다(교체 후 옛 인증서가 어딘가 붙어 있음).
+          schema: { type: boolean }
+        - name: sort
+          in: query
+          description: >
+            정렬 필드 (기본 risk). risk는 min(not_after) 오름차순이고 만료 시각을
+            모르는 서버는 방향과 무관하게 뒤로 보낸다(NULLS LAST).
+            **여기의 risk는 만료 임박도(min(not_after))일 뿐 인증서 위험 판정이 아니다** —
+            GET /certificates의 risk= 필터가 쓰는 심각도(danger/warn/info/ok)와는 다른 축이다.
+          schema:
+            type: string
+            enum: [risk, hostname, endpoints, certificates, last_seen]
+        - name: order
+          in: query
+          schema: { type: string, enum: [asc, desc], default: asc }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: 서버 목록 페이지
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerList"
+        "400":
+          description: 잘못된 쿼리 파라미터
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/servers/{id}:
+    get:
+      operationId: getServer
+      summary: 서버 상세 (포트별 엔드포인트 확장)
+      description: >
+        목록 1행과 같은 서버 요약 + 포트별 엔드포인트 배열이다. 각 엔드포인트는
+        지금 붙어 있다고 판정한 인증서와 그 판정이 추정인지 여부
+        (certificate_estimated), 재스캔 관측값(last_success_at·last_probe_at·
+        consecutive_misses·retired_at), 그리고 구버전 잔존 위치(stale_locations)를
+        담는다. 인증된 전 역할(6종) 접근 가능, 읽기 전용이라 감사 이벤트 없음.
+      tags: [certificates]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 서버 상세
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: 해당 id의 서버 없음 (잘못된 uuid 형식 포함)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -2294,7 +2412,138 @@ components:
           type: string
           nullable: true
           description: 네트워크 스캔이 관측한 협상 TLS 버전 (예 TLS 1.2). 스캔 이력이 없으면 null
+        current_fingerprint:
+          type: string
+          nullable: true
+          pattern: "^[0-9a-f]{64}$"
+          description: >
+            이 위치의 (대상, 포트) 엔드포인트에서 마지막으로 관측된 인증서 지문
+            (endpoint_monitors, 0015). 재스캔이 꺼져 있거나 아직 한 번도 성공하지
+            못했으면 null이다.
+        current_certificate_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            current_fingerprint에 해당하는 인벤토리 인증서 id. 화면은 이 값으로
+            위치를 3분류한다 — certificate_id와 같으면 "서비스 중", 다르면
+            "다른 인증서로 교체됨", current_fingerprint가 null이면 "확인 안 됨".
         target: { $ref: "#/components/schemas/TargetRef" }
+    ServerList:
+      type: object
+      required: [request_id, items, total, page, page_size]
+      properties:
+        request_id: { type: string }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/ServerListItem" }
+        total: { type: integer }
+        page: { type: integer }
+        page_size: { type: integer }
+    ServerListItem:
+      type: object
+      description: 서버 1행 = targets 1행. 전부 파생 집계이며 저장 컬럼이 없다.
+      required:
+        [id, scope, endpoint_count, certificate_count, stale_count,
+         estimated_count, ports]
+      properties:
+        id: { type: string, format: uuid }
+        hostname: { type: string, nullable: true }
+        ip_address: { type: string, nullable: true }
+        scope:
+          type: string
+          description: targets.executor_scope — server 또는 sensor:&lt;센서 id&gt;
+        sensor_name:
+          type: string
+          nullable: true
+          description: scope가 센서일 때 그 센서 이름. 서버 스코프면 null
+        endpoint_count: { type: integer, description: 이 서버의 (포트) 엔드포인트 수 }
+        certificate_count:
+          type: integer
+          description: 지금 서비스 중이라고 판정한 인증서의 고유 수(구버전 잔존 제외)
+        earliest_not_after:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            서비스 중인 인증서들의 min(not_after) = 이 서버의 위험도. 붙어 있는
+            인증서를 하나도 특정하지 못하면 null이고 risk 정렬에서 뒤로 간다.
+        last_seen_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 엔드포인트들의 max(last_success_at)
+        stale_count:
+          type: integer
+          description: 현재 인증서와 다른, 아직 제거되지 않은 위치 행 수(구버전 잔존)
+        estimated_count:
+          type: integer
+          description: >
+            현재 인증서를 관측 지문이 아니라 최근 live 위치로 **추정**한 엔드포인트 수.
+            0보다 크면 화면이 '추정' 배지를 붙인다.
+        ports:
+          type: array
+          description: 오름차순 포트 미리보기(최대 5개). 전체 수는 endpoint_count다
+          items: { type: integer, minimum: 1, maximum: 65535 }
+    ServerDetail:
+      type: object
+      required: [request_id, server, endpoints]
+      properties:
+        request_id: { type: string }
+        server: { $ref: "#/components/schemas/ServerListItem" }
+        endpoints:
+          type: array
+          items: { $ref: "#/components/schemas/ServerEndpoint" }
+    ServerEndpoint:
+      type: object
+      required: [port, certificate_estimated, consecutive_misses, stale_locations]
+      properties:
+        port: { type: integer, minimum: 1, maximum: 65535 }
+        certificate:
+          allOf: [{ $ref: "#/components/schemas/ServerCertificateRef" }]
+          nullable: true
+          description: 지금 이 포트에 붙어 있다고 판정한 인증서. 못 정하면 null
+        certificate_estimated:
+          type: boolean
+          description: >
+            true면 certificate는 관측 지문이 아니라 "가장 최근 확인된 live 위치"로
+            추정한 값이다(재스캔 OFF이거나 아직 미실행). 화면은 반드시 구분해 표시한다.
+        tls_version: { type: string, nullable: true }
+        last_success_at: { type: string, format: date-time, nullable: true }
+        last_probe_at: { type: string, format: date-time, nullable: true }
+        consecutive_misses: { type: integer }
+        retired_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 연속 미관측으로 은퇴한 시각(0015). 살아 있는 위치가 남아 있어야 보인다
+        stale_locations:
+          type: array
+          description: 이 포트에 남아 있는 구버전 인증서 위치
+          items: { $ref: "#/components/schemas/ServerStaleLocation" }
+    ServerCertificateRef:
+      type: object
+      description: 엔드포인트에 붙은 인증서 요약. 원문(PEM/DER)·개인키는 포함하지 않는다.
+      required: [id, common_name, not_after, status, fingerprint_sha256]
+      properties:
+        id: { type: string, format: uuid }
+        common_name: { type: string }
+        not_after: { type: string, format: date-time }
+        status:
+          type: string
+          enum: [active, expired, revoked, replaced, unknown]
+        fingerprint_sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+    ServerStaleLocation:
+      type: object
+      required: [location_id, certificate, deployment_status]
+      properties:
+        location_id: { type: string, format: uuid }
+        certificate: { $ref: "#/components/schemas/ServerCertificateRef" }
+        last_verified_at: { type: string, format: date-time, nullable: true }
+        deployment_status:
+          type: string
+          enum: [unknown, deployed, pending, failed, removed]
+        tls_version: { type: string, nullable: true }
     CertificateChainItem:
       type: object
       description: |

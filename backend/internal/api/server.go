@@ -170,6 +170,10 @@ func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorC
 	s.protected("GET /api/v1/certificates/export", handleExportCertificates(st),
 		domain.RoleSystemAdministrator, domain.RolePKIAdministrator)
 	s.protected("GET /api/v1/certificates/{id}", handleGetCertificate(st), domain.AllRoles...)
+	// 서버(엔드포인트) 축 — 같은 인벤토리를 호스트 1행으로 되짚는 읽기 전용 조회다.
+	// 권한·감사 규약은 인증서 조회와 같다(전 역할, 감사 이벤트 없음).
+	s.protected("GET /api/v1/servers", handleListServers(st), domain.AllRoles...)
+	s.protected("GET /api/v1/servers/{id}", handleGetServer(st), domain.AllRoles...)
 	// 스캔 생성은 인벤토리를 바꾸므로 관리자·운영자급만. 상태 조회는 읽기 전용이라 전 역할.
 	s.protected("POST /api/v1/discovery/scans", handleCreateScan(disc, st),
 		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
