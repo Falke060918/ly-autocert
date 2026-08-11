@@ -367,6 +367,20 @@ http_ok() {
 	_http_ok_bash "$url"
 }
 
+# 응답 본문이 필요할 때. 못 읽으면 빈 문자열이다(판정은 호출부가 한다).
+http_body() {
+	local url=$1
+	if have curl; then
+		curl -fsS --max-time 5 "$url" 2>/dev/null
+		return $?
+	fi
+	if have wget; then
+		wget -q -O - -T 5 "$url" 2>/dev/null
+		return $?
+	fi
+	return 1
+}
+
 _http_ok_bash() {
 	local url=$1 hostport path host port line
 	url=${url#http://}
@@ -1609,6 +1623,566 @@ mode_https() {
 	mode_reconfigure
 }
 
+# --- 패치(업그레이드) 모드 ----------------------------------------------------
+#
+# 신버전 패키지를 **새 디렉터리**에 풀고 이 스크립트를 돌리는 것이 정규 절차다.
+# 위험은 하나뿐이고 그것만 막으면 된다 — compose 프로젝트명이 바뀌어 신버전이
+# 새 pgdata 볼륨을 만들고 **빈 DB로 뜨는 것**이다(구 데이터는 그대로 남아 있어서
+# 데이터 소실과 구분되지 않는다). 그래서 프로젝트명은 신버전 디렉터리에서
+# 파생시키지 않고 구버전에서만 승계하며, 기동 뒤 setup/status로 사후 검증한다.
+
+OLD_DIR=""
+OLD_ENV=""
+OLD_PROJECT=""
+OLD_CONFIG_FILES=""
+OLD_VERSION=""
+OLD_SCHEME="http"
+OLD_HAS_TLS=0
+BACKUP_PATH=""
+
+PATCH_FROM=""
+SKIP_BACKUP=""
+BACKUP_DIR=""
+
+PATCH_CAND_DIR=()
+PATCH_CAND_PROJ=()
+PATCH_CAND_LABEL=()
+
+volume_exists() {
+	have docker || return 1
+	docker volume ls -q 2>/dev/null | grep -qx "$1"
+}
+
+# 이 프로젝트로 떴던 컨테이너의 compose 라벨 하나를 꺼낸다(정지된 것도 본다).
+docker_project_label() {
+	local p=$1 label=$2
+	[ -n "$p" ] || return 1
+	have docker || return 1
+	docker info >/dev/null 2>&1 || return 1
+	docker ps -a --filter "label=com.docker.compose.project=$p" \
+		--format "{{.Label \"$label\"}}" 2>/dev/null | grep -v '^$' | head -1
+}
+
+# 이 서버에 있을 법한 우리 프로젝트 이름들. pgdata 볼륨과 컨테이너 두 갈래로 모은다.
+list_autocert_projects() {
+	have docker || return 0
+	docker info >/dev/null 2>&1 || return 0
+	{
+		docker volume ls -q 2>/dev/null | sed -n 's/_pgdata$//p'
+		docker ps -a --format '{{.Label "com.docker.compose.project"}}|{{.Image}}' 2>/dev/null |
+			grep -i 'autocert' | cut -d'|' -f1
+	} | grep -v '^$' | sort -u
+}
+
+# 파일시스템 후보 — 형제 디렉터리 · 현재 위치의 상위 · /opt · $HOME (깊이 2).
+# .env·docker-compose.yml·VERSION 이 **함께** 있는 곳만 후보다.
+list_fs_candidates() {
+	local base d f
+	for base in \
+		"$(dirname -- "$ROOT_DIR")" \
+		"$(CDPATH='' cd -- "$PWD/.." 2>/dev/null && pwd)" \
+		/opt "${HOME:-}"; do
+		[ -n "$base" ] && [ -d "$base" ] || continue
+		while IFS= read -r f; do
+			[ -n "$f" ] || continue
+			d=$(dirname -- "$f")
+			[ -f "$d/.env" ] && [ -f "$d/VERSION" ] || continue
+			printf '%s\n' "$d"
+		done <<EOF
+$(find "$base" -maxdepth 2 -name docker-compose.yml -type f 2>/dev/null)
+EOF
+	done
+}
+
+candidate_label() {
+	local d=$1 p=${2:-} v mt
+	v=$(tr -d ' \t\r\n' < "$d/VERSION" 2>/dev/null || printf '')
+	mt=$(date -r "$d/docker-compose.yml" '+%Y-%m-%d' 2>/dev/null || printf '')
+	printf '%s  (VERSION %s%s%s)' "$d" "${v:-?}" \
+		"${mt:+ · 수정 $mt}" "${p:+ · 프로젝트 $p}"
+}
+
+patch_add_candidate() {
+	local d=$1 p=${2:-} i abs
+	[ -n "$d" ] && [ -d "$d" ] || return 0
+	abs=$(CDPATH='' cd -- "$d" 2>/dev/null && pwd) || return 0
+	[ -n "$abs" ] || return 0
+	[ "$abs" != "$ROOT_DIR" ] || return 0
+	[ -f "$abs/docker-compose.yml" ] || return 0
+	for i in ${PATCH_CAND_DIR[@]+"${!PATCH_CAND_DIR[@]}"}; do
+		if [ "${PATCH_CAND_DIR[$i]}" = "$abs" ]; then
+			if [ -z "${PATCH_CAND_PROJ[$i]}" ] && [ -n "$p" ]; then
+				PATCH_CAND_PROJ[i]=$p
+				PATCH_CAND_LABEL[i]=$(candidate_label "$abs" "$p")
+			fi
+			return 0
+		fi
+	done
+	PATCH_CAND_DIR+=("$abs")
+	PATCH_CAND_PROJ+=("$p")
+	PATCH_CAND_LABEL+=("$(candidate_label "$abs" "$p")")
+}
+
+# P1 — 구버전 위치를 찾는다. 도커 라벨이 가장 믿을 만하다(실제로 뜬 기록이므로).
+patch_collect_candidates() {
+	PATCH_CAND_DIR=(); PATCH_CAND_PROJ=(); PATCH_CAND_LABEL=()
+	local p wd d
+	while IFS= read -r p; do
+		[ -n "$p" ] || continue
+		wd=$(docker_project_label "$p" "com.docker.compose.project.working_dir" || true)
+		[ -n "$wd" ] || continue
+		patch_add_candidate "$wd" "$p"
+	done <<EOF
+$(list_autocert_projects)
+EOF
+	while IFS= read -r d; do
+		[ -n "$d" ] || continue
+		patch_add_candidate "$d" ""
+	done <<EOF
+$(list_fs_candidates)
+EOF
+}
+
+patch_locate_old() {
+	local d n
+
+	if [ -n "$PATCH_FROM" ]; then
+		d=$PATCH_FROM
+		if [ -f "$d" ]; then d=$(dirname -- "$d"); fi
+		[ -d "$d" ] || die "--from 경로가 없다: $PATCH_FROM"
+		OLD_DIR=$(CDPATH='' cd -- "$d" && pwd)
+		OLD_PROJECT=""
+		ui_ok "구버전 위치(지정): $OLD_DIR"
+		return 0
+	fi
+
+	ui_step "기존 설치를 찾는다"
+	patch_collect_candidates
+	n=${#PATCH_CAND_DIR[@]}
+
+	if [ "$n" -eq 1 ]; then
+		ui_ok "찾았다: ${PATCH_CAND_LABEL[0]}"
+		if [ "$TUI_MODE" = "none" ] || [ -n "$ASSUME_YES" ]; then
+			OLD_DIR=${PATCH_CAND_DIR[0]}; OLD_PROJECT=${PATCH_CAND_PROJ[0]}
+			return 0
+		fi
+		if tui_confirm "이 디렉터리를 구버전으로 본다. 맞나?" yes; then
+			OLD_DIR=${PATCH_CAND_DIR[0]}; OLD_PROJECT=${PATCH_CAND_PROJ[0]}
+			return 0
+		fi
+		patch_ask_path || die "구버전 위치를 확정하지 못했다."
+		return 0
+	fi
+
+	if [ "$n" -gt 1 ]; then
+		if [ "$TUI_MODE" = "none" ] || [ -n "$ASSUME_YES" ]; then
+			ui_err "기존 설치 후보가 ${n}개다 — 비대화 모드에서는 고를 수 없다."
+			local i
+			for i in "${!PATCH_CAND_LABEL[@]}"; do ui_info "- ${PATCH_CAND_LABEL[$i]}"; done
+			die "--from <구버전 디렉터리> 로 하나를 지정한다."
+		fi
+		local items=("${PATCH_CAND_LABEL[@]}" "다른 위치를 직접 지정한다…")
+		tui_select "어느 설치를 올릴까?" 0 "${items[@]}"
+		if [ "$TUI_INDEX" -lt "$n" ]; then
+			OLD_DIR=${PATCH_CAND_DIR[$TUI_INDEX]}; OLD_PROJECT=${PATCH_CAND_PROJ[$TUI_INDEX]}
+			return 0
+		fi
+		patch_ask_path || die "구버전 위치를 확정하지 못했다."
+		return 0
+	fi
+
+	ui_warn "기존 설치를 자동으로 찾지 못했다."
+	if [ "$TUI_MODE" = "none" ] || [ -n "$ASSUME_YES" ]; then
+		die "구버전 위치를 찾지 못했다 — --from <구버전 디렉터리> 로 지정한다."
+	fi
+	patch_ask_path || die "구버전 위치를 확정하지 못했다."
+}
+
+patch_ask_path() {
+	local d
+	pick_existing_file "구버전의 docker-compose.yml" "$(dirname -- "$ROOT_DIR")" 'docker-compose.yml' || return 1
+	d=$PICKED_PATH
+	if [ ! -d "$d" ]; then d=$(dirname -- "$d"); fi
+	[ -d "$d" ] || { ui_err "그런 디렉터리가 없다: $d"; return 1; }
+	[ -f "$d/docker-compose.yml" ] || { ui_err "docker-compose.yml 이 없다: $d"; return 1; }
+	OLD_DIR=$(CDPATH='' cd -- "$d" && pwd)
+	OLD_PROJECT=""
+	return 0
+}
+
+# P2 — 구버전 메타 수집.
+patch_collect_meta() {
+	[ "$OLD_DIR" != "$ROOT_DIR" ] || die "구버전과 신버전 디렉터리가 같다 — 패치가 아니라 재기동이다(설정 변경·재기동을 쓴다)."
+	OLD_ENV="$OLD_DIR/.env"
+	[ -f "$OLD_ENV" ] || die "구버전 .env 가 없다: $OLD_ENV — 올릴 대상이 맞는지 확인한다."
+
+	OLD_VERSION=$(tr -d ' \t\r\n' < "$OLD_DIR/VERSION" 2>/dev/null || printf '')
+	[ -n "$OLD_VERSION" ] || OLD_VERSION="unknown"
+	patch_resolve_project
+	OLD_CONFIG_FILES=$(docker_project_label "$OLD_PROJECT" "com.docker.compose.project.config_files" || true)
+	patch_detect_old_scheme
+
+	OLD_HAS_TLS=0
+	if [ -s "$OLD_DIR/deploy/tls/server.crt" ] && [ -s "$OLD_DIR/deploy/tls/server.key" ]; then OLD_HAS_TLS=1; fi
+
+	ui_blank
+	ui_row info "구버전 위치" "$OLD_DIR"
+	ui_row info "구버전 VERSION" "$OLD_VERSION"
+	ui_row info "compose 프로젝트" "${OLD_PROJECT:-확정 못 함}"
+	ui_row info "접속 방식" "$OLD_SCHEME"
+	if [ "$OLD_HAS_TLS" -eq 1 ]; then
+		ui_row info "TLS 자산" "deploy/tls 있음 — 신버전으로 승계한다"
+	elif [ "$OLD_SCHEME" = "https" ]; then
+		ui_row warn "TLS 자산" "구버전에도 deploy/tls 가 없다 — HTTPS를 유지하려면 인증서를 다시 둬야 한다"
+	fi
+
+	# 고객사가 compose 파일을 직접 손봤으면 이번 업그레이드로 사라진다.
+	if ! cmp -s "$OLD_DIR/docker-compose.yml" "$COMPOSE_FILE"; then
+		ui_warn "구버전 docker-compose.yml 이 신버전 배포본과 다르다 — 직접 고친 내용이 있다면 이번 업그레이드로 사라진다."
+		ui_info "차이 확인:  diff '$OLD_DIR/docker-compose.yml' '$COMPOSE_FILE'"
+	fi
+}
+
+patch_resolve_project() {
+	local from_env derived vol_proj
+	from_env=$(file_env_get "$OLD_ENV" COMPOSE_PROJECT_NAME)
+
+	if [ -n "$OLD_PROJECT" ]; then
+		if [ -n "$from_env" ] && [ "$from_env" != "$OLD_PROJECT" ]; then
+			ui_warn "구버전 .env의 COMPOSE_PROJECT_NAME($from_env)과 실제로 떴던 프로젝트명($OLD_PROJECT)이 다르다 — 데이터가 있는 쪽($OLD_PROJECT)을 쓴다."
+		fi
+		return 0
+	fi
+	if [ -n "$from_env" ]; then OLD_PROJECT=$from_env; return 0; fi
+
+	# 컨테이너가 없으면 볼륨 라벨로 회수한다.
+	derived=$(compose_default_project_name "$OLD_DIR")
+	if [ -n "$derived" ] && volume_exists "${derived}_pgdata"; then
+		vol_proj=$(docker volume inspect "${derived}_pgdata" -f '{{index .Labels "com.docker.compose.project"}}' 2>/dev/null | head -1)
+		OLD_PROJECT=${vol_proj:-$derived}
+		ui_note "구버전 프로젝트명을 볼륨에서 회수했다: $OLD_PROJECT"
+		return 0
+	fi
+	if volume_exists "${DEFAULT_PROJECT_NAME}_pgdata"; then
+		OLD_PROJECT=$DEFAULT_PROJECT_NAME
+		ui_note "구버전 프로젝트명을 기본값으로 본다: $OLD_PROJECT (${OLD_PROJECT}_pgdata 볼륨 확인됨)"
+		return 0
+	fi
+	ui_warn "구버전 compose 프로젝트명을 확정하지 못했다 — 기동 후 빈 DB 검증에서 다시 확인한다."
+}
+
+# 구버전의 접속 방식: AUTOCERT_SCHEME > config_files 라벨 > 레거시 흔적.
+patch_detect_old_scheme() {
+	local recorded
+	recorded=$(file_env_get "$OLD_ENV" AUTOCERT_SCHEME)
+	case "$recorded" in
+		https) OLD_SCHEME="https"; return 0 ;;
+		http)  OLD_SCHEME="http";  return 0 ;;
+	esac
+	case "$OLD_CONFIG_FILES" in
+		*docker-compose.https.yml*) OLD_SCHEME="https"; return 0 ;;
+	esac
+	OLD_SCHEME="http"
+	local secure
+	secure=$(file_env_get "$OLD_ENV" SESSION_COOKIE_SECURE)
+	case "$secure" in
+		[Tt][Rr][Uu][Ee] | 1) OLD_SCHEME="https" ;;
+	esac
+	if [ -n "$(file_env_get "$OLD_ENV" HTTPS_PORT)" ]; then OLD_SCHEME="https"; fi
+}
+
+# P3 — 버전 비교.
+patch_compare_versions() {
+	local new
+	new=$(tr -d ' \t\r\n' < "$VERSION_FILE" 2>/dev/null || printf '')
+	[ -n "$new" ] || new="unknown"
+
+	if [ "$OLD_VERSION" = "$new" ]; then
+		ui_warn "구버전과 신버전이 같은 버전이다($new) — 업그레이드가 아니라 재설치가 된다."
+		tui_confirm "그래도 진행할까?" yes || die "중단했다."
+		return 0
+	fi
+	if ver_ge "$OLD_VERSION" "$new"; then
+		ui_warn "신버전($new)이 구버전($OLD_VERSION)보다 낮다 — 다운그레이드다."
+		ui_info "마이그레이션은 역적용하지 않는다. 구버전에서 이미 올라간 스키마는 되돌아가지 않으므로 기동에 실패할 수 있다."
+		tui_confirm "그래도 진행할까?" no || die "중단했다."
+		return 0
+	fi
+	ui_ok "업그레이드: $OLD_VERSION → $new"
+}
+
+# 구버전 스택을 그때의 compose 파일 조합 그대로 다룬다.
+# **-v 는 이 함수에도, 호출부에도 없다** — 볼륨을 지우면 그것이 곧 데이터 소실이다.
+old_dc() {
+	local fargs=() f files=()
+	if [ -n "$OLD_CONFIG_FILES" ]; then
+		local IFS=','
+		# shellcheck disable=SC2206 # 콤마 분리가 목적이라 의도적인 분할이다
+		files=($OLD_CONFIG_FILES)
+		unset IFS
+	fi
+	for f in ${files[@]+"${files[@]}"}; do
+		[ -f "$f" ] || continue
+		fargs+=(-f "$f")
+	done
+	if [ ${#fargs[@]} -eq 0 ]; then
+		fargs=(-f "$OLD_DIR/docker-compose.yml")
+		if [ "$OLD_SCHEME" = "https" ] && [ -f "$OLD_DIR/docker-compose.https.yml" ]; then
+			fargs+=(-f "$OLD_DIR/docker-compose.https.yml")
+		fi
+	fi
+	docker compose -p "$OLD_PROJECT" --project-directory "$OLD_DIR" "${fargs[@]}" "$@"
+}
+
+# P4 — DB 백업. 기본 ON이고 실패하면 여기서 멈춘다.
+patch_backup_db() {
+	if [ -n "$SKIP_BACKUP" ]; then
+		ui_warn "--skip-backup 이 지정되어 DB 백업을 건너뛴다 — 되돌릴 수단이 사라진다."
+		return 0
+	fi
+	local dir user db out size free need
+
+	dir=${BACKUP_DIR:-$ROOT_DIR/backups}
+	mkdir -p "$dir" || die "백업 디렉터리를 만들지 못했다: $dir"
+	chmod 700 "$dir" 2>/dev/null || true
+
+	user=$(file_env_get "$OLD_ENV" POSTGRES_USER); user=${user:-autocert}
+	db=$(file_env_get "$OLD_ENV" POSTGRES_DB); db=${db:-autocert}
+
+	patch_start_old_db "$user" || die "구버전 DB 컨테이너를 띄우지 못해 백업할 수 없다 (건너뛰려면 --skip-backup)."
+
+	size=$(old_dc exec -T db psql -U "$user" -d "$db" -tAc "select pg_database_size('$db')" 2>/dev/null | tr -d ' \r\n')
+	case "$size" in "" | *[!0-9]*) size="" ;; esac
+	free=$(df -Pk "$dir" 2>/dev/null | awk 'NR==2 {printf "%d", $4}')
+	if [ -n "$size" ] && [ -n "$free" ]; then
+		# 여유는 KiB 단위로 비교한다. DB 크기(byte)의 1.5배 + 200MB.
+		need=$(( size * 3 / 2048 + 204800 ))
+		if [ "$free" -lt "$need" ]; then
+			die "백업 공간이 부족하다 (필요 약 $((need / 1024))MB / 여유 $((free / 1024))MB): $dir"
+		fi
+		ui_ok "백업 공간 확인 (DB 약 $((size / 1048576))MB / 여유 $((free / 1024))MB)"
+	fi
+
+	out="$dir/autocert-${OLD_VERSION}-$(date +%Y%m%d-%H%M%S).dump"
+	ui_step "구버전 DB를 백업한다 (pg_dump -Fc) — 실패하면 여기서 멈춘다"
+	if ! old_dc exec -T db pg_dump -Fc -U "$user" "$db" > "$out" 2>/dev/null; then
+		rm -f "$out"
+		die "DB 백업에 실패했다. 구버전 스택과 DB가 정상인지 확인한다 (건너뛰려면 --skip-backup)."
+	fi
+	if [ ! -s "$out" ]; then
+		rm -f "$out"
+		die "DB 백업 결과가 비어 있다 — 백업 없이 진행하지 않는다."
+	fi
+	chmod 600 "$out"
+	BACKUP_PATH=$out
+	ui_ok "DB 백업 완료: $out"
+}
+
+patch_start_old_db() {
+	local user=$1 cid waited=0
+	cid=$(old_dc ps -q db 2>/dev/null | head -1)
+	if [ -n "$cid" ] && [ "$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null)" = "true" ]; then
+		return 0
+	fi
+	ui_step "백업을 위해 구버전 DB 컨테이너를 띄운다"
+	old_dc up -d db >&3 2>&3 || return 1
+	while [ "$waited" -lt 60 ]; do
+		if old_dc exec -T db pg_isready -U "$user" >/dev/null 2>&1; then return 0; fi
+		sleep 3
+		waited=$((waited + 3))
+	done
+	return 1
+}
+
+# P5 — .env 승계. 프로젝트명이 여기서 갈리면 그게 곧 "빈 DB" 사고다.
+patch_inherit_env() {
+	env_open "$OLD_ENV"
+	env_normalize_crlf
+
+	local inherited
+	inherited=$(env_get AUTOCERT_VERSION)
+	if [ -n "$inherited" ]; then
+		ui_note "승계한 .env의 AUTOCERT_VERSION($inherited) 행을 지웠다 — 남겨 두면 신버전 이미지 태그가 구버전으로 고정된다."
+	fi
+	env_unset AUTOCERT_VERSION
+
+	COMPOSE_PROJECT=$OLD_PROJECT
+	[ -n "$COMPOSE_PROJECT" ] || COMPOSE_PROJECT=$(env_get COMPOSE_PROJECT_NAME)
+	if [ -z "$COMPOSE_PROJECT" ]; then
+		local derived
+		derived=$(compose_default_project_name "$OLD_DIR")
+		if [ -n "$derived" ] && volume_exists "${derived}_pgdata"; then
+			COMPOSE_PROJECT=$derived
+		elif volume_exists "${DEFAULT_PROJECT_NAME}_pgdata"; then
+			COMPOSE_PROJECT=$DEFAULT_PROJECT_NAME
+		fi
+	fi
+	[ -n "$COMPOSE_PROJECT" ] || die "compose 프로젝트명을 확정하지 못했다 — 이대로 기동하면 빈 DB로 뜬다. 구버전 .env의 COMPOSE_PROJECT_NAME을 확인한다."
+
+	env_set COMPOSE_PROJECT_NAME "$COMPOSE_PROJECT"
+	ui_ok "compose 프로젝트명 승계: $COMPOSE_PROJECT (DB 볼륨 ${COMPOSE_PROJECT}_pgdata)"
+	if ! volume_exists "${COMPOSE_PROJECT}_pgdata"; then
+		ui_warn "${COMPOSE_PROJECT}_pgdata 볼륨이 보이지 않는다 — 신버전이 빈 DB로 뜰 수 있다(기동 후 다시 검증한다)."
+	fi
+}
+
+# P6 — HTTPS 자산 승계. deploy/tls 는 어떤 패키지에도 없는 고객사 파일이다.
+patch_inherit_tls() {
+	if [ "$OLD_HAS_TLS" -eq 1 ]; then
+		mkdir -p "$TLS_DIR" 2>/dev/null || true
+		if [ ! -s "$TLS_CRT" ]; then
+			cp "$OLD_DIR/deploy/tls/server.crt" "$TLS_CRT" && chmod 644 "$TLS_CRT" 2>/dev/null || true
+		fi
+		if [ ! -s "$TLS_KEY" ]; then
+			cp "$OLD_DIR/deploy/tls/server.key" "$TLS_KEY" && chmod 600 "$TLS_KEY" 2>/dev/null || true
+		fi
+		ui_ok "구버전의 서버 인증서를 승계했다: deploy/tls/ (개인키 권한 600)"
+	fi
+	set_scheme "$OLD_SCHEME"
+	CFG_PUBLIC_HOST=$(file_env_get "$OLD_ENV" AUTOCERT_PUBLIC_HOST)
+}
+
+# P7 — 구버전 정지. 포트와 리스너를 비워야 신버전이 뜬다.
+patch_stop_old() {
+	ui_step "구버전 스택을 정지한다 (docker compose down — 볼륨은 그대로 둔다)"
+	if ! old_dc down >&3 2>&3; then
+		ui_warn "구버전 정지 명령이 실패했다."
+	fi
+	local left
+	left=$(docker ps -q --filter "label=com.docker.compose.project=$OLD_PROJECT" 2>/dev/null | grep -c . || true)
+	if [ "${left:-0}" -gt 0 ]; then
+		ui_warn "구버전 컨테이너 ${left}개가 아직 떠 있다 — 포트가 겹치면 신버전 기동이 실패한다."
+		tui_confirm "그래도 진행할까?" no || die "중단했다. 구버전을 정지한 뒤 다시 실행한다."
+		return 0
+	fi
+	ui_ok "구버전 스택 정지 확인"
+}
+
+# P9 — 최소 문답. 승계값을 기본으로 "그대로 / 변경" 2지선다다.
+patch_ask_minimal() {
+	local fp bp key sp
+
+	ask_scheme
+
+	collect_our_ports
+	fp=$(value_for FRONTEND_PORT "$DEFAULT_FRONTEND_PORT")
+	bp=$(value_for BACKEND_PORT "$DEFAULT_BACKEND_PORT")
+	tui_select "포트를 그대로 승계할까? (웹 ${fp} / API ${bp})" 0 "그대로 쓴다" "변경한다"
+	if [ "$TUI_INDEX" -eq 1 ]; then
+		ask_ports
+	else
+		env_set FRONTEND_PORT "$fp"
+		env_set BACKEND_PORT "$bp"
+		CFG_FRONTEND_PORT=$fp
+		CFG_BACKEND_PORT=$bp
+	fi
+
+	key=$(env_get SENSOR_CA_ENC_KEY)
+	sp=$(value_for SENSOR_GATEWAY_PORT "$DEFAULT_SENSOR_PORT")
+	if [ -n "$key" ]; then
+		CFG_SENSOR_ENABLED=1
+		CFG_SENSOR_PORT=$sp
+		tui_select "센서 게이트웨이 설정을 그대로 승계할까? (포트 ${sp})" 0 "그대로 쓴다" "변경한다"
+		if [ "$TUI_INDEX" -eq 1 ]; then ask_sensor; fi
+	else
+		tui_select "센서 게이트웨이는 꺼져 있다. 이번에 켤까?" 1 "켠다" "그대로 둔다"
+		if [ "$TUI_INDEX" -eq 0 ]; then ask_sensor; else CFG_SENSOR_ENABLED=0; fi
+	fi
+
+	inject_trusted_proxies
+}
+
+# P11 — 빈 DB 사후 검증. 초기 설정 화면이 뜬다는 건 볼륨이 갈렸다는 뜻이다.
+patch_verify_not_fresh() {
+	local body
+	body=$(http_body "http://127.0.0.1:${CFG_BACKEND_PORT}/api/v1/setup/status" || true)
+	if [ -z "$body" ]; then
+		ui_warn "setup/status 를 읽지 못해 데이터 승계 여부를 확인하지 못했다 — 콘솔 첫 화면이 로그인인지 직접 본다."
+		return 0
+	fi
+	case "$body" in
+		*'"setup_required":true'* | *'"setup_required": true'*)
+			ui_blank
+			ui_err "초기 설정이 필요한 상태다 — 신버전이 **빈 DB**로 떴다는 뜻이다(볼륨이 갈렸다)."
+			ui_info "지금 쓰는 볼륨: ${COMPOSE_PROJECT}_pgdata"
+			ui_info "이 서버의 pgdata 볼륨 목록:"
+			docker volume ls --format '{{.Name}}' 2>/dev/null | grep '_pgdata$' | sed 's/^/           /' >&3 || true
+			ui_info "화면에서 계정을 만들지 말고(만들면 그 빈 DB가 정본이 된다) 아래로 되돌린다."
+			return 1
+			;;
+	esac
+	ui_ok "기존 데이터 승계 확인 (초기 설정 화면이 아니다)"
+	return 0
+}
+
+patch_print_rollback() {
+	ui_info "1. 신버전 정지:  cd '$ROOT_DIR' && docker compose -p $COMPOSE_PROJECT down"
+	ui_info "2. 구버전 기동:  cd '$OLD_DIR' && docker compose -p $COMPOSE_PROJECT up -d"
+	if [ -n "$BACKUP_PATH" ]; then
+		ui_info "3. 스키마가 이미 올라갔으면 백업을 복원한다:  $BACKUP_PATH"
+		ui_info "   (구버전 db 컨테이너 안에서 pg_restore -c -U <사용자> -d <DB> < 백업파일)"
+	else
+		ui_info "3. DB 백업을 건너뛰었으므로 스키마가 바뀐 경우 되돌릴 수 없다."
+	fi
+	ui_note "마이그레이션을 역적용하지 않는다 — 되돌리기는 백업 복원으로만 한다."
+}
+
+mode_patch() {
+	ui_title "패치 — 기존 설치 업그레이드"
+
+	patch_locate_old          # P1 위치 확정
+	patch_collect_meta        # P2 메타 수집
+	patch_compare_versions    # P3 버전 비교
+	patch_backup_db           # P4 DB 백업 (실패 시 중단)
+	patch_inherit_env         # P5 .env 승계
+	patch_inherit_tls         # P6 HTTPS 자산 승계
+	patch_stop_old            # P7 구버전 정지
+
+	ensure_source_tree        # P8 신버전 준비 — AUTOCERT_VERSION 제거 뒤여야 태그가 맞다
+	ensure_images
+
+	patch_ask_minimal         # P9 최소 문답
+	ensure_postgres_password
+	persist_scheme
+	ensure_notify_base_url
+	env_commit
+
+	compose_up                # P10 기동·확인
+	fix_trusted_proxies_after_up
+	if ! wait_health; then
+		ui_blank
+		ui_step "되돌리기"
+		patch_print_rollback
+		exit 1
+	fi
+	if ! check_https_endpoint; then
+		ui_blank
+		ui_step "되돌리기"
+		patch_print_rollback
+		exit 1
+	fi
+
+	if ! patch_verify_not_fresh; then   # P11 빈 DB 사후 검증
+		ui_blank
+		ui_step "되돌리기"
+		patch_print_rollback
+		exit 1
+	fi
+
+	print_done                # P12 완료·롤백 안내
+	ui_blank
+	ui_step "업그레이드 기록"
+	ui_info "- 구버전 디렉터리: $OLD_DIR  (문제가 없으면 얼마간 그대로 둔다)"
+	if [ -n "$BACKUP_PATH" ]; then
+		ui_info "- DB 백업: $BACKUP_PATH"
+	else
+		ui_info "- DB 백업: 건너뜀(--skip-backup)"
+	fi
+	ui_blank
+	ui_step "되돌리기 (문제가 있을 때만)"
+	patch_print_rollback
+}
+
 ensure_postgres_password() {
 	local pw
 	pw=$(value_for POSTGRES_PASSWORD "")
@@ -1726,11 +2300,12 @@ main() {
 
 	case "$mode" in
 		install) mode_install ;;
+		patch) mode_patch ;;
 		reconfigure) mode_reconfigure ;;
 		https) mode_https ;;
 		status) print_status ;;
 		quit) ui_info "종료한다." ;;
-		*) die "알 수 없는 모드: $mode (install|https|reconfigure|status)" ;;
+		*) die "알 수 없는 모드: $mode (install|patch|reconfigure|status|https)" ;;
 	esac
 }
 
