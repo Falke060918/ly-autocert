@@ -109,12 +109,8 @@ export default function DashboardPage() {
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-4">
-      <div>
-        <h1 className="text-lg font-semibold tracking-tight">대시보드</h1>
-        <p className="text-[13px] text-muted-foreground">
-          전사 인증서 현황 요약 · 각 숫자를 누르면 해당 목록으로 이동합니다.
-        </p>
-      </div>
+      {/* 제목은 화면에서 걷어냈지만 문서 구조(h1)는 스크린리더용으로 남긴다. */}
+      <h1 className="sr-only">대시보드</h1>
 
       {error && (
         <Alert variant="destructive">
@@ -277,6 +273,9 @@ function KpiBand({ summary: s }: { summary: CertificateSummary }) {
         <Link
           key={k.label}
           href={k.href}
+          // 제목 블록을 걷어내며 "각 숫자를 누르면 목록으로 간다"는 안내 문구도 같이
+          // 사라졌다 — 세로를 쓰지 않는 툴팁으로 그 정보를 대신 남긴다.
+          title={`${k.label} 목록 보기`}
           className="bg-card px-4 py-3 transition-colors hover:bg-muted/50 focus-visible:z-10 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
         >
           <div className="text-xs text-muted-foreground">{k.label}</div>
@@ -297,7 +296,8 @@ function KpiBand({ summary: s }: { summary: CertificateSummary }) {
 function DashboardSkeleton() {
   return (
     <div className="space-y-4">
-      <Skeleton className="h-56 rounded-lg" />
+      {/* 만료 지평선 히어로 자리 — 실제 높이(헤더 49 + 본문 134)에 맞춘다. */}
+      <Skeleton className="h-48 rounded-lg" />
       <div className="grid grid-cols-2 gap-px sm:grid-cols-4 xl:grid-cols-8">
         {Array.from({ length: 8 }).map((_, i) => (
           <Skeleton key={i} className="h-[70px] rounded-none first:rounded-l-lg last:rounded-r-lg" />

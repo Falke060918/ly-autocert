@@ -174,14 +174,17 @@ export default function CertificateDetailPage() {
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-4">
-      <div className="text-[13px] text-muted-foreground">
-        <Link href="/certificates" className="hover:underline hover:underline-offset-3">
-          인증서
-        </Link>{" "}
-        / <span className="text-foreground">{cnLabel}</span>
-      </div>
-
+      {/*
+        제목은 인증서 자체라 남긴다 — 대신 CN을 두 번 적던 빵부스러기 줄을 없애고
+        목록으로 돌아가는 링크만 같은 줄의 머리로 옮겼다.
+      */}
       <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[13px] text-muted-foreground">
+          <Link href="/certificates" className="hover:underline hover:underline-offset-3">
+            인증서
+          </Link>{" "}
+          /
+        </span>
         <h1 className="font-mono text-lg font-semibold tracking-tight">{cnLabel}</h1>
         <CertStatusBadge status={c.status} notAfter={c.not_after} />
         {isSelfSigned(c.subject_dn, c.issuer_dn) && (

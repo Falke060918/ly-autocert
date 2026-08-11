@@ -168,13 +168,8 @@ export default function NotificationSettingsPage() {
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-4">
-      <div>
-        <h1 className="text-lg font-semibold tracking-tight">알림 설정</h1>
-        <p className="text-[13px] text-muted-foreground">
-          만료 임박 인증서를 언제·어떤 채널로·누구에게 알릴지 정합니다. 정책
-          변경은 감사 로그에 남습니다.
-        </p>
-      </div>
+      {/* 제목은 화면에서 걷어냈지만 문서 구조(h1)는 스크린리더용으로 남긴다. */}
+      <h1 className="sr-only">알림 설정</h1>
 
       <ChannelStatusCard />
       <PolicySection />

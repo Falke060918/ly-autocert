@@ -90,21 +90,8 @@ export default function SensorsPage() {
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-4">
-      <div className="flex items-end justify-between gap-4">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight">센서</h1>
-          <p className="text-[13px] text-muted-foreground">
-            서버가 직접 도달할 수 없는 세그먼트에 배치하는 원격 수집기입니다.
-            센서는 아웃바운드 mTLS 한 경로로만 서버에 접속합니다.
-          </p>
-        </div>
-        {canManage && (
-          <Button onClick={() => setCreateOpen(true)}>
-            <Plus data-icon="inline-start" />
-            센서 등록
-          </Button>
-        )}
-      </div>
+      {/* 제목은 화면에서 걷어냈지만 문서 구조(h1)는 스크린리더용으로 남긴다. */}
+      <h1 className="sr-only">센서</h1>
 
       {error && (
         <Alert variant="destructive">
@@ -114,10 +101,17 @@ export default function SensorsPage() {
       )}
 
       <Card className="gap-0 overflow-hidden py-0">
-        <div className="flex items-baseline gap-2 border-b px-4 py-3">
+        {/* 제목 블록을 없앤 대신 카드 머리줄이 화면 액션을 받는다. */}
+        <div className="flex items-center gap-2 border-b px-4 py-2">
           <h2 className="text-sm font-semibold tracking-tight">등록된 센서</h2>
           {sensors != null && (
             <span className="text-xs text-muted-foreground">{sensors.length}대</span>
+          )}
+          {canManage && (
+            <Button size="sm" className="ml-auto" onClick={() => setCreateOpen(true)}>
+              <Plus data-icon="inline-start" />
+              센서 등록
+            </Button>
           )}
         </div>
         {sensors == null && !error ? (

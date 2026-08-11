@@ -24,7 +24,9 @@ import { cn } from "@/lib/utils";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEKS = 13; // 13주 = 91일로 90일 구간을 덮는다.
-const TOOLTIP_CNS = 5;
+// 툴팁은 Card(overflow-hidden) 안에서 그려지므로 카드 바닥을 넘으면 잘린다 —
+// 차트 높이를 줄인 만큼 목록도 4건으로 맞췄다(나머지는 "외 N건"이 받는다).
+const TOOLTIP_CNS = 4;
 
 // SVG 좌표계 (preserveAspectRatio="none" — 가로는 백분율처럼 늘어난다).
 const VIEW_W = 1000;
@@ -112,7 +114,8 @@ export function ExpiryHorizonHero({
 
   return (
     <Card className="gap-0 overflow-hidden py-0">
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b px-4 py-3">
+      {/* 밀도 우선 — 대시보드 첫 화면에 KPI 밴드까지 함께 들어와야 한다. */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b px-4 py-2">
         <h2 className="text-sm font-semibold tracking-tight">만료 지평선</h2>
         <span className="text-xs text-muted-foreground">
           오늘 기준 90일 · 주 단위 만료 밀도
@@ -125,15 +128,19 @@ export function ExpiryHorizonHero({
         </Button>
       </div>
 
-      <div className="px-4 pt-4 pb-2">
+      <div className="px-4 pt-3 pb-2">
         <div
           className="relative"
           onMouseLeave={() => setHover(null)}
         >
+          {/*
+            구간 클릭 타겟은 이 SVG 영역 전체 높이다(아래 오버레이가 inset-0) —
+            높이를 줄여도 주당 24px 이상은 유지된다.
+          */}
           <svg
             viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
             preserveAspectRatio="none"
-            className="h-36 w-full sm:h-40"
+            className="h-24 w-full sm:h-28"
             aria-hidden="true"
           >
             <defs>
@@ -265,7 +272,7 @@ export function ExpiryHorizonHero({
           {/* 툴팁 */}
           {hover && (
             <div
-              className="pointer-events-none absolute top-0 z-10 w-56 rounded-md border bg-popover p-3 text-popover-foreground shadow-md"
+              className="pointer-events-none absolute top-0 z-10 w-56 rounded-md border bg-popover p-2.5 text-popover-foreground shadow-md"
               style={{
                 left: `clamp(0px, ${centerPct(hover)}%, 100%)`,
                 transform:
@@ -284,7 +291,7 @@ export function ExpiryHorizonHero({
                       {summary.expired}건
                     </span>
                   </div>
-                  <p className="mt-1.5 text-xs text-muted-foreground">
+                  <p className="mt-1 text-xs text-muted-foreground">
                     클릭하면 만료 목록으로 이동합니다.
                   </p>
                 </>
@@ -296,7 +303,7 @@ export function ExpiryHorizonHero({
         </div>
 
         {/* 축 라벨 */}
-        <div className="relative h-5 text-[11px] text-muted-foreground">
+        <div className="relative mt-0.5 h-4 text-[11px] leading-4 text-muted-foreground">
           <span className="absolute left-0">이미 만료</span>
           <span className="absolute left-[9%] -translate-x-1/2 font-medium text-foreground">
             오늘
@@ -327,17 +334,17 @@ function WeekTooltip({ week, now }: { week: WeekBucket; now: number }) {
         </span>
       </div>
       {week.count === 0 ? (
-        <p className="mt-1.5 text-xs text-muted-foreground">이 주에 만료되는 인증서가 없습니다.</p>
+        <p className="mt-1 text-xs text-muted-foreground">이 주에 만료되는 인증서가 없습니다.</p>
       ) : (
-        <ul className="mt-1.5 space-y-0.5">
+        <ul className="mt-1">
           {week.topCNs.map((cn, i) => (
             // CN은 중복될 수 있어 순번을 키로 쓴다 (정적 목록이라 안전하다).
-            <li key={i} className="truncate font-mono text-[11px] text-foreground/80">
+            <li key={i} className="truncate font-mono text-[11px] leading-4 text-foreground/80">
               {cn}
             </li>
           ))}
           {week.count > week.topCNs.length && (
-            <li className="text-[11px] text-muted-foreground">
+            <li className="text-[11px] leading-4 text-muted-foreground">
               외 {week.count - week.topCNs.length}건
             </li>
           )}

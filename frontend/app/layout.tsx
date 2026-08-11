@@ -3,8 +3,13 @@ import "./globals.css";
 
 import { ThemeProvider } from "@/components/theme-provider";
 
+// 화면에서 제목 블록을 걷어냈으므로 "지금 어느 화면인가"는 사이드바 활성 표시와
+// 브라우저 탭 제목이 답한다 — 각 화면의 layout.tsx가 template의 %s를 채운다.
 export const metadata: Metadata = {
-  title: "INHERIT AutoCert",
+  title: {
+    default: "INHERIT AutoCert",
+    template: "%s · INHERIT AutoCert",
+  },
   description: "온프레미스 인증서 라이프사이클 관리(CLM) 플랫폼",
 };
 
