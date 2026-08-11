@@ -84,7 +84,8 @@ MCP 도구 권한(`.mcp.json`의 playwright·chrome-devtools)은 템플릿 `sett
 답변 스타일(기본 `brief` — 짧고 명료한 답변)이 마음에 안 들면 `.claude/output-styles/brief.md`를 고치거나 `/config` → Output style에서 바꾼다.
 
 ⚠️ 위 세 파일(`CLAUDE.md`·`.claude/settings.json`·`.claude/output-styles/`)과 `.claude/conventions/`(폰트 등 기본 강제값)는 `/template-update`가 통째로 덮어쓴다 —
-실행 후 `git diff`에서 커스터마이징 소실 여부를 반드시 확인하고 복원하라. 개인·머신별 권한은 처음부터
+실행 후 `git diff --cached`(checkout 결과는 이미 index에 올라가 있어 그냥 `git diff`는 빈 출력이다)에서 커스터마이징 소실 여부를
+반드시 확인하고 복원하라. `CLAUDE.md`·`.claude/settings.json`은 덮어쓰기 직전 사본이 `.template-update-backup/<시각>/`에 남는다. 개인·머신별 권한은 처음부터
 `.claude/settings.local.json`에 두면 동기화가 건드리지 않는다.
 
 ## 7. `/kickoff` 실행

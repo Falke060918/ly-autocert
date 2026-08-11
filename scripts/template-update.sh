@@ -12,6 +12,11 @@
 # The script never runs `git add`/`git commit` — it only checks paths out of
 # template/main (which places them in worktree+index); the caller reviews the
 # result and commits.
+#
+# Paths a derived project commonly customizes (CLAUDE.md, .claude/settings.json)
+# are copied into .template-update-backup/<timestamp>/ and their incoming diff
+# is printed BEFORE anything is overwritten — the sync still takes the newest
+# template rules, the backup only guarantees a way back.
 
 # Template-owned paths to sync. Directory entries rely on checkout
 # semantics: `git checkout template/main -- <dir>` overwrites only files that
@@ -31,6 +36,18 @@ paths=(
   .claude/conventions
   .claude/settings.json
 )
+
+# Synced paths a derived project routinely edits — project rules appended to
+# the bottom of CLAUDE.md, extra permissions in settings.json. Checkout
+# replaces them wholesale, so each one is backed up and diffed before the
+# sync touches it.
+# KEEP IN SYNC WITH `paths` ABOVE: an entry here that is no longer synced
+# would be backed up and diffed although nothing overwrites it.
+customizable=(
+  CLAUDE.md
+  .claude/settings.json
+)
+backup_root=.template-update-backup
 
 # !! HARD EXCLUSIONS — NEVER add these to the sync list above !!
 #   .claude/template-origin      initialized derived projects deleted this
@@ -55,6 +72,29 @@ paths=(
 #                                one-time starting point at clone time; after
 #                                that MCP servers are project-owned.
 #   any product code             obviously project-owned.
+
+# Keeps the backup directory out of `git status`. It goes into the repo's
+# LOCAL exclude file, not .gitignore: .gitignore is project-owned and the
+# added line would ride along in the user's next commit. Untracked-and-not-
+# ignored would be worse than noise — the NEXT run's dirty-tree check would
+# abort on leftover backups.
+# --git-common-dir (not --git-dir) so this also works from inside a git
+# worktree, where .git is a file and info/ lives in the main repo's git dir.
+exclude_backup_dir() {
+  gitdir=$(git rev-parse --git-common-dir 2>/dev/null) || gitdir=$(git rev-parse --git-dir 2>/dev/null) || return 0
+  [ -n "$gitdir" ] || return 0
+  ex="$gitdir/info/exclude"
+  if [ -f "$ex" ] && grep -qF "/$backup_root/" "$ex"; then return 0; fi
+  mkdir -p "$gitdir/info" 2>/dev/null || return 0
+  {
+    echo ""
+    echo "# template-update.sh: 덮어쓰기 직전 백업 (지워도 무방)"
+    echo "/$backup_root/"
+  } >> "$ex" 2>/dev/null || {
+    echo "알림: $backup_root/ 을 git 무시 목록에 넣지 못했다 — 커밋에 섞이지 않게 직접 확인하라." >&2
+    return 0
+  }
+}
 
 main() {
   root=$(git rev-parse --show-toplevel 2>/dev/null) || {
@@ -128,6 +168,59 @@ main() {
     exit 1
   }
 
+  # -- Backup + diff BEFORE any overwrite. -----------------------------------
+  # The working tree is clean at this point (checked above), so HEAD is the
+  # project's current copy and a commit-to-commit diff shows exactly what the
+  # checkout is about to do. NOT the `HEAD:$p template/main:$p` rev:path form
+  # — MSYS mangles rev:path arguments whose path contains a slash (see the
+  # note on the checkout loop below); a pathspec after `--` is left alone.
+  backup_dir=""
+  backed_up=()
+  diff_cap=200
+  # "was overwritten with different content", as opposed to settings_synced /
+  # claude_md_synced below which only mean "checkout ran". The warnings key
+  # off these so an identical file does not produce a "복원하라" notice.
+  settings_changed=0
+  claude_md_changed=0
+  for p in "${customizable[@]}"; do
+    [ -f "$root/$p" ] || continue
+    [ -n "$(git ls-tree --name-only template/main -- "$p")" ] || continue
+    if [ -z "$(git diff --name-only HEAD template/main -- "$p")" ]; then
+      echo "동일 (덮어써도 내용 변화 없음): $p"
+      continue
+    fi
+    if [ -z "$backup_dir" ]; then
+      backup_dir="$root/$backup_root/$(date -u +%Y%m%d-%H%M%S)"
+      mkdir -p "$backup_dir" || {
+        echo "중단: 백업 폴더를 만들지 못했다 — $backup_dir" >&2
+        exit 1
+      }
+      exclude_backup_dir
+    fi
+    mkdir -p "$backup_dir/$(dirname "$p")" || {
+      echo "중단: 백업 폴더를 만들지 못했다 — $backup_dir/$(dirname "$p")" >&2
+      exit 1
+    }
+    # Backup failure aborts: overwriting without a way back is the one thing
+    # this block exists to prevent.
+    cp "$root/$p" "$backup_dir/$p" || {
+      echo "중단: 백업 실패 — $p (아무것도 덮어쓰지 않고 멈춘다)" >&2
+      exit 1
+    }
+    backed_up+=("$p")
+    if [ "$p" = ".claude/settings.json" ]; then settings_changed=1; fi
+    if [ "$p" = "CLAUDE.md" ]; then claude_md_changed=1; fi
+    echo ""
+    echo "── 덮어쓰기 예정: $p — 백업 완료, 아래가 들어올 변경이다 ──"
+    git diff --stat HEAD template/main -- "$p"
+    git diff HEAD template/main -- "$p" | head -n "$diff_cap"
+    dl=$(git diff HEAD template/main -- "$p" | wc -l | tr -d '[:space:]')
+    if [ "${dl:-0}" -gt "$diff_cap" ]; then
+      echo "   … diff $dl 줄 중 앞 $diff_cap 줄만 표시 — 전체: git diff HEAD template/main -- $p"
+    fi
+  done
+  if [ -n "$backup_dir" ]; then echo ""; fi
+
   # Per-path checkout: a path missing from the template must not kill the
   # run, but a REAL checkout failure (permissions, index.lock, …) must not be
   # lumped in with it either — the ls-tree existence probe separates "not in
@@ -163,16 +256,34 @@ main() {
   fi
   git status --short
   echo ""
-  if [ "$settings_synced" = 1 ]; then
+  if [ "$settings_synced" = 1 ] && [ "$settings_changed" = 1 ]; then
     echo "!! 주의: .claude/settings.json 이 템플릿 버전으로 덮어써졌다."
     echo "   로컬 커스터마이징은 다시 적용해야 한다 — 앞으로는 .claude/settings.local.json 에"
     echo "   두면 템플릿 최신화가 절대 건드리지 않는다. settings/hooks 변경은 Claude 재시작"
     echo "   후에만 적용된다."
     echo ""
   fi
-  if [ "$claude_md_synced" = 1 ]; then
+  if [ "$claude_md_synced" = 1 ] && [ "$claude_md_changed" = 1 ]; then
     echo "!! 주의: CLAUDE.md(하단 커스터마이징) 도 템플릿 버전으로 덮어써졌다."
-    echo "   프로젝트에서 직접 수정했던 내용은 커밋 전에 git diff 로 확인해 복원하라."
+    echo "   프로젝트에서 직접 수정했던 내용은 커밋 전에 git diff --cached 로 확인해 복원하라."
+    echo ""
+  fi
+  # checkout puts the result in worktree AND index, so a bare `git diff`
+  # (worktree vs index) prints nothing — the review command must be --cached.
+  echo "검토: git status --short / git diff --cached"
+  echo "   (checkout 결과는 이미 index에 올라가 있어 그냥 git diff 는 빈 출력이다.)"
+  echo ""
+  if [ -n "$backup_dir" ]; then
+    rel=${backup_dir#"$root"/}
+    echo "── 덮어쓰기 직전 백업 ──"
+    for p in "${backed_up[@]}"; do
+      echo "   $rel/$p   →   $p"
+    done
+    echo "   복원: cp \"$rel/${backed_up[0]}\" \"${backed_up[0]}\""
+    echo "   비교: diff \"$rel/${backed_up[0]}\" \"${backed_up[0]}\""
+    echo "   전체 되돌리기: git reset --hard HEAD (실행 전 트리는 깨끗했다. 백업은 추적 대상이"
+    echo "   아니라 남는다.)"
+    echo "   이 폴더는 git이 무시하도록 등록해 뒀다. 검토가 끝나면 rm -rf \"$rel\" 로 지워라."
     echo ""
   fi
   echo "커밋하지 않았다. 위 변경을 검토한 뒤 직접 커밋하라."
