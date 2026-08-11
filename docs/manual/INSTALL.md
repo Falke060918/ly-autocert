@@ -359,8 +359,10 @@ tar xzf source/autocert-source-1.0.0.tar.gz --strip-components=1
 `install.sh`는 `.env`에 `COMPOSE_PROJECT_NAME`을 써 넣어 이 값을 디렉터리명에서 떼어 놓는다. **`.env`를 손으로 만든다면 이 줄을 반드시 넣는다.**
 
 ```
-COMPOSE_PROJECT_NAME=inherit_autocert
+COMPOSE_PROJECT_NAME=autocert
 ```
+
+> `autocert`가 `install.sh`의 기본값이다. **`install.sh`로 설치했다면 이 줄은 이미 들어가 있으니 손대지 않는다** — 값을 바꾸는 것이 곧 빈 DB 사고다. 확신이 없으면 `docker volume ls`로 실제 볼륨 이름(`<프로젝트명>_pgdata`)의 접두어를 확인하고 그 값을 쓴다.
 
 절차는 3단계다. (백업은 그 전에 한다 — OPERATIONS.md 4.1절.)
 
@@ -376,7 +378,11 @@ cd <신버전 디렉터리> && bash install.sh
 | 2 | 기존 설정을 그대로 승계한다. 비밀값(`POSTGRES_PASSWORD`·`SENSOR_CA_ENC_KEY`)이 여기 있으므로 **새로 만들면 안 된다** — `SENSOR_CA_ENC_KEY`가 바뀌면 기존 센서 CA를 복호화할 수 없다 |
 | 3 | 신버전 이미지 적재 + 기동. 기존 `.env`를 발견하면 값을 유지한다 |
 
+> **HTTPS로 운영 중이면 3번째 줄을 `bash install.sh --mode https`로 실행한다.**
+> 인자 없는 `install.sh`(install/reconfigure 모드)는 `docker-compose.https.yml` 오버레이를 붙이지 않아 **TLS 프록시가 빠진 채 재기동된다.** 그런데 승계한 `.env`의 `SESSION_COOKIE_SECURE=true`는 그대로 남아 있으므로, 평문 HTTP로 열린 화면에서 브라우저가 세션 쿠키를 버려 **API는 200인데 로그인만 조용히 실패한다**(TLS.md 7장). 기존 HTTPS 설정을 감지해 자동으로 오버레이를 붙이는 폴백이 있지만, 확실한 쪽은 모드를 명시하는 것이다.
+
 - 승계한 `.env`에 `COMPOSE_PROJECT_NAME`이 없으면(1.0.0에서 손으로 설치한 경우) **위 줄을 직접 추가하되, 값은 구버전 디렉터리명과 같게 맞춘다.** 이미 그 이름으로 볼륨이 만들어져 있기 때문이다. 확인은 `docker volume ls`.
+- 승계한 `.env`에 `AUTOCERT_VERSION`을 손으로 박아 뒀다면 **지우거나 새 버전 값으로 고친다.** 그대로 두면 신버전 디렉터리에서 기동해도 `.env`의 값이 이겨 **구버전 이미지로 그대로 뜬다**(적재만 되고 아무것도 바뀌지 않는다). 반입 패키지를 그대로 쓴다면 이 줄 자체가 없는 것이 정상이다 (5.2절).
 - 마이그레이션은 backend가 기동하면서 자동 적용한다. 확인·롤백 주의사항은 OPERATIONS.md 5장.
 - 구버전 디렉터리는 신버전이 정상 동작하는 것을 확인한 뒤에 지운다.
 - 센서는 서버와 별개로 갱신한다 (SENSOR.md 8장). 재등록은 필요 없다.

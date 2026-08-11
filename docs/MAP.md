@@ -93,7 +93,7 @@
 - 센서 접속 포트는 **SAN에도 센서 상태 디렉토리에도 박히지 않아 포트 변경에 재등록이 필요 없다**(`--server` 포트만 고쳐 재시작). 반면 주소(DNS/IP)는 SAN이라 `SENSOR_ADVERTISED_HOSTS` 수정 + backend 재기동이 필요하다 — 이 변수에 포트를 붙이면 기동 시 경고 후 그 항목이 무시된다
 
 ## 실행
-- `cp .env.example .env && docker compose up --build` [unix]
+- `cp .env.example .env && docker compose up --build` [unix] — **개발 환경 전용이다.** 폐쇄망 고객사는 Go 모듈·npm 다운로드가 막혀 소스 빌드가 성립하지 않는다: 설치도 업그레이드도 오프라인 패키지 + `install.sh`이고 절차 정본은 INSTALL 5.1.4다(OPERATIONS 5장은 백업·확인·롤백만 적고 절차는 링크한다)
 - HTTPS로 띄우려면 `deploy/tls/{server.crt,server.key}`를 먼저 두고 `docker compose -f docker-compose.yml -f docker-compose.https.yml up -d --build` [unix] — 이후 모든 compose 명령에 두 파일을 함께 넘긴다(`COMPOSE_FILE` 환경변수 권장). 절차는 docs/manual/TLS.md
 - `COMPOSE_PROJECT_NAME`을 `.env`에 고정하지 않으면 **업그레이드 시 빈 DB로 뜬다** — 패키지 루트=설치 루트라 신버전이 새 디렉터리에 깔리는데 compose 프로젝트명 기본값이 디렉터리명이고 `pgdata` 볼륨 이름이 거기서 나온다. `install.sh`가 이 값을 써 넣는다(절차는 INSTALL 5.1.4).
 - `.env` **필수는 POSTGRES_PASSWORD 하나뿐**이다 — 관리자 계정은 첫 접속 시 `/setup` 화면에서 만든다. `BOOTSTRAP_ADMIN_USERNAME`/`_PASSWORD`는 무인 설치용 선택값(넣으면 기동 시 1회 생성, 그러면 `/setup`이 처음부터 닫혀 있다). SENSOR_CA_ENC_KEY/SENSOR_ADVERTISED_HOSTS와 포트 변수군은 compose엔 배선돼 있으나 .env.example엔 없어 수동 추가(INSTALL 5.2·5.5). 앞의 두 개는 세트 — CA 키만 넣고 HOSTS를 비우면 SAN이 없어 게이트웨이가 경고 로그 후 비활성화된다(8080은 정상 기동, 센서만 못 붙음).
