@@ -184,6 +184,9 @@ func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorC
 	s.protected("GET /api/v1/certificates/export", handleExportCertificates(st),
 		domain.RoleSystemAdministrator, domain.RolePKIAdministrator)
 	s.protected("GET /api/v1/certificates/{id}", handleGetCertificate(st), domain.AllRoles...)
+	// 영향 범위 집계 — "이 CA가 만료되면 무엇이 죽는가"(전이적 자손 + 서버·도메인).
+	// 읽기 전용, 전 역할 (summary·issuers·risks와 같은 규약).
+	s.protected("GET /api/v1/certificates/{id}/impact", handleCertificateImpact(st), domain.AllRoles...)
 	// 서버(엔드포인트) 축 — 같은 인벤토리를 호스트 1행으로 되짚는 읽기 전용 조회다.
 	// 권한·감사 규약은 인증서 조회와 같다(전 역할, 감사 이벤트 없음).
 	s.protected("GET /api/v1/servers", handleListServers(st), domain.AllRoles...)

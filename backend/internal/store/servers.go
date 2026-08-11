@@ -64,7 +64,13 @@ type ListServersInput struct {
 	Scope string
 	// Mismatch는 구버전 잔존 필터다: true면 현재 인증서와 다른 위치 행이
 	// 남아 있는 서버만(교체 후 옛 인증서가 아직 어딘가 붙어 있다).
-	Mismatch  *bool
+	Mismatch *bool
+	// IssuedBy는 "이 CA 계열 인증서를 쓰는 서버" 필터다 — 값은 CA 인증서 id.
+	// **전이적**이다(자신 + 모든 하위 CA가 발급한 것까지) — 직계 1단계만 보는
+	// 인증서 목록의 IssuedBy와 깊이가 다르다. "이 CA가 만료되면 어느 서버가
+	// 죽나"가 이 필터의 용도이고, 같은 술어를 CertificateImpact가 공유하므로
+	// 여기의 total이 곧 impact 응답의 server_count다 (certificates_impact.go).
+	IssuedBy  string
 	SortField string // serverSortColumns 키. 빈 값이면 risk
 	SortDesc  bool
 	Page      int // 1부터
@@ -199,6 +205,18 @@ func serverEndpointCTE(where string) string {
 	)`
 }
 
+// serverEndpointCTEWithFamily는 endpoint CTE 앞에 "CA 계열" CTE를 얹는다
+// (certificates_impact.go의 fam·fam_live — $1::uuid를 쓴다). family가 false면
+// 기존 WITH 절 그대로다. 재귀 CTE가 하나라도 있으면 WITH RECURSIVE로 올려야
+// 하므로 머리만 갈아 끼운다.
+func serverEndpointCTEWithFamily(family bool, where string) string {
+	if !family {
+		return serverEndpointCTE(where)
+	}
+	return "WITH RECURSIVE " + certFamilyCTEs + ", " +
+		strings.TrimPrefix(serverEndpointCTE(where), "WITH ")
+}
+
 // serverBaseCTE는 목록·상세의 서버 1행 집계다. count 질의와 페이지 질의가
 // **같은 CTE 문자열을 공유**한다 — total과 페이지가 다른 그룹핑 위에서 세지 않게.
 var serverBaseCTE = fmt.Sprintf(serverBaseCTEFmt, maxServerPorts)
@@ -246,7 +264,9 @@ const serverListColumns = `id, hostname, ip_address, scope, sensor_name,
 	earliest_not_after, last_seen_at, stale_count, ports`
 
 // buildServerWhere는 srv CTE 위의 WHERE 조건과 바인드 파라미터를 만든다.
-func buildServerWhere(in ListServersInput) (conds []string, args []any) {
+// args는 이미 채워진 채로 들어올 수 있다 — IssuedBy를 쓰면 계열 CTE가 $1을
+// 차지하므로 호출자가 그것을 먼저 넣고 여기서 $2부터 이어 붙인다.
+func buildServerWhere(in ListServersInput, args []any) (conds []string, _ []any) {
 	arg := func(v any) string {
 		args = append(args, v)
 		return fmt.Sprintf("$%d", len(args))
@@ -283,6 +303,15 @@ func buildServerWhere(in ListServersInput) (conds []string, args []any) {
 		} else {
 			conds = append(conds, "stale_count = 0")
 		}
+	}
+	if in.IssuedBy != "" {
+		// 계열 판정은 SQL 술어여야 한다 — Go에서 걸러 내면 total·page가 필터를
+		// 반영하지 못한다(위험 필터를 SQL로 옮긴 것과 같은 이유). fam_live는
+		// 호출자가 얹은 CTE이고 바인드 파라미터는 그쪽($1)이 갖는다.
+		conds = append(conds, `EXISTS (
+			SELECT 1 FROM endpoint e2
+			 WHERE e2.target_id = srv.id::uuid
+			   AND e2.certificate_id IN (SELECT id FROM fam_live))`)
 	}
 	return conds, args
 }
@@ -344,12 +373,20 @@ func (s *Store) ListServers(ctx context.Context, in ListServersInput) (*ServerLi
 		dir = "DESC"
 	}
 
-	conds, args := buildServerWhere(in)
+	// 계열 필터를 쓰면 재귀 CTE가 $1을 차지하므로 대상 CA id를 먼저 넣는다.
+	var args []any
+	if in.IssuedBy != "" {
+		if !uuidRe.MatchString(strings.ToLower(strings.TrimSpace(in.IssuedBy))) {
+			return nil, fmt.Errorf("store: issued_by %q is not a certificate id", in.IssuedBy)
+		}
+		args = append(args, strings.ToLower(strings.TrimSpace(in.IssuedBy)))
+	}
+	conds, args := buildServerWhere(in, args)
 	where := ""
 	if len(conds) > 0 {
 		where = " WHERE " + strings.Join(conds, " AND ")
 	}
-	base := serverEndpointCTE("") + serverBaseCTE
+	base := serverEndpointCTEWithFamily(in.IssuedBy != "", "") + serverBaseCTE
 
 	var total int
 	if err := s.db.QueryRowContext(ctx,
