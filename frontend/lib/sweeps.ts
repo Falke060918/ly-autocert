@@ -5,7 +5,7 @@
  * Job 상태 union과 값이 겹치지 않으며, 한쪽을 넓히면 다른 쪽 폴링이 깨진다.
  */
 
-import { apiFetch, type ScanAccepted } from "@/lib/api";
+import { apiFetch, type ScanAccepted, type ScanMode } from "@/lib/api";
 
 // ── 타입 ──────────────────────────────────────────────────────────────────
 
@@ -111,21 +111,67 @@ export function listPortPresets() {
   return apiFetch<PortPresetListResponse>("/api/v1/discovery/port-presets");
 }
 
-/**
- * 단발 스캔 생성 — `port_spec` 자유 텍스트 버전.
- * 포트 문법 검증은 전적으로 서버 파서(400 메시지)에 맡긴다.
- */
-export function createScanWithPortSpec(req: {
+/** 스캔 발주·미리보기가 공유하는 요청 본문(서버도 같은 구조체로 받는다). */
+export interface ScanFormRequest {
   targets: string[];
   port_spec?: string;
   timeout_ms?: number;
   concurrency?: number;
   sensor_id?: string;
-}) {
+}
+
+/**
+ * 스캔 생성 — `port_spec` 자유 텍스트 버전.
+ * 포트 문법 검증은 전적으로 서버 파서(400 메시지)에 맡긴다.
+ *
+ * 규모가 크면 서버가 스윕으로 **자동 승격**해 job_id 대신 sweep_id를 돌려준다
+ * (ScanAccepted.mode 참고) — 호출자는 둘 중 어느 쪽이 왔는지 반드시 확인한다.
+ */
+export function createScanWithPortSpec(req: ScanFormRequest) {
   return apiFetch<ScanAccepted>("/api/v1/discovery/scans", {
     method: "POST",
     body: JSON.stringify(req),
   });
+}
+
+/**
+ * 발주 전 규모 미리보기 — 아무것도 만들지 않는다.
+ *
+ * 대상·포트 파서는 **서버 한 곳**이 정본이다. 예전에는 프론트가 CIDR 호스트 수와
+ * 포트 사양을 따로 세어 미리 보여줬는데, 서버 파서와 조용히 갈라지면 화면이 보여준
+ * 숫자와 실제로 도는 작업이 달라진다(설계 9.3). 그래서 계산은 전부 여기로 넘긴다.
+ *
+ * GET이 아니라 POST인 이유는 대상 목록이 URL 길이 상한을 넘기 때문이다.
+ */
+export function previewScan(req: ScanFormRequest) {
+  return apiFetch<ScanPreview>("/api/v1/discovery/scans/preview", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
+}
+
+/** POST /discovery/scans/preview 응답. 포트 목록 자체는 실리지 않는다(all이면 6.5만 개). */
+export interface ScanPreview {
+  request_id?: string;
+  /** 이대로 발주하면 만들어질 작업 — scan(단발) 또는 sweep(자동 승격). */
+  mode: ScanMode;
+  promoted: boolean;
+  /** 이 엔드포인트 수를 **넘을 때만** 승격한다. */
+  promotion_threshold: number;
+  targets: string[];
+  ip_count: number;
+  port_spec: string;
+  port_count: number;
+  total_endpoints: number;
+  rate_pps: number;
+  estimated_seconds: number;
+  estimated_finish_at: string;
+  /** 승격 경로에서만 0이 아니다. */
+  total_chunks: number;
+  max_days: number;
+  /** true면 이대로 발주해도 422(sweep_too_long)로 거부된다 — 미리 알려만 준다. */
+  too_long: boolean;
+  message?: string;
 }
 
 export function createSweep(req: SweepRequest) {
@@ -192,134 +238,12 @@ export const STARTTLS_NOTICE = `전 포트를 돌려도 STARTTLS 승격 포트($
   ", ",
 )})에서는 인증서를 얻을 수 없습니다 — 스캐너가 implicit TLS 전용입니다.`;
 
-// ── 규모·소요 추정 (미리보기 전용) ────────────────────────────────────────
+// ── 표시 헬퍼 ─────────────────────────────────────────────────────────────
 //
-// 여기 있는 계산은 **검증이 아니라 미리보기**다. 제출을 막지 않고, 값을
-// 바꾸지도 않는다(전송하는 것은 언제나 사용자가 친 원문이다). 서버 파서를
-// 흉내 내다 조용히 어긋나는 사고를 막으려고, 모르면 null을 돌려 "—"로 비운다.
-// 개수는 중복 제거를 하지 않는 **상한**이라 실제보다 작아지는 일이 없다.
-
-/** IPv4 점 4개 표기인지 가볍게 본다(정밀 검증은 서버 몫이다). */
-function isIPv4(s: string): boolean {
-  const parts = s.split(".");
-  if (parts.length !== 4) return false;
-  return parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) <= 255);
-}
-
-/** 서버 Expand의 CIDR 호스트비트 상한(20)과 같은 값. 넘으면 어차피 400이다. */
-const MAX_CIDR_HOST_BITS = 20;
-
-function countOneTarget(t: string): number | null {
-  const slash = t.indexOf("/");
-  if (slash < 0) {
-    return isIPv4(t) || t.includes(":") ? 1 : null;
-  }
-  const addr = t.slice(0, slash);
-  const prefix = Number(t.slice(slash + 1));
-  const family = addr.includes(":") ? 128 : isIPv4(addr) ? 32 : null;
-  if (family == null) return null;
-  if (!Number.isInteger(prefix) || prefix < 0 || prefix > family) return null;
-  const hostBits = family - prefix;
-  if (hostBits > MAX_CIDR_HOST_BITS) return null;
-  return 2 ** hostBits;
-}
-
-/** 대상 원문에서 개별 IP 수를 센다. 하나라도 못 읽으면 null. */
-export function countTargetIPs(targets: string[]): number | null {
-  let total = 0;
-  for (const raw of targets) {
-    const t = raw.trim();
-    if (!t) continue;
-    const n = countOneTarget(t);
-    if (n == null) return null;
-    total += n;
-  }
-  return total > 0 ? total : null;
-}
-
-function toPort(s: string): number | null {
-  const n = Number(s.trim());
-  if (!Number.isInteger(n) || n < 1 || n > 65535) return null;
-  return n;
-}
-
-/**
- * 포트 사양이 펼쳐질 개수의 **상한**. 프리셋 개수는 서버가 준 목록에서만 읽고,
- * 모르는 토큰이 하나라도 있으면 null이다(추측하지 않는다).
- */
-export function countSpecPorts(
-  spec: string,
-  presets: PortPreset[],
-): number | null {
-  const tokens = spec
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  if (tokens.length === 0) return null;
-
-  let total = 0;
-  for (const token of tokens) {
-    const preset = presets.find((p) => p.name === token.toLowerCase());
-    if (preset) {
-      total += preset.count;
-      continue;
-    }
-    const dash = token.indexOf("-");
-    if (dash > 0) {
-      const start = toPort(token.slice(0, dash));
-      const end = toPort(token.slice(dash + 1));
-      if (start == null || end == null || start > end) return null;
-      total += end - start + 1;
-      continue;
-    }
-    if (toPort(token) == null) return null;
-    total += 1;
-  }
-  // 합집합이므로 전체 포트 공간을 넘을 수 없다.
-  return total > 0 ? Math.min(total, 65535) : null;
-}
-
-export interface SweepEstimate {
-  ipCount: number;
-  portCount: number;
-  totalEndpoints: number;
-  seconds: number;
-  days: number;
-  /** 서버가 422로 거부할 구간(ETA > max_days). */
-  exceedsLimit: boolean;
-  /** 판정에 쓴 서버 상한(일). 화면 문구가 이 숫자를 그대로 쓴다. */
-  maxDays: number;
-}
-
-/**
- * 생성 전 미리보기. 서버 계산식과 같다 — ETA(초) = 총 엔드포인트 / rate_pps.
- * 대상·포트를 못 읽거나 **서버 기본값을 아직 못 받았으면** null이다
- * (화면은 "—"로 비운다). 모르는 값을 상수로 메우면 미리보기가 조용히 거짓말한다.
- */
-export function estimateSweep(
-  targets: string[],
-  spec: string,
-  presets: PortPreset[],
-  ratePPS: number | null,
-  maxDays: number | null,
-): SweepEstimate | null {
-  const ipCount = countTargetIPs(targets);
-  const portCount = countSpecPorts(spec, presets);
-  if (ipCount == null || portCount == null) return null;
-  if (ratePPS == null || ratePPS <= 0 || maxDays == null || maxDays <= 0) return null;
-  const totalEndpoints = ipCount * portCount;
-  const seconds = totalEndpoints / ratePPS;
-  const days = seconds / 86400;
-  return {
-    ipCount,
-    portCount,
-    totalEndpoints,
-    seconds,
-    days,
-    exceedsLimit: days > maxDays,
-    maxDays,
-  };
-}
+// 규모·소요 **계산은 여기 없다** — 서버의 POST /discovery/scans/preview가 정본이다.
+// 예전에는 CIDR 호스트 수·포트 사양 개수를 프론트가 따로 세어 미리보기를 그렸는데,
+// 파서를 둘 두면 반드시 갈라진다. 아래는 서버가 준 숫자를 사람이 읽는 표기로
+// 바꾸는 것뿐이다.
 
 /** 서버 메시지와 같은 표기 규칙 — 10일 미만은 소수 1자리, 그 이상은 정수. */
 function roundDays(days: number): string {
