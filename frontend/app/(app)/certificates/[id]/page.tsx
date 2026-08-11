@@ -194,8 +194,9 @@ export default function CertificateDetailPage() {
           상태 뱃지는 만료 임박을 우선 표시하므로 replaced가 가려질 수 있다.
           교체 여부는 "이 알림·집계를 무시해도 되는가"를 가르는 사실이라 따로 세운다.
         */}
+        {/* 교체됨은 위험·주의·정상 어느 쪽도 아닌 "지나간 사실"이라 중립 톤이다. */}
         {c.status === "replaced" && (
-          <Badge className="border border-slate-200 bg-slate-100 text-slate-600">
+          <Badge variant="outline" className="bg-muted text-muted-foreground">
             교체됨
           </Badge>
         )}

@@ -282,7 +282,7 @@ function KpiBand({ summary: s }: { summary: CertificateSummary }) {
           <div
             className={cn(
               "mt-1 font-mono text-xl font-semibold tracking-tight tabular-nums",
-              k.danger && "text-red-600",
+              k.danger && "text-danger",
             )}
           >
             {k.value.toLocaleString()}

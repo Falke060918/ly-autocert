@@ -209,7 +209,7 @@ export default function NotificationsPage() {
               <TabsTrigger key={t.value} value={t.value}>
                 {t.label}
                 {t.value === "unread" && unread > 0 && (
-                  <span className="ml-1.5 rounded-full bg-red-600 px-1.5 text-[10px] leading-4 font-medium text-white tabular-nums">
+                  <span className="ml-1.5 rounded-full bg-danger px-1.5 text-[10px] leading-4 font-medium text-danger-foreground tabular-nums">
                     {unread > 99 ? "99+" : unread}
                   </span>
                 )}
@@ -306,7 +306,7 @@ function NotificationRow({
       <span
         aria-hidden
         className={`mt-2 size-1.5 shrink-0 rounded-full ${
-          isUnread ? "bg-red-600" : "bg-transparent"
+          isUnread ? "bg-danger" : "bg-transparent"
         }`}
       />
       <div className="min-w-0 flex-1 space-y-1">

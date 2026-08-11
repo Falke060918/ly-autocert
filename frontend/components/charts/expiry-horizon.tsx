@@ -60,8 +60,8 @@ function shortDay(ms: number): string {
 }
 
 function barFillClass(startDay: number): string {
-  if (startDay < 7) return "fill-red-600";
-  if (startDay < 30) return "fill-amber-500";
+  if (startDay < 7) return "fill-danger";
+  if (startDay < 30) return "fill-warn";
   return "fill-chart-2";
 }
 
@@ -157,13 +157,13 @@ export function ExpiryHorizonHero({
                   x2="0"
                   y2="8"
                   strokeWidth="1.5"
-                  className="stroke-red-600/20"
+                  className="stroke-danger/20"
                 />
               </pattern>
             </defs>
 
             {/* 과거 영역 — 빗금으로 "이미 지났음"을 표시 */}
-            <rect x="0" y="0" width={EXPIRED_W} height={BASE_Y} className="fill-red-600/5" />
+            <rect x="0" y="0" width={EXPIRED_W} height={BASE_Y} className="fill-danger/5" />
             <rect x="0" y="0" width={EXPIRED_W} height={BASE_Y} fill="url(#expired-hatch)" />
 
             {/* +30/+60/+90일 경계 그리드 (1일 = 10 단위) */}
@@ -198,7 +198,7 @@ export function ExpiryHorizonHero({
                 width="56"
                 height={barH(summary.expired)}
                 className={cn(
-                  "fill-red-600 transition-opacity",
+                  "fill-danger transition-opacity",
                   hover && hover.kind !== "expired" && "opacity-50",
                 )}
               />
@@ -287,7 +287,7 @@ export function ExpiryHorizonHero({
                 <>
                   <div className="flex items-baseline gap-2">
                     <span className="text-xs font-medium">이미 만료</span>
-                    <span className="ml-auto font-mono text-xs font-semibold text-red-600 tabular-nums">
+                    <span className="ml-auto font-mono text-xs font-semibold text-danger tabular-nums">
                       {summary.expired}건
                     </span>
                   </div>
