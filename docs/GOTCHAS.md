@@ -22,13 +22,9 @@ Fix: document new variables in docs/manual/INSTALL.md·SENSOR.md, wire them thro
 
 ## Agents & delegation
 
-**Agent spawns idle when given a `name`, and the transcript misreports parallelism**
-Cause: named spawns (background AND sync) route through the teammate mailbox and never receive their instructions; separately tool_result always reports `"status":"async_launched"` and `isSidechain:true` never appears.
-Fix: spawn subagents unnamed and verify outputs (files/commits) instead of trusting idle notifications; judge parallelism only by overlapping async_launched→notification intervals. (last recurrence: 2026-08)
-
-**Two agents in one working tree smear the commit boundaries**
-Cause: an unfinished edit from agent A is sitting in the tree when agent B stages and commits, so B's commit carries A's half-done change — neither commit is reviewable or revertable on its own.
-Fix: isolate any parallel work that could touch the same files in its own git worktree; keep same-tree delegation strictly sequential. (last recurrence: 2026-08)
+**A named agent spawn idles, the transcript misreports parallelism, and two agents in one tree smear the commits**
+Cause: named spawns (background AND sync) route through the teammate mailbox and never receive their instructions; tool_result always reports `"status":"async_launched"` and `isSidechain:true` never appears; and an unfinished edit from agent A is still in the tree when agent B stages, so B's commit carries A's half-done change — neither commit is reviewable on its own.
+Fix: spawn subagents unnamed and verify outputs (files/commits) instead of trusting idle notifications; judge parallelism only by overlapping async_launched→notification intervals; isolate parallel work that can touch the same files in its own git worktree and keep same-tree delegation sequential. (last recurrence: 2026-08)
 
 ## Backend, DB & tests
 
@@ -91,6 +87,10 @@ Fix: flip the reverse proxy and `SESSION_COOKIE_SECURE` together; enable HSTS on
 **`page_size` over 200 is a 400, and every local check stays green**
 Cause: every list endpoint caps `page_size` at 200; the dashboard asked for 500 inside a `Promise.all`, so one rejected fetch took the whole screen down to an error alert — tsc, lint, unit tests and `next build` all pass because the limit lives on the server.
 Fix: keep bulk reads at ≤200 or loop pages with a hard page ceiling (dashboard expiry horizon: 200 × 3 pages). (last recurrence: 2026-08)
+
+**Two views sharing one set of URL query params (sort/filter/page) turn a view switch into a 400**
+Cause: the list view and the server view have different sort-key whitelists, so a `sort` value that is only valid in one of them leaks into the other when the URL survives the switch, and the server rejects the request.
+Fix: namespace the second view's params with a prefix (`srv_`) so nothing carries over; share a param only when both views actually accept the same value set. (last recurrence: 2026-08)
 
 **A fresh worktree typechecks against a fake `tsc`, and `frontend/AGENTS.md` is not in the repo**
 Cause: with no `node_modules`, `npx tsc` fetches an unrelated package instead of the project's TypeScript; even after `npm install`, Next's generated global types (`LayoutProps` and friends) exist only once `npx next typegen` has run; and `frontend/AGENTS.md` is gitignored with generation off (`agentRules: false`), so a delegation prompt that points at it sends the agent to a file a fresh checkout does not have.
