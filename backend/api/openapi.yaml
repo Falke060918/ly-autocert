@@ -183,7 +183,7 @@ paths:
             enum: [weak_key, key_deprecated_2030, key_strong, ed25519_key,
                    weak_signature, no_san, wildcard, wildcard_broad,
                    wildcard_multi_label, long_validity, expired_ca, self_signed,
-                   chain_anomaly, legacy_tls]
+                   chain_anomaly, legacy_tls, incomplete_chain]
         - name: sort
           in: query
           description: 정렬 필드 (기본 not_after)
@@ -370,7 +370,7 @@ paths:
             enum: [weak_key, key_deprecated_2030, key_strong, ed25519_key,
                    weak_signature, no_san, wildcard, wildcard_broad,
                    wildcard_multi_label, long_validity, expired_ca, self_signed,
-                   chain_anomaly, legacy_tls]
+                   chain_anomaly, legacy_tls, incomplete_chain]
         - name: sort
           in: query
           description: 정렬 필드 (기본 not_after)
@@ -2148,15 +2148,16 @@ components:
           enum: [weak_key, key_deprecated_2030, key_strong, ed25519_key,
                  weak_signature, no_san, wildcard, wildcard_broad,
                  wildcard_multi_label, long_validity, expired_ca, self_signed,
-                 chain_anomaly, legacy_tls]
+                 chain_anomaly, legacy_tls, incomplete_chain]
         severity: { $ref: "#/components/schemas/RiskSeverity" }
         scope:
           type: string
           enum: [certificate, location]
           description: >
             판정 대상 축. certificate는 인증서 자체의 속성이고 location은 인증서가
-            설치된 위치(엔드포인트)의 속성이다 — 조치 주체가 다르다. legacy_tls는
-            인증서를 재발급해도 해결되지 않고 서버 설정을 고쳐야 한다.
+            설치된 위치(엔드포인트)의 속성이다 — 조치 주체가 다르다. legacy_tls·
+            incomplete_chain은 인증서를 재발급해도 해결되지 않고 서버 설정·배포를
+            고쳐야 한다.
         title: { type: string, description: 화면 표시용 짧은 항목 이름 }
         public_trust_only:
           type: boolean
@@ -2196,7 +2197,7 @@ components:
           enum: [weak_key, key_deprecated_2030, key_strong, ed25519_key,
                  weak_signature, no_san, wildcard, wildcard_broad,
                  wildcard_multi_label, long_validity, expired_ca, self_signed,
-                 chain_anomaly, legacy_tls]
+                 chain_anomaly, legacy_tls, incomplete_chain]
         severity: { $ref: "#/components/schemas/RiskSeverity" }
         scope: { type: string, enum: [certificate, location] }
         title: { type: string }

@@ -274,3 +274,30 @@ func legacyTLSRule(locs []LocationInput) (string, bool) {
 		"이 인증서를 제공하는 위치가 %s로 협상합니다. 해당 버전은 폐기됐으므로(RFC 8996) 서버 설정에서 TLS 1.2 이상만 허용하십시오.",
 		strings.Join(versions, " / ")), true
 }
+
+// incompleteChainRule은 중간 CA 누락(풀체인 미배포) 판정이다 — 위치 축이다.
+// 인증서를 재발급해도 해결되지 않고 서버에 중간 CA를 함께 배포해야 한다.
+//
+// 판정 근거는 **그 엔드포인트가 제시한 체인만**이다 (0018 chain_complete).
+// 인벤토리의 다른 인증서로 보완하면 판정이 무의미해진다 — 다른 서버가 제시한
+// 중간 CA가 인벤토리에 있다는 이유로 체인이 완성돼 보이던 것이 0018 이전 상태다.
+// 브라우저는 AIA로 자동 보완하지만 curl·Java·Python·모바일 클라이언트는 즉시 실패한다.
+//
+// ChainComplete가 nil인 위치(0018 이전 관측·파일 업로드)는 **판정하지 않는다** —
+// 모르는 것을 danger로 띄우지 않는 것이 이 엔진의 원칙이다.
+// removed 위치를 빼는 것은 다른 위치 축 규칙과 같다.
+func incompleteChainRule(locs []LocationInput) (string, bool) {
+	n := 0
+	for _, l := range locs {
+		if l.Removed || l.ChainComplete == nil || *l.ChainComplete {
+			continue
+		}
+		n++
+	}
+	if n == 0 {
+		return "", false
+	}
+	return fmt.Sprintf(
+		"이 인증서를 제공하는 위치 %d곳이 중간 CA를 함께 제시하지 않습니다. 브라우저는 자동 보완하지만 curl·Java·Python·모바일 클라이언트는 검증에 실패하므로, 서버에 중간 CA를 포함한 전체 체인을 배포하십시오.",
+		n), true
+}
