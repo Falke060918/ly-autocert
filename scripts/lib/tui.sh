@@ -9,6 +9,7 @@
 #   tui_multi    화살표 다중 선택       → TUI_SELECTED (줄바꿈 구분) / TUI_SELECTED_IDX
 #   tui_confirm  예/아니오              → 종료코드 0(예)/1(아니오)
 #   tui_input    한 줄 입력             → TUI_ANSWER
+#   tui_browse   디렉터리 트리 탐색     → TUI_PATH (취소는 1)
 #
 # 입력 모드는 3단계다.
 #   raw   — 제어 터미널이 있고 ANSI/1문자 읽기가 되는 경우. 화살표·스페이스로 조작.
@@ -29,6 +30,7 @@ TUI_VALUE=""
 TUI_SELECTED=""
 TUI_SELECTED_IDX=""
 TUI_ANSWER=""
+TUI_PATH=""
 
 # --- 초기화 --------------------------------------------------------------
 
@@ -419,5 +421,192 @@ tui_input() {
 			TUI_ANSWER=$ans
 			return 0
 		fi
+	done
+}
+
+# --- 디렉터리 탐색 -------------------------------------------------------
+
+# 디렉터리를 절대경로로 정규화해 출력한다. 들어갈 수 없으면 1.
+_tui_browse_dir_abs() {
+	local p=$1
+	[ -d "$p" ] || return 1
+	( cd -- "$p" 2>/dev/null && pwd ) || return 1
+}
+
+# 파일 경로를 절대경로로 정규화해 출력한다. 상위 디렉터리 기준으로만 푼다.
+_tui_browse_file_abs() {
+	local p=$1 d b
+	b=${p##*/}
+	d=${p%/*}
+	[ -n "$d" ] || d=/
+	[ "$d" != "$p" ] || d=.
+	d=$( cd -- "$d" 2>/dev/null && pwd ) || return 1
+	case "$d" in
+		/) printf '/%s\n' "$b" ;;
+		*) printf '%s/%s\n' "$d" "$b" ;;
+	esac
+}
+
+# tui_browse START_DIR PATTERN
+#   PATTERN — 선택 대상 파일의 glob(예: .env). 디렉터리는 패턴과 무관하게 보인다.
+# 결과: TUI_PATH(선택된 절대경로) / 취소는 TUI_PATH 비우고 return 1.
+# 화면 하나가 디렉터리 하나이고, 항목 구성은 tui_select 위에 얹는다.
+# shellcheck disable=SC2034 # TUI_PATH는 source 하는 쪽(install.sh)이 읽는다
+tui_browse() {
+	local start=${1:-} pat=${2:-*}
+	local cur base ans next name entry
+	local files=() dirs=() labels=() acts=() payloads=()
+	local nfiles ndirs nlab total page=0 page_size=40
+	local from to i idx steps=0 max_steps=500
+
+	TUI_PATH=""
+
+	# 비대화 모드에서는 탐색기를 띄우지 않는다 — 호출 측이 자동 탐지·플래그로 정한다.
+	if [ "$TUI_MODE" = "none" ] || [ -n "$TUI_ASSUME_YES" ]; then
+		return 1
+	fi
+
+	cur=$(_tui_browse_dir_abs "$start") || cur=""
+	if [ -z "$cur" ]; then cur=$(_tui_browse_dir_abs "$PWD") || cur="/"; fi
+
+	while :; do
+		# 입력이 EOF면 tui_select가 기다리지 않고 기본값을 돌려주므로 화면 수를
+		# 제한하지 않으면 설치가 무한 루프에 빠진다.
+		steps=$((steps + 1))
+		if [ "$steps" -gt "$max_steps" ]; then
+			ui_warn "탐색을 너무 오래 반복해 중단한다."
+			TUI_PATH=""
+			return 1
+		fi
+
+		# 루트에서는 "$cur/*"가 "//*"가 되므로 접두어를 따로 둔다.
+		base=$cur
+		if [ "$base" = "/" ]; then base=""; fi
+
+		files=(); dirs=(); nfiles=0; ndirs=0
+		if [ -r "$cur" ] && [ -x "$cur" ]; then
+			for entry in "$base"/* "$base"/.*; do
+				[ -e "$entry" ] || continue
+				name=${entry##*/}
+				case "$name" in . | ..) continue ;; esac
+				if [ -d "$entry" ]; then
+					dirs[ndirs]=$name
+					ndirs=$((ndirs + 1))
+				else
+					# 패턴은 glob으로 쓰려는 것이라 일부러 따옴표를 두르지 않는다.
+					# shellcheck disable=SC2254
+					case "$name" in
+						$pat)
+							files[nfiles]=$name
+							nfiles=$((nfiles + 1))
+							;;
+					esac
+				fi
+			done
+		else
+			ui_warn "이 디렉터리는 읽을 수 없다: $cur"
+		fi
+
+		labels=(); acts=(); payloads=(); nlab=0
+		if [ "$cur" != "/" ]; then
+			labels[nlab]="[.. 상위 디렉터리]"; acts[nlab]="up"; payloads[nlab]=""
+			nlab=$((nlab + 1))
+		fi
+
+		# 매칭 파일이 위, 하위 디렉터리가 아래. 많으면 잘라서 다음 페이지로 넘긴다.
+		total=$((nfiles + ndirs))
+		from=$((page * page_size))
+		if [ "$from" -ge "$total" ]; then page=0; from=0; fi
+		to=$((from + page_size))
+		if [ "$to" -gt "$total" ]; then to=$total; fi
+		for ((i = from; i < to; i++)); do
+			if [ "$i" -lt "$nfiles" ]; then
+				name=${files[i]}
+				labels[nlab]="$name"; acts[nlab]="file"; payloads[nlab]="$name"
+			else
+				name=${dirs[i - nfiles]}
+				payloads[nlab]="$name"
+				if [ -r "$base/$name" ] && [ -x "$base/$name" ]; then
+					labels[nlab]="$name/"; acts[nlab]="dir"
+				else
+					labels[nlab]="$name/  [권한 없음]"; acts[nlab]="denied"
+				fi
+			fi
+			nlab=$((nlab + 1))
+		done
+		if [ "$to" -lt "$total" ]; then
+			labels[nlab]="[다음 페이지] ($to/$total)"; acts[nlab]="next"; payloads[nlab]=""
+			nlab=$((nlab + 1))
+		fi
+		# 직접 입력은 항상 마지막에 둔다 — plain 모드에 막다른 길을 만들지 않는다.
+		labels[nlab]="[경로 직접 입력…]"; acts[nlab]="manual"; payloads[nlab]=""
+		nlab=$((nlab + 1))
+		labels[nlab]="[취소]"; acts[nlab]="cancel"; payloads[nlab]=""
+		nlab=$((nlab + 1))
+
+		ui_note "선택 대상: $pat · 디렉터리는 이름을 골라 들어간다"
+		if ! tui_select "현재 위치: $cur" 0 "${labels[@]}"; then
+			return 1
+		fi
+		idx=$TUI_INDEX
+
+		case "${acts[idx]}" in
+			up)
+				next=$(_tui_browse_dir_abs "$cur/..") || next=""
+				if [ -n "$next" ]; then cur=$next; page=0; fi
+				;;
+			dir)
+				next=$(_tui_browse_dir_abs "$base/${payloads[idx]}") || next=""
+				if [ -n "$next" ]; then
+					cur=$next; page=0
+				else
+					ui_warn "들어갈 수 없다: ${payloads[idx]}"
+				fi
+				;;
+			denied)
+				ui_warn "읽기 권한이 없다: ${payloads[idx]}"
+				;;
+			next)
+				page=$((page + 1))
+				;;
+			file)
+				TUI_PATH=$(_tui_browse_file_abs "$base/${payloads[idx]}") || TUI_PATH=""
+				if [ -n "$TUI_PATH" ]; then return 0; fi
+				ui_warn "경로를 확인할 수 없다: ${payloads[idx]}"
+				;;
+			manual)
+				tui_input "경로를 직접 입력한다 (빈 값이면 목록으로)" ""
+				ans=$TUI_ANSWER
+				if [ -z "$ans" ]; then continue; fi
+				# 여기의 ~ 는 확장 대상이 아니라 사용자가 친 글자 그대로다.
+				# shellcheck disable=SC2088
+				case "$ans" in
+					"~") ans=${HOME:-} ;;
+					"~/"*) ans="${HOME:-}/${ans#*/}" ;;
+				esac
+				case "$ans" in
+					/*) : ;;
+					*) ans="$base/$ans" ;;
+				esac
+				if [ -d "$ans" ]; then
+					next=$(_tui_browse_dir_abs "$ans") || next=""
+					if [ -n "$next" ]; then
+						cur=$next; page=0
+					else
+						ui_warn "들어갈 수 없다: $ans"
+					fi
+				elif [ -e "$ans" ]; then
+					TUI_PATH=$(_tui_browse_file_abs "$ans") || TUI_PATH=""
+					if [ -n "$TUI_PATH" ]; then return 0; fi
+					ui_warn "경로를 확인할 수 없다: $ans"
+				else
+					ui_warn "그런 경로가 없다: $ans"
+				fi
+				;;
+			cancel)
+				TUI_PATH=""
+				return 1
+				;;
+		esac
 	done
 }
