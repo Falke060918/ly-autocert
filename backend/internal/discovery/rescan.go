@@ -157,6 +157,9 @@ func (m *Manager) UseRescanOptions(opts RescanOptions) *Manager {
 type RescanSummary struct {
 	// Skipped는 다른 인스턴스가 tick을 도는 중이라 아무것도 하지 않았다는 뜻이다.
 	Skipped bool
+	// Disabled는 'registered' 정기 스캔 설정 행이 꺼져 있어 발주를 건너뛰었다는 뜻이다.
+	// 은퇴·교체 전이는 그대로 돈다 — 둘은 이미 모인 관측을 정리하는 단계다.
+	Disabled bool
 	// Retired는 이번 tick에 은퇴시킨 모니터 수다.
 	Retired int
 	// Claimed는 claim한 엔드포인트 수다(= 이번에 다시 보기로 한 대상).
@@ -270,16 +273,32 @@ func (s *rescanScheduler) runOnce(ctx context.Context) (RescanSummary, error) {
 	var sum RescanSummary
 	var errs []error
 
+	// ⓪ 설정 행 오버라이드. 'registered' 정기 스캔(0019)이 환경변수보다 우선한다.
+	opts, enabled, err := s.settings(ctx)
+	if err != nil {
+		errs = append(errs, err)
+	}
+
 	// ① 은퇴. claim보다 앞이라 이번 tick부터 발주 대상에서 빠진다.
 	// 멱등(retired_at IS NULL 가드)이므로 tick 락 밖이어도 안전하다.
-	retired, err := s.m.store.RetireMissingEndpointMonitors(ctx, s.opts.RetireMisses)
+	retired, err := s.m.store.RetireMissingEndpointMonitors(ctx, opts.RetireMisses)
 	if err != nil {
 		errs = append(errs, err)
 	}
 	sum.Retired = retired
 
 	// ② 발주. claim이 tick 락을 겸한다 — 잡지 못하면 다른 인스턴스가 도는 중이다.
-	due, locked, err := s.m.store.ClaimDueEndpointMonitors(ctx, s.opts.intervals(), s.opts.BatchIPs)
+	// 설정 행이 꺼져 있으면 이 단계만 건너뛴다(③ 전이는 그대로 돈다).
+	if !enabled {
+		sum.Disabled = true
+		res, err := s.reconcile(ctx, opts)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		sum.Replaced, sum.LocationsOnly = res.Replaced, res.LocationsOnly
+		return sum, errors.Join(errs...)
+	}
+	due, locked, err := s.m.store.ClaimDueEndpointMonitors(ctx, opts.intervals(), opts.BatchIPs)
 	if err != nil {
 		errs = append(errs, err)
 	}
@@ -290,7 +309,7 @@ func (s *rescanScheduler) runOnce(ctx context.Context) (RescanSummary, error) {
 	}
 	sum.Claimed = len(due)
 	for _, b := range groupRescanBatches(due) {
-		sensor, err := s.dispatch(ctx, b)
+		sensor, err := s.dispatch(ctx, b, opts)
 		if err != nil {
 			if ctx.Err() == nil {
 				// 대상 원문은 감사에 이미 있다 — 로그에는 사유와 규모만 남긴다.
@@ -308,15 +327,53 @@ func (s *rescanScheduler) runOnce(ctx context.Context) (RescanSummary, error) {
 	}
 
 	// ③ 교체 전이. 관측 트랜잭션 밖의 별도 배치다 (설계 8.5·10.2).
-	res, err := s.m.store.ReconcileReplacedCertificates(ctx, store.ReplacementOptions{
-		ConfirmThreshold: s.opts.ReplaceConfirm,
-	})
+	res, err := s.reconcile(ctx, opts)
 	if err != nil {
 		errs = append(errs, err)
 	}
 	sum.Replaced = res.Replaced
 	sum.LocationsOnly = res.LocationsOnly
 	return sum, errors.Join(errs...)
+}
+
+// reconcile은 교체 확정 배치를 돌린다 (③ 단계 — 발주를 건너뛴 tick도 이건 한다).
+func (s *rescanScheduler) reconcile(ctx context.Context, opts RescanOptions) (store.ReplacementSummary, error) {
+	res, err := s.m.store.ReconcileReplacedCertificates(ctx, store.ReplacementOptions{
+		ConfirmThreshold: opts.ReplaceConfirm,
+	})
+	if err != nil {
+		return store.ReplacementSummary{}, err
+	}
+	return res, nil
+}
+
+// settings는 이번 tick에 적용할 설정과 발주 활성 여부를 정한다.
+//
+// 'registered' 정기 스캔 행(0019)이 정본이고 환경변수(RESCAN_*)는 그 행이 비워 둔
+// 값의 기본치다 — 화면에서 끄거나 주기를 바꾼 것이 재기동 없이 먹어야 한다.
+//
+// **만료 임박 가속 티어는 오버라이드하지 않는다**(설계 3.1의 상수 그대로다).
+// 설정 행이 바꾸는 것은 전역 기본 주기·발주 레이트뿐이고, 임박 구간은 오탐 창을
+// 막기 위한 안전장치라 운영자가 실수로 늘릴 수 있는 표면에 두지 않는다.
+//
+// 행이 없거나 조회에 실패하면 환경변수 설정 그대로 돈다 — 정기 스캔 설정을 읽지
+// 못했다고 재스캔이 멈추면 인벤토리 신선도가 조용히 죽는다.
+func (s *rescanScheduler) settings(ctx context.Context) (RescanOptions, bool, error) {
+	opts := s.opts
+	sc, err := s.m.store.GetScanScheduleByKind(ctx, store.ScheduleKindRegistered)
+	if errors.Is(err, store.ErrScanScheduleNotFound) {
+		return opts, true, nil
+	}
+	if err != nil {
+		return opts, true, err
+	}
+	if sc.IntervalSeconds != nil && *sc.IntervalSeconds > 0 {
+		opts.Interval = time.Duration(*sc.IntervalSeconds) * time.Second
+	}
+	if sc.RatePPS != nil && *sc.RatePPS > 0 {
+		opts.RatePPS = *sc.RatePPS
+	}
+	return opts, sc.Enabled, nil
 }
 
 // rescanBatch는 발주 단위 1건이다 — 같은 실행 스코프·같은 포트의 IP 묶음.
@@ -352,7 +409,8 @@ func groupRescanBatches(due []store.DueEndpointMonitor) []rescanBatch {
 
 // dispatch는 배치 1건을 발주하고, 서버 스코프면 인프로세스 실행까지 건다.
 // 센서 스코프면 true를 반환한다(발주만 하고 끝 — 센서가 pull 리스로 가져간다).
-func (s *rescanScheduler) dispatch(ctx context.Context, b rescanBatch) (sensor bool, err error) {
+// opts는 이번 tick의 유효 설정이다(설정 행 오버라이드가 반영된 값).
+func (s *rescanScheduler) dispatch(ctx context.Context, b rescanBatch, opts RescanOptions) (sensor bool, err error) {
 	endpoints, err := Expand(b.ips, []int{b.port})
 	if err != nil {
 		return false, err
@@ -368,8 +426,8 @@ func (s *rescanScheduler) dispatch(ctx context.Context, b rescanBatch) (sensor b
 		Port:        b.port,
 		SensorID:    sensorID,
 		TimeoutMs:   int(rescanTimeout / time.Millisecond),
-		Concurrency: s.opts.Concurrency,
-		RatePPS:     s.opts.RatePPS,
+		Concurrency: opts.Concurrency,
+		RatePPS:     opts.RatePPS,
 	})
 	if err != nil {
 		return false, err
@@ -386,7 +444,7 @@ func (s *rescanScheduler) dispatch(ctx context.Context, b rescanBatch) (sensor b
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		s.m.run(ctx, jobID, endpoints, s.opts.Concurrency, rescanTimeout, NewRateLimiter(s.opts.RatePPS))
+		s.m.run(ctx, jobID, endpoints, opts.Concurrency, rescanTimeout, NewRateLimiter(opts.RatePPS))
 	}()
 	return false, nil
 }

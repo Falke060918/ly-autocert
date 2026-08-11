@@ -40,6 +40,9 @@ type Server struct {
 	// rescan은 주기 재스캔 스케줄러다. nil이면 상태 조회가 "미배선"으로 답하고
 	// 수동 1배치 실행은 503이다 (06-rescan-and-replacement 11.2).
 	rescan RescanController
+	// schedules는 정기 스캔 스케줄러다(0019). nil이면 조회·설정 변경은 그대로
+	// 동작하고 '지금 실행'·취소만 503이다 — 재스캔과 같은 실패 격리 규약이다.
+	schedules ScheduleController
 	// sensorGatewayPort는 센서 등록 명령 예시에 넣을 게이트웨이 포트다.
 	// 기본값은 defaultSensorGatewayPort이고 WithSensorGatewayPort가 덮어쓴다.
 	sensorGatewayPort string
@@ -77,6 +80,13 @@ func WithSweepDefaults(d SweepDefaults) Option {
 // POST /discovery/rescan/run은 503이다 — 코어 API는 그대로 뜬다.
 func WithRescanController(c RescanController) Option {
 	return func(s *Server) { s.rescan = c }
+}
+
+// WithScheduleController는 정기 스캔 스케줄러를 주입한다 (0019).
+// 주입하지 않으면 GET /discovery/schedules는 wired=false로 답하고
+// '지금 실행'·실행 취소는 503이다 — 조회·설정 변경은 그대로 동작한다.
+func WithScheduleController(c ScheduleController) Option {
+	return func(s *Server) { s.schedules = c }
 }
 
 // WithSensorGatewayPort는 SENSOR_LISTEN_ADDR에서 파생한 실제 게이트웨이 포트를 주입한다.
@@ -202,6 +212,17 @@ func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorC
 	// 수동 1배치 발주는 스캔 발주와 같은 3역할 — 새 역할 집합을 만들지 않는다.
 	s.protected("GET /api/v1/discovery/rescan/status", s.handleGetRescanStatus, domain.AllRoles...)
 	s.protected("POST /api/v1/discovery/rescan/run", s.handleRunRescan,
+		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
+	// 정기 스캔 스케줄 (0019). 조회는 읽기 전용이라 전 역할, 설정 변경·실행·취소는
+	// 스캔 발주와 같은 3역할이다 — 새 역할 집합을 만들지 않는다.
+	// 변경 3종은 discovery.schedule 감사 이벤트를 store가 같은 트랜잭션으로 남긴다.
+	// 리터럴 세그먼트(runs)가 {id}보다 우선 매칭된다 (Go 1.22+ ServeMux 규칙).
+	s.protected("GET /api/v1/discovery/schedules", s.handleListScanSchedules, domain.AllRoles...)
+	s.protected("PATCH /api/v1/discovery/schedules", s.handleUpdateScanSchedule,
+		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
+	s.protected("POST /api/v1/discovery/schedules/{id}/run", s.handleRunScanSchedule,
+		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
+	s.protected("POST /api/v1/discovery/schedules/runs/{id}/cancel", s.handleCancelScanScheduleRun,
 		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
 	// 알림함 (05-notifications 9.1) — 전 역할. 본인 것만 강제 필터하며 남의 행은 404다.
 	// 읽음·보관은 감사 이벤트를 남기지 않는다 (설계 12 ① — handlers_notifications.go 참조).
