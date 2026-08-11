@@ -59,6 +59,11 @@ ENV_FILE="$ROOT_DIR/.env"
 COMPOSE_FILE="$ROOT_DIR/docker-compose.yml"
 COMPOSE_HTTPS_FILE="$ROOT_DIR/docker-compose.https.yml"
 VERSION_FILE="$ROOT_DIR/VERSION"
+# 서버 인증서·개인키. 어떤 패키지에도 들어 있지 않은 **고객사 파일**이라
+# 신버전 디렉터리에는 기본적으로 없다(업그레이드 때 승계해야 한다).
+TLS_DIR="$ROOT_DIR/deploy/tls"
+TLS_CRT="$TLS_DIR/server.crt"
+TLS_KEY="$TLS_DIR/server.key"
 
 DEFAULT_FRONTEND_PORT=3000
 DEFAULT_BACKEND_PORT=8080
@@ -74,6 +79,7 @@ CHECK_ONLY=""
 SKIP_LOAD=""
 FORCE_BUILD=""
 REQUESTED_MODE=""
+REQUESTED_SCHEME=""
 
 ENV_TMP=""
 COMPOSE_VERSION=""
@@ -1123,6 +1129,9 @@ print_done() {
 		ui_step "접속 주소:  ${CFG_SCHEME}://${host}:${webport}"
 	fi
 	ui_info "브라우저로 열어 첫 화면에서 관리자 계정을 만든다 (초기 비밀번호 같은 건 없다)."
+	if scheme_is_https; then
+		ui_note "HSTS는 고객사의 신뢰된 인증서가 설치된 뒤에 켠다 — 자체 서명 상태에서 켜면 콘솔이 잠긴다."
+	fi
 	ui_blank
 
 	ui_step "방화벽에서 열 포트"
@@ -1247,78 +1256,58 @@ persist_scheme() {
 	fi
 }
 
-# --- 모드 --------------------------------------------------------------------
+# --- 접속 방식 문답과 TLS 자산 ------------------------------------------------
+#
+# 접속 방식은 HTTP / HTTPS **2지선다**다. "둘 다 동시 서비스"는 제공하지 않는다 —
+# 평문 경로를 열어 두는 순간 그쪽이 상용 경로가 되어 TLS가 장식이 되기 때문이다.
+# HTTPS 구성은 80→443 리다이렉트를 이미 포함하므로 실사용에 불편이 없다.
 
-mode_install() {
-	ui_title "서버 설치"
-	ensure_source_tree
-	ensure_images
+# HTTPS를 고를 수 있는 환경인가 — 오버레이 파일과 compose 버전 둘 다 필요하다.
+https_supported() {
+	[ -f "$COMPOSE_HTTPS_FILE" ] || return 1
+	[ -n "$COMPOSE_HTTPS_OK" ] || return 1
+	return 0
+}
 
-	env_open
-	persist_project_name
-	collect_our_ports
-	ask_ports
-	ask_sensor
-	inject_trusted_proxies
-	ensure_postgres_password
-	persist_scheme
-	ensure_notify_base_url
-	env_commit
+tls_assets_present() { [ -s "$TLS_CRT" ] && [ -s "$TLS_KEY" ]; }
 
-	compose_up
-	fix_trusted_proxies_after_up
-	if wait_health; then
-		print_done
+# install·patch·reconfigure가 공유하는 접속 방식 문답. 여기서 CFG_SCHEME이 확정되고,
+# 그 값이 dc()·ensure_notify_base_url·print_done을 지배한다 — compose_up보다 앞이어야 한다.
+ask_scheme() {
+	local want=$CFG_SCHEME def=0
+
+	if [ -n "$REQUESTED_SCHEME" ]; then
+		want=$REQUESTED_SCHEME
+	elif ! https_supported; then
+		# 고를 수 없는 선택지는 보여주지 않는다.
+		if scheme_is_https; then
+			ui_warn "HTTPS 구성이었으나 이 환경에서는 오버레이를 쓸 수 없다(compose ${COMPOSE_VERSION:-?} / 필요: ${COMPOSE_HTTPS_MIN} 이상)."
+		fi
+		want=http
+		ui_note "접속 방식: HTTP (이 환경에서는 HTTPS를 구성할 수 없다)"
 	else
-		exit 1
+		if scheme_is_https; then def=1; fi
+		tui_select "콘솔 접속 방식을 정한다 (한 가지만 쓴다)" "$def" \
+			"HTTP — 평문. 폐쇄망 내부에서만 쓴다" \
+			"HTTPS — nginx가 TLS를 종단한다(80은 443으로 되돌린다). 서버 인증서·개인키가 필요하다"
+		if [ "$TUI_INDEX" -eq 1 ]; then want=https; else want=http; fi
+	fi
+
+	set_scheme "$want"
+
+	if scheme_is_https && ! ensure_tls_assets; then
+		ui_warn "HTTPS에 필요한 인증서를 확보하지 못했다 — HTTP 구성으로 진행한다."
+		set_scheme http
+	fi
+
+	if scheme_is_https; then
+		apply_https_settings
+	else
+		apply_http_settings
 	fi
 }
 
-mode_reconfigure() {
-	ui_title "설정 변경·재기동"
-	ensure_source_tree
-	ensure_images
-	env_open
-	persist_project_name
-	collect_our_ports
-	ask_ports
-	ask_sensor
-	inject_trusted_proxies
-	ensure_postgres_password
-	persist_scheme
-	ensure_notify_base_url
-	env_commit
-
-	compose_up
-	fix_trusted_proxies_after_up
-	if wait_health; then
-		ui_ok "재기동 완료"
-		print_done
-	else
-		exit 1
-	fi
-}
-
-mode_https() {
-	ui_title "HTTPS 적용"
-	# deploy/tls 는 소스 아카이브 안에 있다 — 인증서를 두기 전에 트리가 있어야 한다.
-	ensure_source_tree
-	if [ -z "$COMPOSE_HTTPS_OK" ]; then
-		ui_warn "compose ${COMPOSE_VERSION:-?} 는 ports: !override 를 지원하지 않는다(필요: ${COMPOSE_HTTPS_MIN} 이상)."
-		ui_info "compose를 올리거나 docs/manual/TLS.md 의 수동 절차를 따른다."
-		return 1
-	fi
-	if [ ! -f "$ROOT_DIR/deploy/tls/server.crt" ] || [ ! -f "$ROOT_DIR/deploy/tls/server.key" ]; then
-		ui_err "deploy/tls/server.crt 와 server.key 가 필요하다."
-		ui_info "서버 인증서와 개인키를 그 이름으로 두고 다시 실행한다 (절차: docs/manual/TLS.md)."
-		ui_info "개인키 권한은 600으로 둔다."
-		return 1
-	fi
-
-	set_scheme https
-	env_open
-	persist_project_name
-	collect_our_ports
+apply_https_settings() {
 	local hp rp
 	hp=$(value_for HTTPS_PORT "443")
 	rp=$(value_for HTTP_REDIRECT_PORT "80")
@@ -1333,21 +1322,291 @@ mode_https() {
 	# TLS 종단 뒤에서만 켠다 — 평문 HTTP로 접속하면 브라우저가 Secure 쿠키를 버려
 	# 로그인이 조용히 실패한다(GOTCHAS / TLS.md 7장).
 	env_set SESSION_COOKIE_SECURE "true"
-	CFG_FRONTEND_PORT=$(env_get FRONTEND_PORT); CFG_FRONTEND_PORT=${CFG_FRONTEND_PORT:-$DEFAULT_FRONTEND_PORT}
-	CFG_BACKEND_PORT=$(env_get BACKEND_PORT); CFG_BACKEND_PORT=${CFG_BACKEND_PORT:-$DEFAULT_BACKEND_PORT}
-	CFG_SENSOR_PORT=$(env_get SENSOR_GATEWAY_PORT); CFG_SENSOR_PORT=${CFG_SENSOR_PORT:-$DEFAULT_SENSOR_PORT}
-	if [ -n "$(env_get SENSOR_CA_ENC_KEY)" ]; then CFG_SENSOR_ENABLED=1; fi
+	ask_public_host
+}
+
+apply_http_settings() {
+	local secure
+	secure=$(env_get SESSION_COOKIE_SECURE)
+	case "$secure" in
+		[Tt][Rr][Uu][Ee] | 1)
+			# 위 주석의 반대 방향이다. true인 채로 HTTP를 띄우면 API는 200인데
+			# 브라우저가 쿠키를 버려 로그인 화면만 반복된다.
+			env_set SESSION_COOKIE_SECURE "false"
+			ui_warn "HTTP 구성이라 SESSION_COOKIE_SECURE를 false로 내렸다 (true로 두면 로그인만 조용히 실패한다)."
+			;;
+	esac
+}
+
+# deploy/tls/server.crt·server.key 를 확보한다. 0=확보, 1=확보 실패(HTTP로 내려간다).
+ensure_tls_assets() {
+	mkdir -p "$TLS_DIR" 2>/dev/null || true
+	while :; do
+		if tls_assets_present; then
+			if validate_tls_pair "$TLS_CRT" "$TLS_KEY"; then
+				chmod 600 "$TLS_KEY" 2>/dev/null || true
+				chmod 644 "$TLS_CRT" 2>/dev/null || true
+				ui_ok "서버 인증서 확인: deploy/tls/server.crt · server.key (개인키 권한 600)"
+				return 0
+			fi
+		else
+			ui_warn "deploy/tls/server.crt · server.key 가 없다 — 이 두 파일이 있어야 HTTPS가 뜬다."
+			tls_pfx_hint
+		fi
+
+		if [ "$TUI_MODE" = "none" ] || [ -n "$ASSUME_YES" ]; then
+			ui_info "비대화 모드에서는 인증서를 물어보지 않는다 — 파일을 두고 다시 실행한다."
+			return 1
+		fi
+
+		tui_select "서버 인증서를 어떻게 할까?" 0 \
+			"지금 경로를 지정한다 — deploy/tls/ 로 복사한다" \
+			"직접 파일을 두고 오겠다 — 두고 나서 Enter" \
+			"HTTP로 계속한다"
+		case "$TUI_INDEX" in
+			0) copy_tls_from_paths || true ;;
+			1)
+				ui_info "다른 터미널에서 아래 두 파일을 만들어 두고 돌아온다:"
+				ui_info "  $TLS_CRT   (리프 인증서 + 중간 CA 를 이 순서로 이어붙인 PEM)"
+				ui_info "  $TLS_KEY   (개인키 PEM · 암호 없이 · 권한 600)"
+				tui_input "두었으면 Enter" ""
+				;;
+			*) return 1 ;;
+		esac
+	done
+}
+
+tls_pfx_hint() {
+	have openssl || return 0
+	ui_info ".pfx / .p12 만 있으면 두 줄로 꺼낸다(이 스크립트는 변환하지 않는다):"
+	ui_info "  openssl pkcs12 -in <파일>.pfx -clcerts -nokeys -out server.crt"
+	ui_info "  openssl pkcs12 -in <파일>.pfx -nocerts -nodes  -out server.key"
+}
+
+# 인증서·개인키를 지정 경로에서 deploy/tls/ 로 복사한다.
+copy_tls_from_paths() {
+	local crt key
+	pick_existing_file "서버 인증서 파일(PEM)" "$PWD" '*.crt *.pem *.cer' || return 1
+	crt=$PICKED_PATH
+	[ -f "$crt" ] || { ui_err "그런 파일이 없다: $crt"; return 1; }
+	pick_existing_file "개인키 파일(PEM · 암호 없이)" "$(dirname -- "$crt")" '*.key *.pem' || return 1
+	key=$PICKED_PATH
+	[ -f "$key" ] || { ui_err "그런 파일이 없다: $key"; return 1; }
+
+	validate_tls_pair "$crt" "$key" || return 1
+
+	mkdir -p "$TLS_DIR" || { ui_err "deploy/tls 를 만들지 못했다."; return 1; }
+	cp "$crt" "$TLS_CRT" || { ui_err "인증서 복사에 실패했다."; return 1; }
+	cp "$key" "$TLS_KEY" || { ui_err "개인키 복사에 실패했다."; return 1; }
+	chmod 644 "$TLS_CRT" 2>/dev/null || true
+	chmod 600 "$TLS_KEY" 2>/dev/null || true
+	ui_ok "인증서를 deploy/tls/ 에 복사했다 (개인키 권한 600)"
+	return 0
+}
+
+PICKED_PATH=""
+
+# pick_existing_file 안내문구 시작디렉터리 패턴 → PICKED_PATH
+# 탐색기는 lib/tui.sh의 tui_browse 계약을 쓴다(START_DIR PATTERN → TUI_PATH / 0=선택 1=취소).
+pick_existing_file() {
+	local prompt=$1 start=$2 pattern=$3
+	PICKED_PATH=""
+	if [ "$TUI_MODE" = "none" ] || [ -n "$ASSUME_YES" ]; then return 1; fi
+
+	if command -v tui_browse >/dev/null 2>&1; then
+		tui_select "$prompt" 0 "경로를 직접 입력한다" "파일 목록에서 찾는다"
+		if [ "$TUI_INDEX" -eq 1 ]; then
+			if tui_browse "$start" "$pattern"; then
+				PICKED_PATH=${TUI_PATH:-}
+				[ -n "$PICKED_PATH" ] || return 1
+				return 0
+			fi
+			ui_note "탐색을 취소했다."
+			return 1
+		fi
+	fi
+
+	tui_input "${prompt} 경로" ""
+	PICKED_PATH=$TUI_ANSWER
+	[ -n "$PICKED_PATH" ] || return 1
+	return 0
+}
+
+# 인증서·개인키 검증. **내용은 어디에도 출력하지 않는다** — 만료일과 판정 결과만 알린다.
+validate_tls_pair() {
+	local crt=$1 key=$2 pub_crt pub_key ends
+	[ -s "$crt" ] || { ui_err "인증서 파일이 비어 있다: $crt"; return 1; }
+	[ -s "$key" ] || { ui_err "개인키 파일이 비어 있다: $key"; return 1; }
+
+	# 암호가 걸린 키는 nginx가 기동 중 암호를 물으며 멈춘다 — 컨테이너가 뜨지 않는다.
+	if grep -q 'ENCRYPTED' "$key" 2>/dev/null; then
+		ui_err "개인키에 암호가 걸려 있다 — nginx가 기동 중 멈춘다."
+		ui_info "암호를 푼 사본을 만든다:  openssl rsa -in <키> -out server.key"
+		return 1
+	fi
+
+	if ! have openssl; then
+		ui_warn "openssl 이 없어 인증서 형식·짝 검증을 건너뛴다 — 기동 후 443 응답으로 확인한다."
+		return 0
+	fi
+
+	if ! openssl x509 -in "$crt" -noout >/dev/null 2>&1; then
+		ui_err "인증서가 PEM x509로 읽히지 않는다: $(basename -- "$crt")"
+		ui_info "DER(.cer/.der)이면 변환한다:  openssl x509 -inform der -in <파일> -out server.crt"
+		return 1
+	fi
+
+	ends=$(openssl x509 -in "$crt" -noout -enddate 2>/dev/null | sed 's/^notAfter=//')
+	if ! openssl x509 -in "$crt" -noout -checkend 0 >/dev/null 2>&1; then
+		ui_warn "인증서가 이미 만료됐다 (만료: ${ends:-?}) — 브라우저가 경고를 띄운다."
+	elif ! openssl x509 -in "$crt" -noout -checkend 2592000 >/dev/null 2>&1; then
+		ui_warn "인증서가 30일 안에 만료된다 (만료: ${ends:-?})."
+	else
+		ui_ok "인증서 유효 (만료: ${ends:-?})"
+	fi
+
+	# 짝 검증 — 공개키가 다르면 nginx가 SSL_CTX_use_PrivateKey 에서 기동에 실패한다.
+	pub_crt=$(openssl x509 -in "$crt" -noout -pubkey 2>/dev/null || true)
+	pub_key=$(openssl pkey -in "$key" -pubout 2>/dev/null || true)
+	if [ -z "$pub_crt" ] || [ -z "$pub_key" ]; then
+		ui_warn "인증서와 개인키의 짝을 확인하지 못했다(openssl이 키를 읽지 못했다) — 기동 후 443 응답으로 확인한다."
+		return 0
+	fi
+	if [ "$pub_crt" != "$pub_key" ]; then
+		ui_err "인증서와 개인키가 서로 맞지 않는다(공개키 불일치)."
+		ui_info "같은 CSR로 발급받은 짝인지 확인한다."
+		return 1
+	fi
+	ui_ok "인증서와 개인키가 짝이 맞는다"
+	return 0
+}
+
+# HTTPS 접속 FQDN. 인증서 SAN의 첫 DNS 이름을 기본값으로 제시한다.
+ask_public_host() {
+	local def
+	def=$CFG_PUBLIC_HOST
+	[ -n "$def" ] || def=$(tls_default_host "$TLS_CRT")
+	[ -n "$def" ] || def=$PRIMARY_IP
+
+	if [ "$TUI_MODE" = "none" ] || [ -n "$ASSUME_YES" ]; then
+		CFG_PUBLIC_HOST=$def
+		ui_note "콘솔 접속 주소: ${def} (기본값)"
+		return 0
+	fi
+	tui_input "브라우저로 접속할 주소(FQDN — 서버 인증서와 같은 이름이어야 경고가 없다)" "$def"
+	CFG_PUBLIC_HOST=${TUI_ANSWER:-$def}
+	ui_ok "콘솔 접속 주소: $CFG_PUBLIC_HOST"
+}
+
+# 인증서에서 이름 하나를 뽑는다(SAN의 첫 DNS → 없으면 CN). 그 외 내용은 읽지 않는다.
+tls_default_host() {
+	local crt=$1 name=""
+	have openssl || return 0
+	[ -s "$crt" ] || return 0
+	name=$(openssl x509 -in "$crt" -noout -ext subjectAltName 2>/dev/null |
+		tr ',' '\n' | sed -n 's/^[[:space:]]*DNS:[[:space:]]*//p' | head -1)
+	if [ -z "$name" ]; then
+		name=$(openssl x509 -in "$crt" -noout -subject -nameopt multiline 2>/dev/null |
+			sed -n 's/^[[:space:]]*commonName[[:space:]]*=[[:space:]]*//p' | head -1)
+	fi
+	printf '%s' "$name"
+}
+
+# 기동 후 443이 실제로 응답하는지 본다. 이게 없으면 nginx가 인증서 문제로 죽어도
+# 백엔드·프론트만 확인하고 "완료"가 나온다.
+check_https_endpoint() {
+	scheme_is_https || return 0
+	local port waited=0 limit=45
+	port=$(env_get HTTPS_PORT); port=${port:-443}
+
+	if ! have curl && ! have openssl; then
+		ui_warn "curl·openssl 이 없어 HTTPS(${port}) 확인을 건너뛴다 — 브라우저로 직접 확인한다."
+		return 0
+	fi
+
+	ui_step "HTTPS 응답 확인 (포트 ${port}, 최대 ${limit}초)"
+	while [ "$waited" -lt "$limit" ]; do
+		if https_probe "$port"; then
+			ui_ok "HTTPS 응답 확인 (${waited}초)"
+			return 0
+		fi
+		sleep 3
+		waited=$((waited + 3))
+	done
+
+	ui_err "HTTPS(${port}) 가 응답하지 않는다 — 프록시가 인증서를 읽지 못했을 가능성이 크다."
+	ui_info "로그 확인: docker compose logs proxy --tail=50"
+	ui_info "개인키에 암호가 걸려 있으면 nginx는 기동 중 멈춘다(암호 없는 키가 필요하다)."
+	ui_info "포트 ${port} 를 다른 프로세스가 이미 쓰고 있는지도 확인한다."
+	return 1
+}
+
+https_probe() {
+	local port=$1
+	if have curl; then
+		curl -k -fsS -o /dev/null --max-time 5 "https://127.0.0.1:${port}/" >/dev/null 2>&1
+		return $?
+	fi
+	# 인증서 본문이 화면에 나오지 않도록 출력을 전부 버린다.
+	printf 'Q\n' | openssl s_client -connect "127.0.0.1:${port}" >/dev/null 2>&1
+}
+
+# --- 모드 --------------------------------------------------------------------
+
+mode_install() {
+	ui_title "서버 설치"
+	ensure_source_tree
+	ensure_images
+
+	env_open
+	persist_project_name
+	ask_scheme
+	collect_our_ports
+	ask_ports
+	ask_sensor
+	inject_trusted_proxies
 	ensure_postgres_password
+	persist_scheme
 	ensure_notify_base_url
 	env_commit
 
 	compose_up
-	if wait_health; then
-		print_done
-		ui_note "HSTS는 고객사의 신뢰된 인증서가 설치된 뒤에 켠다 — 자체 서명 상태에서 켜면 콘솔이 잠긴다."
-	else
-		exit 1
-	fi
+	fix_trusted_proxies_after_up
+	if ! wait_health; then exit 1; fi
+	if ! check_https_endpoint; then exit 1; fi
+	print_done
+}
+
+mode_reconfigure() {
+	ui_title "설정 변경·재기동"
+	ensure_source_tree
+	ensure_images
+	env_open
+	persist_project_name
+	ask_scheme
+	collect_our_ports
+	ask_ports
+	ask_sensor
+	inject_trusted_proxies
+	ensure_postgres_password
+	persist_scheme
+	ensure_notify_base_url
+	env_commit
+
+	compose_up
+	fix_trusted_proxies_after_up
+	if ! wait_health; then exit 1; fi
+	if ! check_https_endpoint; then exit 1; fi
+	ui_ok "재기동 완료"
+	print_done
+}
+
+# --mode https 는 "설정 변경·재기동 + HTTPS 선택"의 별칭이다.
+# 인쇄된 매뉴얼과 패키지 MANIFEST에 이미 나가 있는 인자라 계속 받는다.
+mode_https() {
+	ui_warn "--mode https 는 이제 '설정 변경·재기동'의 별칭이다 (같은 뜻: --mode reconfigure --scheme https)."
+	REQUESTED_SCHEME=https
+	mode_reconfigure
 }
 
 ensure_postgres_password() {
