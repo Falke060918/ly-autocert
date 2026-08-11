@@ -167,6 +167,12 @@
   }
   html {
     @apply font-sans;
+    /*
+     * 탑바(h-14 = 3.5rem)가 sticky로 떠 있으므로 스크롤 대상이 그 아래에 깔리지
+     * 않게 스크롤포트 상단을 그만큼 비워둔다. scrollIntoView(디스커버리 중복 발주
+     * 가드)와 앵커 이동이 모두 이 값을 따른다.
+     */
+    scroll-padding-top: 4rem;
   }
   /* 모션 축소 설정 존중 — 애니메이션·트랜지션을 사실상 즉시 완료로 줄인다. */
   @media (prefers-reduced-motion: reduce) {
