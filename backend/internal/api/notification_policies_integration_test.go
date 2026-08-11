@@ -125,6 +125,8 @@ func TestNotificationPolicyAPI(t *testing.T) {
 			"recipient kind":    {"name": "c4", "event_types": []string{"certificate.expiring"}, "channels": []string{"inbox"}, "recipients": []map[string]string{{"kind": "address", "email": "a@b.c"}}},
 			"recipient role":    {"name": "c5", "event_types": []string{"certificate.expiring"}, "channels": []string{"inbox"}, "recipients": []map[string]string{{"kind": "role", "role": "wizard"}}},
 			"negative treshold": {"name": "c6", "event_types": []string{"certificate.expiring"}, "channels": []string{"inbox"}, "thresholds": []int{0}},
+			"ca threshold 0":    {"name": "c7", "event_types": []string{"certificate.expiring"}, "channels": []string{"inbox"}, "ca_thresholds": []int{0}},
+			"ca threshold max":  {"name": "c8", "event_types": []string{"certificate.expiring"}, "channels": []string{"inbox"}, "ca_thresholds": []int{4000}},
 		}
 		for name, body := range cases {
 			resp := env.do(t, http.MethodPost, "/api/v1/notification-policies", tokens[domain.RoleSecurityAdministrator], body)
@@ -212,6 +214,56 @@ func TestNotificationPolicyAPI(t *testing.T) {
 			resp = env.do(t, http.MethodDelete, path, tokens[domain.RoleSystemAdministrator], nil)
 			if resp.StatusCode != http.StatusNotFound {
 				t.Errorf("delete %s = %d, want 404", path, resp.StatusCode)
+			}
+		}
+	})
+
+	// CA 전용 임계값(0021)은 3상태다. PATCH에서 "키 없음"과 "명시적 null"이 같은
+	// 값으로 접히면 한 번 설정한 CA 임계값을 API로 되돌릴 수 없게 된다.
+	t.Run("ca_thresholds keeps three states through PATCH", func(t *testing.T) {
+		patch := func(body map[string]any) map[string]any {
+			t.Helper()
+			resp := env.do(t, http.MethodPatch, "/api/v1/notification-policies/"+policyID,
+				tokens[domain.RoleSecurityAdministrator], body)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("patch %v = %d, want 200", body, resp.StatusCode)
+			}
+			return decodePolicy(t, resp)
+		}
+
+		got := patch(map[string]any{"ca_thresholds": []int{365, 180}})
+		days, _ := got["ca_thresholds"].([]any)
+		if len(days) != 2 || days[0] != float64(365) {
+			t.Fatalf("ca_thresholds after set = %#v, want [365 180]", got["ca_thresholds"])
+		}
+
+		// 빈 배열은 "CA는 알리지 않음"이라 null(미설정)과 구분되어야 한다.
+		got = patch(map[string]any{"ca_thresholds": []int{}})
+		if days, ok := got["ca_thresholds"].([]any); !ok || len(days) != 0 {
+			t.Fatalf("ca_thresholds after empty = %#v, want []", got["ca_thresholds"])
+		}
+
+		// 키가 없으면 건드리지 않는다.
+		got = patch(map[string]any{"enabled": false})
+		if days, ok := got["ca_thresholds"].([]any); !ok || len(days) != 0 {
+			t.Fatalf("ca_thresholds after an unrelated patch = %#v, want [] (unchanged)", got["ca_thresholds"])
+		}
+
+		// 명시적 null은 해제다.
+		got = patch(map[string]any{"ca_thresholds": nil})
+		if got["ca_thresholds"] != nil {
+			t.Fatalf("ca_thresholds after null = %#v, want null", got["ca_thresholds"])
+		}
+
+		for name, body := range map[string]map[string]any{
+			"zero":         {"ca_thresholds": []int{0}},
+			"over max":     {"ca_thresholds": []int{4000}},
+			"not an array": {"ca_thresholds": "365"},
+		} {
+			resp := env.do(t, http.MethodPatch, "/api/v1/notification-policies/"+policyID,
+				tokens[domain.RoleSecurityAdministrator], body)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("patch ca_thresholds (%s) = %d, want 400", name, resp.StatusCode)
 			}
 		}
 	})

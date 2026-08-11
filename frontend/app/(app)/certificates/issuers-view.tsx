@@ -4,6 +4,10 @@
  * 발급 기관 뷰 — 인벤토리를 CA 관점(루트→중간 2계층)으로 뒤집어 본다.
  * 집계는 목록 페이지가 한 번 받아 내려준다(필터 Select와 공유).
  * 보유 CA를 고르면 issued_by=<certificate_id> 필터로 목록 뷰에 넘긴다.
+ *
+ * 정렬은 만료 임박순이 기본이다(토글 없음) — CA 만료는 하위 인증서 전부가
+ * 함께 신뢰를 잃는 사건이라, 여기서 가장 먼저 보여야 하는 축이 만료다.
+ * 형제 노드끼리만 재배열하고 계층은 서버가 준 그대로 둔다.
  */
 
 import * as React from "react";
@@ -14,6 +18,8 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ExpiryDdayBadge } from "@/components/cert-badges";
+import { sortCANodesByExpiry } from "@/lib/ca-expiry";
 import {
   ISSUED_BY_PARAM,
   type IssuerAggregationResponse,
@@ -59,9 +65,12 @@ export function IssuersView({
     );
   }
 
+  // 노드 수가 많아야 수십 개라 메모이즈하지 않는다(정렬 비용보다 캐시 관리가 크다).
+  const roots = sortCANodesByExpiry(agg.roots);
+
   return (
     <div className="grid gap-4">
-      {agg.roots.map((root, i) => (
+      {roots.map((root, i) => (
         <RootGroup key={root.certificate_id ?? `${root.subject_dn}-${i}`} root={root} />
       ))}
     </div>
@@ -122,6 +131,11 @@ function CANodeRow({ node, depth }: { node: IssuerCANode; depth: 0 | 1 }) {
           <Badge variant="outline" className="text-muted-foreground">
             {depth === 0 ? "루트 CA" : "중간 CA"}
           </Badge>
+          {/*
+            CA의 남은 일수. 임계 구간은 인증서 만료 배지와 같은 dday 하나에서 나온다.
+            미보유 상위 CA는 만료일을 모르므로 배지가 아예 나오지 않는다.
+          */}
+          <ExpiryDdayBadge notAfter={node.not_after} />
           {!node.stored && (
             <Badge variant="outline" className="text-muted-foreground/70">
               미보유

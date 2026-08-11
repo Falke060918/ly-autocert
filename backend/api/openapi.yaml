@@ -3849,6 +3849,13 @@ components:
           type: array
           description: 만료 D-N 임계값(일)
           items: { type: integer, minimum: 1 }
+        ca_thresholds:
+          type: array
+          nullable: true
+          description: >
+            발급 기관(CA) 인증서 전용 임계값(일). null이면 CA도 thresholds를 쓰고,
+            빈 배열이면 CA는 만료 임박 알림을 만들지 않는다.
+          items: { type: integer, minimum: 1 }
         channels:
           type: array
           items: { type: string, enum: [email, webhook, inbox, syslog] }
@@ -3889,6 +3896,13 @@ components:
           type: array
           description: 비우면 DB 기본값 {90,60,30,7,1}
           items: { type: integer, minimum: 1, maximum: 3650 }
+        ca_thresholds:
+          type: array
+          nullable: true
+          description: >
+            발급 기관(CA) 인증서 전용 임계값(일). 생략·null이면 CA도 thresholds를 쓴다.
+            CA 만료는 하위 인증서 전체가 함께 신뢰를 잃는 사건이라 더 이른 임계값을 권장한다.
+          items: { type: integer, minimum: 1, maximum: 3650 }
         channels:
           type: array
           items: { type: string, enum: [email, webhook, inbox, syslog] }
@@ -3912,6 +3926,13 @@ components:
           items: { type: string, enum: [certificate.expiring, certificate.expired] }
         thresholds:
           type: array
+          items: { type: integer, minimum: 1, maximum: 3650 }
+        ca_thresholds:
+          type: array
+          nullable: true
+          description: >
+            null을 명시하면 CA 전용 임계값을 해제한다(키를 빼는 것과 다르다 —
+            키가 없으면 기존 값을 그대로 둔다).
           items: { type: integer, minimum: 1, maximum: 3650 }
         channels:
           type: array
