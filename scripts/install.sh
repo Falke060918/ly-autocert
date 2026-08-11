@@ -1115,6 +1115,57 @@ print_done() {
 	ui_note "설정 변경·재기동이 필요하면 이 스크립트를 다시 실행한다(기존 값이 기본값으로 제시된다)."
 }
 
+# --- HTTPS 배포 자동 감지 ------------------------------------------------------
+
+# 이 프로젝트에 proxy 컨테이너가 남아 있는가 — proxy는 HTTPS 오버레이에만 있는 서비스다.
+https_proxy_present() {
+	[ -n "$COMPOSE_PROJECT" ] || return 1
+	have docker || return 1
+	docker info >/dev/null 2>&1 || return 1
+	docker ps -aq \
+		--filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
+		--filter "label=com.docker.compose.service=proxy" 2>/dev/null | grep -q .
+}
+
+# 기존 .env·컨테이너에서 HTTPS 배포 흔적을 찾아 CFG_HTTPS를 세운다.
+# install/reconfigure 로 재실행할 때 이게 없으면 dc()가 오버레이 없이 스택을 재생성한다 —
+# .env의 SESSION_COOKIE_SECURE=true 는 그대로 남으므로 API는 200인데 브라우저가 Secure
+# 쿠키를 버려 **로그인만 조용히 실패**한다(GOTCHAS / docs/manual/TLS.md 7장).
+# 반대로 오탐으로 켜면 프록시가 인증서를 못 찾아 기동이 깨진다 — 그래서 .env 흔적 1개 이상과
+# **인증서 파일 실존**을 함께 요구한다(server.crt·server.key는 고객사가 직접 둔 파일이다).
+detect_https_deployment() {
+	# --mode https 로 이미 정해진 값은 덮어쓰지 않는다.
+	if [ "$CFG_HTTPS" -eq 1 ]; then return 0; fi
+
+	local traces="" secure
+	if [ -n "$(env_get HTTPS_PORT)" ]; then traces="HTTPS_PORT"; fi
+	secure=$(env_get SESSION_COOKIE_SECURE)
+	case "$secure" in
+		[Tt][Rr][Uu][Ee] | 1) traces="${traces}${traces:+ · }SESSION_COOKIE_SECURE=true" ;;
+	esac
+	if https_proxy_present; then traces="${traces}${traces:+ · }proxy 컨테이너"; fi
+	[ -n "$traces" ] || return 0
+
+	if [ ! -f "$ROOT_DIR/deploy/tls/server.crt" ] || [ ! -f "$ROOT_DIR/deploy/tls/server.key" ]; then
+		ui_warn "HTTPS 흔적은 있으나(${traces}) deploy/tls/server.crt·server.key 를 찾지 못했다 — HTTP 구성으로 진행한다."
+		ui_info "HTTPS 배포라면 인증서를 그 경로에 두고 --mode https 로 실행한다 (절차: docs/manual/TLS.md)."
+		return 0
+	fi
+	if [ ! -f "$COMPOSE_HTTPS_FILE" ]; then
+		ui_warn "HTTPS 흔적은 있으나(${traces}) $(basename "$COMPOSE_HTTPS_FILE") 이 없다 — HTTP 구성으로 진행한다."
+		ui_info "HTTPS 배포라면 패키지를 다시 반입하고 --mode https 로 실행한다."
+		return 0
+	fi
+	if [ -z "$COMPOSE_HTTPS_OK" ]; then
+		ui_warn "HTTPS 흔적은 있으나(${traces}) compose ${COMPOSE_VERSION:-?} 는 ports: !override 를 지원하지 않는다 — HTTP 구성으로 진행한다."
+		ui_info "compose를 ${COMPOSE_HTTPS_MIN} 이상으로 올린 뒤 --mode https 로 실행한다 (절차: docs/manual/TLS.md)."
+		return 0
+	fi
+
+	CFG_HTTPS=1
+	ui_ok "기존 설치가 HTTPS 구성으로 판단되어 TLS 오버레이를 유지한다 (근거: ${traces})"
+}
+
 # --- 모드 --------------------------------------------------------------------
 
 mode_install() {
@@ -1123,6 +1174,7 @@ mode_install() {
 	ensure_images
 
 	env_open
+	detect_https_deployment
 	persist_project_name
 	collect_our_ports
 	ask_ports
@@ -1146,6 +1198,7 @@ mode_reconfigure() {
 	ensure_source_tree
 	ensure_images
 	env_open
+	detect_https_deployment
 	persist_project_name
 	collect_our_ports
 	ask_ports
