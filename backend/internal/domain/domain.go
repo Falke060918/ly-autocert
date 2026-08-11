@@ -67,6 +67,37 @@ type Certificate struct {
 	ReplacedAt              *time.Time `json:"replaced_at"`
 	CreatedAt               time.Time  `json:"created_at"`
 	UpdatedAt               time.Time  `json:"updated_at"`
+	// Content는 원문에서만 알 수 있는 저장 전용 필드다 (0018). JSON에 실리지 않고
+	// 조회 경로도 채우지 않는다 — 아래 타입 주석 참조.
+	Content CertificateContent `json:"-"`
+}
+
+// CertificateContent는 인증서 DER 원문과 원문에서만 뽑을 수 있는 속성이다 (0018).
+//
+// **저장 전용(write-only)이다.** 저장 경로(certparse.Describe → upsert)만 채우며
+// 조회 경로(certificateColumns)는 읽지 않으므로 조회 결과에서는 항상 제로값이다.
+// 원문을 API로 내보내는 경로는 아직 없다 — 내보내기는 별도 판단 대상이다.
+// RawDER는 인증서의 공개 부분이며 개인키가 아니다. 값은 로그·에러 메시지에
+// 절대 싣지 않는다 (보안 하드 규칙 3).
+//
+// nil / 빈 슬라이스의 의미가 다르다: 저장 계층은 RawDER가 비어 있으면 "미상"으로
+// 보고 전 컬럼에 NULL을 넣고, RawDER가 있으면 빈 슬라이스를 "값이 없음"('{}')으로
+// 넣는다. 0018 이전 행이 NULL로 남는 것과 같은 구분이다.
+type CertificateContent struct {
+	RawDER []byte
+	// SPKISHA256은 SubjectPublicKeyInfo의 SHA-256 (소문자 hex 64자)이다.
+	SPKISHA256 *string
+	// KeyUsage는 x509 KeyUsage 비트마스크다. 0이면 KeyUsage 확장이 없다.
+	KeyUsage *int
+	// ExtKeyUsage는 EKU 전체 목록이다. certificate_type은 첫 매칭 1개만 반영한다.
+	ExtKeyUsage []string
+	IsCA        *bool
+	// PathLenConstraint는 BasicConstraints의 pathLenConstraint다.
+	// -1은 "제약 없음"이고, nil은 비적용(CA가 아니거나 BasicConstraints 없음)이다.
+	PathLenConstraint *int
+	OCSPURLs          []string
+	CRLURLs           []string
+	AIACAIssuerURLs   []string
 }
 
 // LocationType은 인증서가 설치된 위치의 종류다. Phase 1은 network_endpoint가 주.

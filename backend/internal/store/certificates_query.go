@@ -128,8 +128,14 @@ type LocationWithTarget struct {
 	//   - CurrentCertificateID == certificate_id  → 서비스 중
 	//   - CurrentCertificateID != certificate_id  → 다른 인증서로 교체됨(구버전 잔존)
 	//   - CurrentFingerprint == nil               → 확인 안 됨
-	CurrentCertificateID *string   `json:"current_certificate_id"`
-	Target               TargetRef `json:"target"`
+	CurrentCertificateID *string `json:"current_certificate_id"`
+	// PresentedChainLen·ChainComplete는 이 엔드포인트가 마지막 관측에서 **제시한**
+	// 체인의 사실이다 (0018). 인벤토리의 다른 인증서로 보완하지 않은 값이므로
+	// chain_complete=false는 곧 중간 CA 누락(풀체인 미배포)이다.
+	// 0018 이전 관측·파일 업로드 위치는 둘 다 nil(미상)이다 — 재스캔으로만 채워진다.
+	PresentedChainLen *int      `json:"presented_chain_len"`
+	ChainComplete     *bool     `json:"chain_complete"`
+	Target            TargetRef `json:"target"`
 }
 
 // OwnerRef는 인증서 소유자 표시용 요약이다. 화면이 owner_id(UUID)를 그대로
@@ -449,6 +455,7 @@ func (s *Store) GetCertificateDetail(ctx context.Context, id string) (*Certifica
 		SELECT l.id, l.certificate_id, l.target_id, l.location_type, l.file_path,
 			l.store_name, l.service_name, l.port, l.last_verified_at, l.deployment_status,
 			l.tls_version, m.current_fingerprint, mc.id,
+			l.presented_chain_len, l.chain_complete,
 			t.id, t.name, t.target_type, t.hostname, host(t.ip_address)
 		FROM certificate_locations l
 		JOIN targets t ON t.id = l.target_id
@@ -470,6 +477,7 @@ func (s *Store) GetCertificateDetail(ctx context.Context, id string) (*Certifica
 			&l.ID, &l.CertificateID, &l.TargetID, &locType, &l.FilePath,
 			&l.StoreName, &l.ServiceName, &l.Port, &l.LastVerifiedAt, &depStatus,
 			&l.TLSVersion, &l.CurrentFingerprint, &l.CurrentCertificateID,
+			&l.PresentedChainLen, &l.ChainComplete,
 			&l.Target.ID, &l.Target.Name, &l.Target.TargetType, &l.Target.Hostname, &l.Target.IPAddress,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan location: %w", err)

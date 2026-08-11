@@ -64,16 +64,35 @@ type ImportResult struct {
 	LocationID   string
 }
 
-const upsertCertificateSQL = `
+// contentArrayParam은 chr(31) 연결 문자열 파라미터를 text[]로 되돌린다 (0018).
+// NULL(=미상)과 빈 배열(=값이 실제로 없음)을 구분하는 것이 요점이다 — 파라미터가
+// NULL이면 컬럼도 NULL이고, 빈 문자열이면 '{}'다. sans의 coalesce(…, '{}')와
+// 다른 이유는 sans에는 "미상"이 없기 때문이다.
+// 캐스트를 붙이는 이유: COALESCE/CASE 안의 무캐스트 파라미터는 text로 추론돼
+// 런타임에만 42804로 터진다 (docs/GOTCHAS.md).
+func contentArrayParam(n int) string {
+	return fmt.Sprintf(
+		`coalesce(string_to_array(nullif($%d::text, ''), chr(31)),
+			CASE WHEN $%d::text IS NULL THEN NULL::text[] ELSE '{}'::text[] END)`, n, n)
+}
+
+// upsertCertificateSQL은 인증서 1건의 upsert다.
+// 컬럼을 늘리면 **같은 커밋에서** 여기와 호출부 인자를 함께 고친다 —
+// 0015 scan_jobs.origin 전례(백필만 하고 INSERT를 빠뜨려 신규 행이 전부 기본값).
+var upsertCertificateSQL = `
 	INSERT INTO certificates (
 		fingerprint_sha256, serial_number, subject_dn, issuer_dn, common_name, sans,
 		not_before, not_after, public_key_algorithm, public_key_size,
 		signature_algorithm, certificate_type, status, subject_key_id, authority_key_id,
-		issuer_organization
+		issuer_organization,
+		raw_der, spki_sha256, key_usage, ext_key_usage, is_ca, path_len_constraint,
+		ocsp_urls, crl_urls, aia_ca_issuer_urls
 	) VALUES (
 		$1, $2, $3, $4, $5,
 		coalesce(string_to_array(nullif($6, ''), chr(31)), '{}'),
-		$7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+		$7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+		$17, $18, $19, ` + contentArrayParam(20) + `, $21, $22,
+		` + contentArrayParam(23) + `, ` + contentArrayParam(24) + `, ` + contentArrayParam(25) + `
 	)
 	ON CONFLICT (fingerprint_sha256) DO UPDATE SET
 		updated_at = now(),
@@ -81,8 +100,37 @@ const upsertCertificateSQL = `
 		subject_key_id   = coalesce(certificates.subject_key_id, excluded.subject_key_id),
 		authority_key_id = coalesce(certificates.authority_key_id, excluded.authority_key_id),
 		-- excluded 우선: Go 파서(x509 pkix.Name) 값이 0016 정규식 백필값보다 정확하다.
-		issuer_organization = coalesce(excluded.issuer_organization, certificates.issuer_organization)
+		issuer_organization = coalesce(excluded.issuer_organization, certificates.issuer_organization),
+		-- 0018 원문 파생 컬럼: 원문을 들고 온 관측이 이긴다. 원문이 없는 호출은
+		-- 전 컬럼에 NULL을 보내므로 coalesce가 기존 값을 지키고, 0018 이전 행은
+		-- 재스캔·재업로드 시점에 여기서 채워진다(소급 백필은 불가능하다).
+		raw_der             = coalesce(excluded.raw_der, certificates.raw_der),
+		spki_sha256         = coalesce(excluded.spki_sha256, certificates.spki_sha256),
+		key_usage           = coalesce(excluded.key_usage, certificates.key_usage),
+		ext_key_usage       = coalesce(excluded.ext_key_usage, certificates.ext_key_usage),
+		is_ca               = coalesce(excluded.is_ca, certificates.is_ca),
+		path_len_constraint = coalesce(excluded.path_len_constraint, certificates.path_len_constraint),
+		ocsp_urls           = coalesce(excluded.ocsp_urls, certificates.ocsp_urls),
+		crl_urls            = coalesce(excluded.crl_urls, certificates.crl_urls),
+		aia_ca_issuer_urls  = coalesce(excluded.aia_ca_issuer_urls, certificates.aia_ca_issuer_urls)
 	RETURNING id, status, created_at, updated_at, (xmax = 0) AS created`
+
+// certificateContentArgs는 upsertCertificateSQL의 $17~$25 인자다 (0018).
+// 원문이 없으면 전 컬럼에 NULL을 보낸다 — "미상"이며 "값이 없음"이 아니다.
+// 원문·SPKI는 어떤 로그·에러에도 싣지 않는다 (보안 하드 규칙 3).
+func certificateContentArgs(c domain.CertificateContent) []any {
+	if len(c.RawDER) == 0 {
+		return []any{nil, nil, nil, nil, nil, nil, nil, nil, nil}
+	}
+	join := func(v []string) any {
+		s := strings.Join(v, sansSep)
+		return s
+	}
+	return []any{
+		c.RawDER, c.SPKISHA256, c.KeyUsage, join(c.ExtKeyUsage), c.IsCA, c.PathLenConstraint,
+		join(c.OCSPURLs), join(c.CRLURLs), join(c.AIACAIssuerURLs),
+	}
+}
 
 // ImportCertificates는 업로드 1건을 단일 트랜잭션으로 저장한다.
 // fingerprint 중복이면 새 Certificate를 만들지 않고(status 등 기존 값 유지)
@@ -103,13 +151,15 @@ func (s *Store) ImportCertificates(ctx context.Context, in ImportInput) (*Import
 		out := c
 		var created bool
 		var status string
-		err := tx.QueryRowContext(ctx, upsertCertificateSQL,
+		args := append([]any{
 			c.FingerprintSHA256, c.SerialNumber, c.SubjectDN, c.IssuerDN, c.CommonName,
 			strings.Join(c.SANs, sansSep),
 			c.NotBefore, c.NotAfter, c.PublicKeyAlgorithm, c.PublicKeySize,
 			c.SignatureAlgorithm, string(c.CertificateType), string(c.Status),
 			c.SubjectKeyID, c.AuthorityKeyID, c.IssuerOrganization,
-		).Scan(&out.ID, &status, &out.CreatedAt, &out.UpdatedAt, &created)
+		}, certificateContentArgs(c.Content)...)
+		err := tx.QueryRowContext(ctx, upsertCertificateSQL, args...).
+			Scan(&out.ID, &status, &out.CreatedAt, &out.UpdatedAt, &created)
 		if err != nil {
 			return nil, fmt.Errorf("store: upsert certificate: %w", err)
 		}
