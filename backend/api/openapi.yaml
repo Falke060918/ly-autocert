@@ -1490,6 +1490,72 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+    post:
+      operationId: createScanSchedule
+      summary: 사전 설정(preset) 정기 스캔 추가
+      description: >
+        **preset만 만들 수 있다** — full·registered는 시드 1행이 정본이라 만들거나
+        지울 수 없고 설정만 바꾼다. kind를 보낸다면 preset이어야 하고, 생략하면
+        preset으로 본다. port_spec은 스캔·스윕과 **같은 파서**로 검증하며, 켜서
+        만들려면 대상·포트가 있어야 하고 주기는 1시간 이상이어야 한다.
+        enabled로 만들어도 즉시 돌지 않는다 — 첫 실행은 now()+주기이며, 바로
+        돌리려면 '지금 실행'을 따로 누른다(등록 버튼 하나가 전 대역 스윕이 되지 않게).
+        스캔 발주와 같은 3역할만 호출할 수 있고 discovery.schedule 감사 이벤트를 남긴다.
+      tags: [discovery]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScanScheduleCreateRequest" }
+      responses:
+        "201":
+          description: 생성된 설정
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScanSchedule" }
+        "400":
+          description: >
+            입력 오류 (code=invalid_request | invalid_schedule) — kind가 preset이
+            아니거나, 이름·대상·포트 사양·주기가 규칙을 어긴 경우다.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/discovery/schedules/{id}:
+    delete:
+      operationId: deleteScanSchedule
+      summary: 사전 설정(preset) 정기 스캔 삭제
+      description: >
+        preset만 지울 수 있다 — full·registered는 409이며 "쓰지 않음"은 삭제가 아니라
+        비활성화다. 실행 이력은 함께 사라지지만 그 실행이 발주했던 스윕은 남는다
+        (schedule_id만 NULL이 된다) — 아직 도는 중이면 스윕 목록에서 따로 취소한다.
+        스캔 발주와 같은 3역할만 호출할 수 있고 discovery.schedule 감사 이벤트를 남긴다.
+      tags: [discovery]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: 삭제됨 (본문 없음)
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: 존재하지 않는 정기 스캔 설정
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 지울 수 없는 종류 (code=schedule_kind) — full·registered는 비활성화만 가능
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /api/v1/discovery/schedules/{id}/run:
     post:
       operationId: runScanSchedule
@@ -3573,6 +3639,34 @@ components:
         interval_seconds: { type: integer, nullable: true }
         rate_pps: { type: integer, nullable: true }
         executor_scope: { type: string }
+    ScanScheduleCreateRequest:
+      type: object
+      description: >
+        preset 정기 스캔 생성 요청. 모르는 필드는 400으로 거부한다.
+        보내지 않은 interval_seconds·rate_pps는 서버 기본값을 쓴다
+        (PATCH와 달리 null을 명시할 이유가 없다 — 아직 값이 없는 신규 행이다).
+      required: [name]
+      properties:
+        kind:
+          type: string
+          enum: [preset]
+          description: 생략 가능. 보낸다면 preset이어야 한다(full·registered는 만들 수 없다).
+        name: { type: string }
+        enabled:
+          type: boolean
+          description: 켜서 만들면 대상·포트가 필수다. 첫 실행은 now()+주기다.
+        targets:
+          type: array
+          items: { type: string }
+          description: IP/CIDR 입력 원문.
+        port_spec:
+          type: string
+          description: 포트 사양 원문('common', '443,8443' 등). 스캔·스윕과 같은 파서로 검증한다.
+        interval_seconds: { type: integer, description: 1시간(3600) 이상 }
+        rate_pps: { type: integer, description: 1 이상 }
+        executor_scope:
+          type: string
+          description: server 또는 sensor:&lt;uuid&gt;. 비우면 server다.
     ScanScheduleRunActive:
       type: object
       description: 409 응답 — 이미 도는 실행으로 화면이 붙을 수 있게 run id를 함께 싣는다.

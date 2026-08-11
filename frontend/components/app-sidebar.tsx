@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   Bell,
   BellRing,
+  CalendarClock,
   LayoutDashboard,
   Lock,
   Radar,
@@ -13,7 +14,7 @@ import {
   Users,
 } from "lucide-react";
 
-import { isSystemAdministrator, useAuth } from "@/lib/auth";
+import { canManageInventory, isSystemAdministrator, useAuth } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
@@ -36,6 +37,14 @@ const ADMIN_NAV_ITEMS = [
  */
 const NOTIFY_ADMIN_NAV_ITEMS = [
   { href: "/settings/notifications", label: "알림 설정", icon: BellRing },
+] as const;
+
+/**
+ * 스캔 설정은 스캔 발주와 같은 3역할이다 — 백엔드 protected() 등록과 같은 조건이다.
+ * 조회 자체는 전 역할이 할 수 있지만, 편집이 없는 화면을 메뉴에 세우지는 않는다.
+ */
+const SCAN_ADMIN_NAV_ITEMS = [
+  { href: "/settings/scans", label: "스캔 설정", icon: CalendarClock },
 ] as const;
 
 function isActive(pathname: string, href: string) {
@@ -75,6 +84,7 @@ export function AppSidebar() {
   const pathname = usePathname();
   const { user } = useAuth();
   const canAdminUsers = isSystemAdministrator(user);
+  const canAdminScans = canManageInventory(user);
   const canAdminNotifications =
     user?.role === "system_administrator" ||
     user?.role === "security_administrator";
@@ -108,6 +118,10 @@ export function AppSidebar() {
           </div>
           {canAdminUsers &&
             ADMIN_NAV_ITEMS.map((item) => (
+              <NavLink key={item.href} {...item} pathname={pathname} />
+            ))}
+          {canAdminScans &&
+            SCAN_ADMIN_NAV_ITEMS.map((item) => (
               <NavLink key={item.href} {...item} pathname={pathname} />
             ))}
           {canAdminNotifications &&
