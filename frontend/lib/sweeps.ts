@@ -155,11 +155,29 @@ export function transitionSweep(id: string, action: SweepTransition) {
 
 // ── 서버 기본값 (SCAN_SWEEP_*) ────────────────────────────────────────────
 //
-// 미리보기 추정에만 쓴다. 실제 값은 서버 설정이 정하며, 생성된 스윕 카드는
-// 응답의 rate_pps·chunk_endpoints를 그대로 보여준다.
+// **상수로 들고 있지 않는다.** 환경변수를 바꾼 현장에서 "서버 기본값(10)"이라
+// 적힌 칸에 실제로는 40이 적용되면, 그 어긋남은 화면 어디에도 뜨지 않는다.
+// 값은 언제나 GET /discovery/defaults의 유효값을 쓰고, 못 받으면 숫자를 지어내지
+// 않고 비운다(미리보기는 "—", placeholder는 숫자 없는 문구).
 
-export const DEFAULT_SWEEP_RATE_PPS = 10;
-export const DEFAULT_SWEEP_MAX_DAYS = 30;
+export interface DiscoveryDefaults {
+  request_id?: string;
+  /** 스윕 생성 폼의 기본값 — 환경변수(SCAN_SWEEP_*)가 반영된 유효값이다. */
+  sweep: {
+    rate_pps: number;
+    chunk_endpoints: number;
+    /** 예상 소요가 이 일수를 넘으면 서버가 422로 거부한다. */
+    max_days: number;
+  };
+  /** 포트 미지정 시 서버가 적용하는 사양(common). */
+  scan: { port_spec: string };
+  /** 요청이 넘을 수 없는 상한. */
+  limits: { max_rate_pps: number; max_endpoints: number };
+}
+
+export function getDiscoveryDefaults() {
+  return apiFetch<DiscoveryDefaults>("/api/v1/discovery/defaults");
+}
 
 /**
  * STARTTLS로 승격하는 포트들. 스캐너는 접속 즉시 ClientHello를 보내는
@@ -267,27 +285,30 @@ export interface SweepEstimate {
   totalEndpoints: number;
   seconds: number;
   days: number;
-  /** 서버가 422로 거부할 구간(ETA > MAX_DAYS). */
+  /** 서버가 422로 거부할 구간(ETA > max_days). */
   exceedsLimit: boolean;
+  /** 판정에 쓴 서버 상한(일). 화면 문구가 이 숫자를 그대로 쓴다. */
+  maxDays: number;
 }
 
 /**
  * 생성 전 미리보기. 서버 계산식과 같다 — ETA(초) = 총 엔드포인트 / rate_pps.
- * 대상이나 포트를 못 읽으면 null(화면은 "—"로 비운다).
+ * 대상·포트를 못 읽거나 **서버 기본값을 아직 못 받았으면** null이다
+ * (화면은 "—"로 비운다). 모르는 값을 상수로 메우면 미리보기가 조용히 거짓말한다.
  */
 export function estimateSweep(
   targets: string[],
   spec: string,
   presets: PortPreset[],
-  ratePPS: number,
-  maxDays: number = DEFAULT_SWEEP_MAX_DAYS,
+  ratePPS: number | null,
+  maxDays: number | null,
 ): SweepEstimate | null {
   const ipCount = countTargetIPs(targets);
   const portCount = countSpecPorts(spec, presets);
   if (ipCount == null || portCount == null) return null;
-  const rate = ratePPS > 0 ? ratePPS : DEFAULT_SWEEP_RATE_PPS;
+  if (ratePPS == null || ratePPS <= 0 || maxDays == null || maxDays <= 0) return null;
   const totalEndpoints = ipCount * portCount;
-  const seconds = totalEndpoints / rate;
+  const seconds = totalEndpoints / ratePPS;
   const days = seconds / 86400;
   return {
     ipCount,
@@ -296,6 +317,7 @@ export function estimateSweep(
     seconds,
     days,
     exceedsLimit: days > maxDays,
+    maxDays,
   };
 }
 

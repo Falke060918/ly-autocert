@@ -995,6 +995,68 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+  /api/v1/discovery/activity:
+    get:
+      operationId: listDiscoveryActivity
+      summary: 통합 작업 목록 (스캔 Job + 스윕 + 정기 스캔 실행)
+      description: >
+        세 축을 최신순 한 목록으로 합쳐 내려준다. **자동 발주의 개별 Job은 싣지
+        않는다** — 주기 재스캔 Job(origin=rescan)과 스윕 자식 청크(origin=sweep)는
+        목록을 도배하므로 제외하고, 정기 스캔이 발주한 스윕은 그 실행 행 1줄이
+        대표한다. 취소 가능 여부는 서버가 cancel 필드로 판정해 내려준다 —
+        클라이언트가 상태 문자열로 추론하면 상태 머신이 바뀔 때 조용히 어긋난다.
+        읽기 전용 — 전 역할, 감사 이벤트 없음.
+      tags: [discovery]
+      parameters:
+        - name: kind
+          in: query
+          description: scan/sweep/schedule_run (반복·쉼표 구분 허용)
+          schema: { type: string }
+        - name: active
+          in: query
+          description: true면 아직 끝나지 않은 작업만
+          schema: { type: boolean }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: 통합 작업 목록
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ActivityList" }
+        "400":
+          description: 잘못된 쿼리 파라미터
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/discovery/defaults:
+    get:
+      operationId: getDiscoveryDefaults
+      summary: 스캔·스윕 기본값과 상한 (환경변수 반영 유효값)
+      description: >
+        SCAN_SWEEP_* 환경변수가 반영된 **실제 유효값**이다. 화면이 기본값을 상수로
+        들고 있으면 환경변수를 바꾼 현장에서 placeholder가 거짓말한다. 단발 스캔의
+        프로브 속도는 요청으로 바꿀 수 없는 내부 상수라 싣지 않는다.
+        읽기 전용 — 전 역할, 감사 이벤트 없음.
+      tags: [discovery]
+      responses:
+        "200":
+          description: 기본값·상한
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscoveryDefaults" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
   /api/v1/discovery/scans/{id}:
     get:
       operationId: getDiscoveryScan
@@ -2719,6 +2781,107 @@ components:
         total: { type: integer, description: 필터 적용 후 전체 건수 }
         page: { type: integer }
         page_size: { type: integer }
+    ActivityItem:
+      type: object
+      description: >
+        통합 작업 목록의 1행. 축(kind)마다 쓰이지 않는 필드는 null이다.
+      required:
+        [kind, id, status, active, cancel, executor_scope, targets, port_spec,
+         total_endpoints, scanned_endpoints, reachable_endpoints,
+         certificates_found, certificates_new, started_at]
+      properties:
+        kind:
+          type: string
+          enum: [scan, sweep, schedule_run]
+          description: >
+            취소·상세 API 경로가 축마다 다르다. scan = /discovery/scans/{id},
+            sweep = /discovery/sweeps/{id}, schedule_run = 정기 스캔 실행.
+        id: { type: string, format: uuid }
+        status:
+          type: string
+          description: 축별 원래 상태 문자열(스캔 pending·…, 스윕 queued·…, 실행 running·…)
+        active:
+          type: boolean
+          description: 아직 끝나지 않았는가(축별 종료 상태의 여집합)
+        cancel:
+          type: boolean
+          description: >
+            지금 이 항목을 취소할 수 있는지의 **서버 판정**. 스캔은 pending 또는
+            서버 실행 running만, 스윕은 queued/running/paused, 정기 스캔 실행은
+            running일 때 true다.
+        name:
+          type: string
+          nullable: true
+          description: 스윕 이름 또는 정기 스캔 이름. 단발 스캔은 null.
+        origin:
+          type: string
+          nullable: true
+          description: 스캔의 발주 출처(manual) 또는 실행의 발동 주체(schedule|manual)
+        executor_scope:
+          type: string
+          description: server 또는 sensor:<센서 id> (0010 규약)
+        targets:
+          type: array
+          items: { type: string }
+        port_spec:
+          type: string
+          description: 입력 원문. 단발 스캔만 전개된 포트 목록("443,8443")이다.
+        total_endpoints: { type: integer, format: int64 }
+        scanned_endpoints: { type: integer, format: int64 }
+        reachable_endpoints: { type: integer, format: int64 }
+        certificates_found: { type: integer, format: int64 }
+        certificates_new: { type: integer, format: int64 }
+        error: { type: string, nullable: true }
+        schedule_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: schedule_run일 때 소속 정기 스캔 설정 id
+        sweep_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: schedule_run이 발주한 스윕 id (발주 전이면 null)
+        started_at:
+          type: string
+          format: date-time
+          description: 정렬 기준 시각(스캔·스윕은 생성 시각, 실행은 시작 시각)
+        finished_at: { type: string, format: date-time, nullable: true }
+    ActivityList:
+      type: object
+      required: [request_id, items, total, page, page_size]
+      properties:
+        request_id: { type: string }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/ActivityItem" }
+        total: { type: integer, description: 필터 적용 후 전체 건수 }
+        page: { type: integer }
+        page_size: { type: integer }
+    DiscoveryDefaults:
+      type: object
+      description: 환경변수가 반영된 스캔·스윕 유효 기본값과 상한
+      required: [request_id, sweep, scan, limits]
+      properties:
+        request_id: { type: string }
+        sweep:
+          type: object
+          required: [rate_pps, chunk_endpoints, max_days]
+          properties:
+            rate_pps: { type: integer, description: SCAN_SWEEP_RATE_PPS 유효값 }
+            chunk_endpoints: { type: integer, description: SCAN_SWEEP_CHUNK_ENDPOINTS 유효값 }
+            max_days: { type: integer, description: SCAN_SWEEP_MAX_DAYS 유효값 (초과 시 생성 422) }
+        scan:
+          type: object
+          required: [port_spec]
+          properties:
+            port_spec: { type: string, description: 포트 미지정 시 적용하는 기본 사양 }
+        limits:
+          type: object
+          required: [max_rate_pps, max_endpoints]
+          properties:
+            max_rate_pps: { type: integer, description: 요청 가능한 속도 상한(초과분은 잘린다) }
+            max_endpoints: { type: integer, description: 단발 스캔 1건의 (IP, 포트) 조합 상한 }
     DerivedNetwork:
       type: object
       required: [cidr, target_count]

@@ -60,7 +60,9 @@ import {
 import {
   createScanWithPortSpec,
   elapsedLabel,
+  getDiscoveryDefaults,
   listPortPresets,
+  type DiscoveryDefaults,
   type PortPreset,
 } from "@/lib/sweeps";
 
@@ -116,6 +118,7 @@ export default function DiscoveryPage() {
 
   const [sensors, setSensors] = React.useState<Sensor[]>([]);
   const [presets, setPresets] = React.useState<PortPreset[]>([]);
+  const [defaults, setDefaults] = React.useState<DiscoveryDefaults | null>(null);
   const [suggestions, setSuggestions] =
     React.useState<ScanSuggestionsResponse | null>(null);
 
@@ -140,6 +143,22 @@ export default function DiscoveryPage() {
       })
       .catch(() => {
         // 프리셋을 못 받으면 칩만 사라지고 자유 텍스트 입력은 그대로 쓸 수 있다.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 스윕 기본값·상한은 서버 설정(SCAN_SWEEP_*)이 정본이다 — 화면은 상수를 들지
+  // 않는다. 못 받으면 placeholder에서 숫자가 빠지고 미리보기가 비는 것으로 끝난다.
+  React.useEffect(() => {
+    let cancelled = false;
+    getDiscoveryDefaults()
+      .then((res) => {
+        if (!cancelled) setDefaults(res);
+      })
+      .catch(() => {
+        // 기본값을 못 받아도 폼 입력·제출은 그대로 된다(값은 서버가 정한다).
       });
     return () => {
       cancelled = true;
@@ -344,6 +363,7 @@ export default function DiscoveryPage() {
           canManage={canManage}
           sensors={sensors}
           presets={presets}
+          defaults={defaults}
           suggestions={suggestions}
           onScanCreated={handleScanCreated}
           onScanDuplicate={focusJob}
@@ -482,6 +502,7 @@ function RunCard({
   canManage,
   sensors,
   presets,
+  defaults,
   suggestions,
   onScanCreated,
   onScanDuplicate,
@@ -490,6 +511,8 @@ function RunCard({
   canManage: boolean;
   sensors: Sensor[];
   presets: PortPreset[];
+  /** 서버가 정한 스윕 기본값·상한. 아직 못 받았으면 null이다. */
+  defaults: DiscoveryDefaults | null;
   suggestions: ScanSuggestionsResponse | null;
   onScanCreated: (jobId: string) => void;
   onScanDuplicate: (jobId: string) => void;
@@ -580,6 +603,7 @@ function RunCard({
         <TabsContent value="sweep" forceMount className="data-[state=inactive]:hidden">
           <SweepForm
             presets={presets}
+            defaults={defaults}
             targetList={targetList}
             sensorId={sensorId}
             onCreated={onSweepCreated}
