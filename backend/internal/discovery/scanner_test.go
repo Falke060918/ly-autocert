@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -236,4 +237,155 @@ func TestResolveHostname(t *testing.T) {
 			t.Errorf("hostname = %q, want empty", got)
 		}
 	})
+}
+
+// startRangeVersionTLSServer는 [min, max] 구간의 TLS 버전만 받아들이는 테스트 서버를
+// 띄운다. 지원 버전 **목록** 탐지처럼 "여러 버전을 받아 주는 서버"가 필요할 때 쓴다.
+func startRangeVersionTLSServer(t *testing.T, minVersion, maxVersion uint16) (string, int) {
+	t.Helper()
+	conf := &tls.Config{
+		Certificates: []tls.Certificate{newTestServerCert(t)},
+		MinVersion:   minVersion,
+		MaxVersion:   maxVersion,
+	}
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", conf)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return // 리스너 종료.
+			}
+			go func() {
+				defer conn.Close()
+				if tc, ok := conn.(*tls.Conn); ok {
+					_ = tc.Handshake() // 실패는 클라이언트 쪽 검증 대상이다.
+				}
+			}()
+		}
+	}()
+
+	host, portStr, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("split host port: %v", err)
+	}
+	port, _ := strconv.Atoi(portStr)
+	return host, port
+}
+
+// TestScanEndpointCollectsCipherSuite는 협상된 암호 스위트가 **추가 프로브 없이**
+// 수집되는지 본다(0020). 표기는 표준 라이브러리 tls.CipherSuiteName이며 자체
+// 표기를 만들지 않는다 (자체 암호 구현 금지, 보안 하드 규칙 2).
+func TestScanEndpointCollectsCipherSuite(t *testing.T) {
+	host, port := startPinnedVersionTLSServer(t, tls.VersionTLS13)
+
+	obs := ScanEndpoint(context.Background(), Endpoint{IP: host, Port: port}, 3*time.Second)
+	if !obs.Reachable {
+		t.Fatal("Reachable = false, want true")
+	}
+	if obs.CipherSuite == "" {
+		t.Fatal("CipherSuite = \"\", want a suite name (기본 수집이라 항상 실려야 한다)")
+	}
+	if !strings.HasPrefix(obs.CipherSuite, "TLS_") {
+		t.Errorf("CipherSuite = %q, want a TLS_* suite name", obs.CipherSuite)
+	}
+	// 지원 버전 목록은 옵트인이다 — 기본 경로에서는 아예 탐지하지 않는다(nil = 미상).
+	if obs.SupportedTLSVersions != nil {
+		t.Errorf("SupportedTLSVersions = %v, want nil (기본 off)", obs.SupportedTLSVersions)
+	}
+}
+
+// TestScanEndpointProbesSupportedVersions는 옵트인 지원 버전 탐지가 협상 버전보다
+// 낮은 버전을 실제로 확인하는지 본다. 서버는 TLS 1.0~1.2를 받아 주므로 협상은 1.2이고
+// 목록에는 1.0·1.1이 함께 나와야 한다 — tls_version 하나만으로는 안 보이는 사각지대다.
+func TestScanEndpointProbesSupportedVersions(t *testing.T) {
+	host, port := startRangeVersionTLSServer(t, tls.VersionTLS10, tls.VersionTLS12)
+
+	obs := ScanEndpointWithOptions(context.Background(), Endpoint{IP: host, Port: port},
+		3*time.Second, ScanOptions{ProbeVersions: true})
+	if !obs.Reachable {
+		t.Fatal("Reachable = false, want true")
+	}
+	if obs.TLSVersion != "TLS 1.2" {
+		t.Errorf("TLSVersion = %q, want %q (협상은 서버가 지원하는 최고 버전이다)", obs.TLSVersion, "TLS 1.2")
+	}
+	want := []string{"TLS 1.0", "TLS 1.1", "TLS 1.2"}
+	if strings.Join(obs.SupportedTLSVersions, ",") != strings.Join(want, ",") {
+		t.Errorf("SupportedTLSVersions = %v, want %v", obs.SupportedTLSVersions, want)
+	}
+}
+
+// TestScanEndpointVersionProbesPassThroughGate는 **추가 핸드셰이크가 레이트 게이트를
+// 거치는지** 본다. 이 회귀가 깨지면 지원 버전 탐지를 켠 스캔이 설정한 rate_pps의
+// 최대 4배 속도로 회선에 나가고, 그 4회가 같은 (IP, 포트)에 연속으로 꽂혀
+// InterleaveByHost가 억제하려던 포트스캔 탐지 패턴을 그대로 만든다.
+func TestScanEndpointVersionProbesPassThroughGate(t *testing.T) {
+	host, port := startRangeVersionTLSServer(t, tls.VersionTLS10, tls.VersionTLS12)
+
+	var gated int
+	obs := ScanEndpointWithOptions(context.Background(), Endpoint{IP: host, Port: port},
+		3*time.Second, ScanOptions{
+			ProbeVersions: true,
+			Gate: func(context.Context) error {
+				gated++
+				return nil
+			},
+		})
+	if !obs.Reachable {
+		t.Fatal("Reachable = false, want true")
+	}
+	// 협상이 1.2라 추가 프로브는 1.0·1.1 두 번이다(첫 프로브는 호출자가 이미 게이트를 거쳤다).
+	if gated != 2 {
+		t.Errorf("gate 호출 %d회, want 2 — 추가 핸드셰이크가 리미터를 건너뛰었다", gated)
+	}
+}
+
+// TestScanEndpointVersionProbeStopsOnCanceledContext는 취소된 게이트에서 **부분 목록이
+// 아니라 nil**이 나오는지 본다. "TLS 1.2가 목록에 없다"와 "거기까지 못 물어봤다"를
+// 섞으면 목록이 거짓말을 한다.
+func TestScanEndpointVersionProbeStopsOnCanceledContext(t *testing.T) {
+	host, port := startRangeVersionTLSServer(t, tls.VersionTLS10, tls.VersionTLS12)
+
+	obs := ScanEndpointWithOptions(context.Background(), Endpoint{IP: host, Port: port},
+		3*time.Second, ScanOptions{
+			ProbeVersions: true,
+			Gate:          func(context.Context) error { return context.Canceled },
+		})
+	if !obs.Reachable {
+		t.Fatal("Reachable = false, want true (첫 핸드셰이크는 이미 끝났다)")
+	}
+	if obs.SupportedTLSVersions != nil {
+		t.Errorf("SupportedTLSVersions = %v, want nil (부분 목록 금지)", obs.SupportedTLSVersions)
+	}
+}
+
+// TestProbesPerEndpoint는 ETA·레이트 배수를 고정한다. 이 값이 1로 돌아가면
+// SCAN_SWEEP_MAX_DAYS 상한이 실제 4배짜리 스윕을 통과시킨다.
+func TestProbesPerEndpoint(t *testing.T) {
+	if got := ProbesPerEndpoint(false); got != 1 {
+		t.Errorf("ProbesPerEndpoint(false) = %d, want 1", got)
+	}
+	if got := ProbesPerEndpoint(true); got != 4 {
+		t.Errorf("ProbesPerEndpoint(true) = %d, want 4 (TLS 1.0~1.3)", got)
+	}
+}
+
+// TestTLSVersionNames는 필터 화이트리스트와 스캐너 표기가 같은 곳에서 나오는지 고정한다.
+func TestTLSVersionNames(t *testing.T) {
+	want := []string{"TLS 1.0", "TLS 1.1", "TLS 1.2", "TLS 1.3"}
+	if strings.Join(TLSVersionNames(), ",") != strings.Join(want, ",") {
+		t.Errorf("TLSVersionNames() = %v, want %v", TLSVersionNames(), want)
+	}
+	for _, v := range want {
+		if !IsTLSVersionName(v) {
+			t.Errorf("IsTLSVersionName(%q) = false, want true", v)
+		}
+	}
+	if IsTLSVersionName("TLS 1.4") || IsTLSVersionName("") {
+		t.Error("IsTLSVersionName이 모르는 표기를 통과시켰다")
+	}
 }

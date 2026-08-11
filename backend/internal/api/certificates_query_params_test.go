@@ -4,10 +4,12 @@ package api
 
 import (
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/certrisk"
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/discovery"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/domain"
 )
 
@@ -110,6 +112,7 @@ func TestParseListParamsInvalid(t *testing.T) {
 		"overlong search":          {"q=" + strings.Repeat("a", 201), "invalid_search"},
 		"unknown risk severity":    {"risk=critical", "invalid_risk"},
 		"unknown risk code":        {"risk_code=rot13_key", "invalid_risk_code"},
+		"unknown tls version":      {"tls_version=SSL+3.0", "invalid_tls_version"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -198,5 +201,34 @@ func TestParseListParamsIssuerFilters(t *testing.T) {
 	in, _ = parseListParams(r)
 	if in.IssuerOrg != nil {
 		t.Errorf("issuer_org(absent) = %v, want nil", in.IssuerOrg)
+	}
+}
+
+// TestParseListParamsTLSVersionFilter는 관측 TLS 버전 필터의 파싱·화이트리스트를 고정한다.
+// 표기 정본은 스캐너(discovery.TLSVersionNames)이며, 목록 응답 tls_versions가
+// 내려보낸 값을 필터가 거부하면 화면의 열 클릭 이동이 깨진다.
+func TestParseListParamsTLSVersionFilter(t *testing.T) {
+	r := httptest.NewRequest("GET", "/api/v1/certificates?tls_version=TLS+1.0,TLS+1.1", nil)
+	in, perr := parseListParams(r)
+	if perr != nil {
+		t.Fatalf("perr = %+v, want nil", perr)
+	}
+	if len(in.TLSVersions) != 2 || in.TLSVersions[0] != "TLS 1.0" || in.TLSVersions[1] != "TLS 1.1" {
+		t.Errorf("tls_version = %v, want [TLS 1.0 TLS 1.1]", in.TLSVersions)
+	}
+
+	// 미지정이면 필터 없음.
+	r = httptest.NewRequest("GET", "/api/v1/certificates", nil)
+	in, _ = parseListParams(r)
+	if len(in.TLSVersions) != 0 {
+		t.Errorf("defaults tls_version = %v, want empty", in.TLSVersions)
+	}
+
+	// 스캐너가 기록하는 표기는 전부 받아들여야 한다.
+	for _, v := range discovery.TLSVersionNames() {
+		r = httptest.NewRequest("GET", "/api/v1/certificates?tls_version="+url.QueryEscape(v), nil)
+		if _, perr := parseListParams(r); perr != nil {
+			t.Errorf("tls_version=%s rejected: %+v", v, perr)
+		}
 	}
 }

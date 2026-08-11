@@ -20,7 +20,7 @@ func TestCancelScanStopsRunningServerJob(t *testing.T) {
 	// 스캔이 ctx 취소까지 블록되게 스텁한다 — 실행 중 상태를 안정적으로 만든다.
 	released := make(chan struct{})
 	prev := scanEndpoint
-	scanEndpoint = func(sctx context.Context, ep Endpoint, _ time.Duration) Observation {
+	scanEndpoint = func(sctx context.Context, ep Endpoint, _ time.Duration, _ ScanOptions) Observation {
 		select {
 		case <-sctx.Done():
 		case <-time.After(10 * time.Second): // 테스트 실패 안전망

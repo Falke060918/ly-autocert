@@ -134,6 +134,10 @@ func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorC
 	for _, opt := range opts {
 		opt(s)
 	}
+	// 옵션이 적용된 뒤에 얹는다 — 스캔 Manager는 위에서 이미 만들어졌지만
+	// 지원 TLS 버전 탐지 여부는 WithSweepDefaults로 들어오기 때문이다.
+	// 여기 값과 planScan의 ETA 배수는 같은 필드에서 나온다(어긋나면 미리보기가 거짓말한다).
+	disc.UseTLSVersionProbe(s.sweepDefaults.TLSProbeVersions)
 
 	// 비보호 라우트: 헬스체크·로그인·초기 설정뿐이다.
 	s.public("GET /healthz", handleHealthz(pool))

@@ -158,7 +158,7 @@ func run(logger *slog.Logger) error {
 		// 프록시로 종단할 때만 켠다 (docs/manual/TLS.md).
 		Handler: api.NewServer(pool, authSvc, rec, cfg.SensorCAEncKey,
 			api.WithNotificationChannels(notifyChannels),
-			api.WithSweepDefaults(sweepDefaults(cfg.Sweep)),
+			api.WithSweepDefaults(sweepDefaults(cfg.Sweep, cfg.ScanTLSProbeVersions)),
 			// 스캔 대상 제안에 운영자 지정 대역(SCAN_SUGGESTED_NETWORKS)을 싣는다.
 			api.WithScanSuggestedNetworks(cfg.ScanSuggestedNetworks),
 			// 재스캔 스케줄러(discovery)를 API의 상태·수동 발주 엔드포인트에 잇는다.

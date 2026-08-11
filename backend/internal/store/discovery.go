@@ -95,8 +95,14 @@ type EndpointObservation struct {
 	Port       int
 	Reachable  bool
 	TLSVersion string
-	Hostname   string
-	Chain      []*x509.Certificate
+	// CipherSuite는 협상된 암호 스위트 이름이다 (0020). 빈 값은 미상이다.
+	CipherSuite string
+	// SupportedTLSVersions는 서버가 지원한다고 확인된 버전 목록이다 (0020).
+	// 옵트인 수집이라(SCAN_TLS_PROBE_VERSIONS 기본 off) 보통 nil이며, nil은
+	// "지원 안 함"이 아니라 "탐지하지 않음"이다.
+	SupportedTLSVersions []string
+	Hostname             string
+	Chain                []*x509.Certificate
 }
 
 // ErrScanJobNotFound는 존재하지 않는 Job 조회 시 반환한다.
@@ -723,7 +729,7 @@ func recordDiscoveredChain(ctx context.Context, tx *sql.Tx, scope string, obs En
 	// 이 엔드포인트가 "몇 장을 제시했고 그것만으로 체인이 이어지는가"는 위치에
 	// 남긴다 (0018). 인벤토리의 다른 인증서로 보완하지 않는 것이 판정의 요점이다.
 	chain := certparse.AnalyzePresentedChain(obs.Chain)
-	if err := upsertNetworkLocation(ctx, tx, leaf.id, targetID, obs.Port, obs.TLSVersion, chain); err != nil {
+	if err := upsertNetworkLocation(ctx, tx, leaf.id, targetID, obs, chain); err != nil {
 		return 0, err
 	}
 	return newCount, nil
@@ -755,34 +761,46 @@ func ensureNetworkTarget(ctx context.Context, tx *sql.Tx, scope, ip, hostname st
 }
 
 // upsertNetworkLocation은 (인증서, 대상, 포트) 위치를 만들거나 최근 확인 시각·
-// TLS 버전·제시 체인 판정을 갱신한다. 부분 유니크 인덱스
+// TLS 버전·암호 스위트·지원 버전 목록·제시 체인 판정을 갱신한다. 부분 유니크 인덱스
 // (uq_certificate_locations_network_endpoint, 0006)를 아비터로 쓰는 단일 upsert라
 // 재스캔·동시 실행에도 위치가 증식하지 않는다.
 // 제시 체인(0018)은 관측할 때마다 최신 값으로 덮어쓴다 — 서버 설정이 고쳐지면
 // 판정도 따라 바뀌어야 한다. 체인이 비어 있는 관측은 NULL(미상)로 남긴다.
-func upsertNetworkLocation(ctx context.Context, tx *sql.Tx, certID, targetID string, port int, tlsVersion string, chain certparse.PresentedChain) error {
+// 암호 스위트·지원 버전 목록(0020)도 같은 coalesce 규약이다 — 이번 관측이
+// 값을 안 실어 왔다고(지원 버전 탐지 off) 이미 알아낸 값을 지우지 않는다.
+func upsertNetworkLocation(ctx context.Context, tx *sql.Tx, certID, targetID string,
+	obs EndpointObservation, chain certparse.PresentedChain) error {
 	var tv *string
-	if tlsVersion != "" {
-		tv = &tlsVersion
+	if obs.TLSVersion != "" {
+		tv = &obs.TLSVersion
+	}
+	var cs *string
+	if obs.CipherSuite != "" {
+		cs = &obs.CipherSuite
 	}
 	var chainLen *int
 	var chainComplete *bool
 	if chain.Length > 0 {
 		chainLen, chainComplete = &chain.Length, &chain.Complete
 	}
+	// text[]는 database/sql로 직접 넘길 수 없어 chr(31) 구분 문자열로 보낸다
+	// (sans 컬럼과 같은 규약). 빈 문자열은 nullif로 NULL(미상)이 된다.
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO certificate_locations
 			(certificate_id, target_id, location_type, port, tls_version, last_verified_at, deployment_status,
-			 presented_chain_len, chain_complete)
-		VALUES ($1, $2, $3, $4, $5, now(), $6, $7, $8)
+			 presented_chain_len, chain_complete, cipher_suite, supported_tls_versions)
+		VALUES ($1, $2, $3, $4, $5, now(), $6, $7, $8, $9,
+		        string_to_array(nullif($10::text, ''), chr(31)))
 		ON CONFLICT (certificate_id, target_id, port) WHERE location_type = 'network_endpoint'
 		DO UPDATE SET last_verified_at = now(),
 		              deployment_status = excluded.deployment_status,
 		              tls_version = coalesce(excluded.tls_version, certificate_locations.tls_version),
 		              presented_chain_len = coalesce(excluded.presented_chain_len, certificate_locations.presented_chain_len),
-		              chain_complete = coalesce(excluded.chain_complete, certificate_locations.chain_complete)`,
-		certID, targetID, string(domain.LocationNetworkEndpoint), port, tv, string(domain.DeployDeployed),
-		chainLen, chainComplete)
+		              chain_complete = coalesce(excluded.chain_complete, certificate_locations.chain_complete),
+		              cipher_suite = coalesce(excluded.cipher_suite, certificate_locations.cipher_suite),
+		              supported_tls_versions = coalesce(excluded.supported_tls_versions, certificate_locations.supported_tls_versions)`,
+		certID, targetID, string(domain.LocationNetworkEndpoint), obs.Port, tv, string(domain.DeployDeployed),
+		chainLen, chainComplete, cs, strings.Join(obs.SupportedTLSVersions, sansSep))
 	if err != nil {
 		return fmt.Errorf("store: upsert network location: %w", err)
 	}

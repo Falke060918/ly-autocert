@@ -20,7 +20,7 @@ const (
 
 // scanEndpoint는 실제 스캔 함수다. 테스트에서 대체한다(실행 경로를 그대로 타면서
 // dial만 걷어내기 위함 — scanner.go의 lookupAddr와 같은 방식이다).
-var scanEndpoint = ScanEndpoint
+var scanEndpoint = ScanEndpointWithOptions
 
 // Manager는 스캔 Job의 생성·백그라운드 실행을 조율한다.
 // 실제 인증서 작업(발견)은 AI가 아닌 명시적 상태 머신으로 실행한다 (CLAUDE.md 결정론적 자동화).
@@ -37,6 +37,10 @@ type Manager struct {
 	rescanSched *rescanScheduler
 	// schedule은 정기 스캔 스케줄러 설정이다 (schedules.go). 기본값은 NewManager가 채운다.
 	schedule ScheduleOptions
+	// probeTLSVersions는 서버 지원 TLS 버전 목록 탐지 여부다(SCAN_TLS_PROBE_VERSIONS).
+	// 기본 false이며 켜면 엔드포인트당 dial이 최대 4배가 된다 — 그 비용을 레이트와
+	// ETA 양쪽에 반영하는 규약은 discovery.ScanOptions 주석에 있다.
+	probeTLSVersions bool
 
 	// cancelMu/cancels는 수동 단발 스캔(Start의 서버 실행 경로)의 Job별 취소
 	// 레지스트리다. 취소 API가 CancelScan으로 실행 중 goroutine의 ctx를 끊는다.
@@ -58,6 +62,26 @@ func NewManager(st *store.Store) *Manager {
 func (m *Manager) UseSweepOptions(opts SweepOptions) *Manager {
 	m.sweep = opts.normalized()
 	return m
+}
+
+// UseTLSVersionProbe는 서버 지원 TLS 버전 목록 탐지를 켠다(기본 off).
+// cmd/server가 SCAN_TLS_PROBE_VERSIONS 값을 넘기는 자리다 — 스윕·재스캔·API용
+// Manager 인스턴스가 서로 다른 값을 쓰면 같은 대역이 스캔 경로에 따라 다른
+// ETA로 계산되므로 **세 인스턴스에 같은 값**을 넣는다.
+func (m *Manager) UseTLSVersionProbe(enabled bool) *Manager {
+	m.probeTLSVersions = enabled
+	return m
+}
+
+// ProbesPerEndpoint는 이 Manager가 엔드포인트 1개에 내보내는 dial 수 상한이다.
+// 스윕 생성(ETA·MaxDays 판정)이 이 배수를 쓴다.
+func (m *Manager) ProbesPerEndpoint() int { return ProbesPerEndpoint(m.probeTLSVersions) }
+
+// scanOptions는 이 Manager의 스캔 선택 동작이다. Gate는 **추가** 프로브 전용이라
+// 첫 프로브를 이미 통과시킨 그 리미터를 그대로 넘긴다 — 지원 버전 탐지를 켜도
+// 회선에 나가는 초당 dial 수가 rate_pps를 넘지 않게 하는 지점이다.
+func (m *Manager) scanOptions(lim *RateLimiter) ScanOptions {
+	return ScanOptions{ProbeVersions: m.probeTLSVersions, Gate: lim.Wait}
 }
 
 // StartResult는 스캔 생성 결과다(즉시 반환값).
@@ -160,7 +184,7 @@ func (m *Manager) run(ctx context.Context, jobID string, endpoints []Endpoint, c
 		return
 	}
 
-	scanAll(ctx, endpoints, concurrency, timeout, lim, func(obs Observation) {
+	scanAll(ctx, endpoints, concurrency, timeout, lim, m.scanOptions(lim), func(obs Observation) {
 		// 개별 DB 오류는 로그만 남기고 계속한다 — 한 엔드포인트가 전체 Job을 멈추지 않는다.
 		// 로그에는 job_id와 오류 문자열만 남긴다(인증서 본문 금지, 보안 하드 규칙 3).
 		if err := m.store.RecordEndpointResult(ctx, jobID, toStoreObs(obs)); err != nil {
@@ -185,7 +209,12 @@ func (m *Manager) run(ctx context.Context, jobID string, endpoints []Endpoint, c
 // 순서는 호스트 라운드로빈(InterleaveByHost)이고, 속도는 dial 직전 lim.Wait으로 맞춘다 —
 // IPS가 보는 것은 SYN 비율이므로 핸드셰이크 뒤가 아니라 앞에서 눌러야 한다 (설계 7.1·7.2).
 // sink는 여러 goroutine에서 동시에 호출된다.
-func scanAll(ctx context.Context, endpoints []Endpoint, concurrency int, timeout time.Duration, lim *RateLimiter, sink func(Observation)) {
+//
+// opts.Gate는 **추가** 프로브(지원 버전 탐지)의 게이트다 — 여기 Wait은 첫 프로브
+// 몫이고, 추가 프로브는 ScanEndpointWithOptions가 같은 리미터를 다시 거친다.
+// 그래서 지원 버전 탐지를 켜도 초당 dial 수는 rate_pps 그대로이고, 비용은
+// "엔드포인트 처리량이 최대 1/4로 준다"로 나타난다(ETA 배수의 근거).
+func scanAll(ctx context.Context, endpoints []Endpoint, concurrency int, timeout time.Duration, lim *RateLimiter, opts ScanOptions, sink func(Observation)) {
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	for _, ep := range InterleaveByHost(endpoints) {
@@ -198,7 +227,7 @@ func scanAll(ctx context.Context, endpoints []Endpoint, concurrency int, timeout
 			if err := lim.Wait(ctx); err != nil {
 				return // ctx 취소 — 남은 프로브를 보내지 않는다.
 			}
-			sink(scanEndpoint(ctx, ep, timeout))
+			sink(scanEndpoint(ctx, ep, timeout, opts))
 		}(ep)
 	}
 	wg.Wait()
@@ -207,12 +236,14 @@ func scanAll(ctx context.Context, endpoints []Endpoint, concurrency int, timeout
 // toStoreObs는 스캔 결과를 store 계층 타입으로 변환한다(순환 import 방지).
 func toStoreObs(o Observation) store.EndpointObservation {
 	return store.EndpointObservation{
-		IP:         o.IP,
-		Port:       o.Port,
-		Reachable:  o.Reachable,
-		TLSVersion: o.TLSVersion,
-		Hostname:   o.Hostname,
-		Chain:      o.Chain,
+		IP:                   o.IP,
+		Port:                 o.Port,
+		Reachable:            o.Reachable,
+		TLSVersion:           o.TLSVersion,
+		CipherSuite:          o.CipherSuite,
+		SupportedTLSVersions: o.SupportedTLSVersions,
+		Hostname:             o.Hostname,
+		Chain:                o.Chain,
 	}
 }
 
