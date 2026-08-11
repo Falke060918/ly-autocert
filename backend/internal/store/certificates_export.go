@@ -94,6 +94,9 @@ func (s *Store) ExportCertificates(ctx context.Context, in ExportInput) ([]domai
 		// 같은 조건이라고 적힌 두 CSV의 행 수가 달라진다(설계 06 14.2 ⑥).
 		ExcludeStatuses []string `json:"exclude_statuses,omitempty"`
 		Types           []string `json:"types,omitempty"`
+		// 위험 판정 필터도 행 수를 바꾸므로 같은 이유로 기록한다.
+		RiskSeverities []string `json:"risk_severities,omitempty"`
+		RiskCodes      []string `json:"risk_codes,omitempty"`
 	}{Format: "csv", RowCount: len(items), Truncated: len(items) == maxExportRows,
 		Search: in.List.Search}
 	for _, st := range in.List.Statuses {
@@ -104,6 +107,12 @@ func (s *Store) ExportCertificates(ctx context.Context, in ExportInput) ([]domai
 	}
 	for _, ct := range in.List.Types {
 		after.Types = append(after.Types, string(ct))
+	}
+	for _, sev := range in.List.RiskSeverities {
+		after.RiskSeverities = append(after.RiskSeverities, string(sev))
+	}
+	for _, code := range in.List.RiskCodes {
+		after.RiskCodes = append(after.RiskCodes, string(code))
 	}
 	if err := audit.Insert(ctx, tx, audit.Event{
 		Type:       EventCertificateExport,
