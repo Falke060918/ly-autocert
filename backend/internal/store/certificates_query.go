@@ -106,8 +106,19 @@ type TargetRef struct {
 // TLSVersion은 네트워크 스캔(이슈 #5)이 관측한 협상 TLS 버전이다 (0006 마이그레이션).
 type LocationWithTarget struct {
 	domain.CertificateLocation
-	TLSVersion *string   `json:"tls_version"`
-	Target     TargetRef `json:"target"`
+	TLSVersion *string `json:"tls_version"`
+	// CurrentFingerprint는 이 위치의 (대상, 포트) 엔드포인트에서 마지막으로 관측된
+	// 인증서 지문이다(endpoint_monitors, 0015). 재스캔이 꺼져 있거나 아직 한 번도
+	// 성공하지 못했으면 nil이다.
+	CurrentFingerprint *string `json:"current_fingerprint"`
+	// CurrentCertificateID는 CurrentFingerprint에 해당하는 인벤토리 인증서 id다.
+	//
+	// 화면은 이 두 필드로 위치를 3분류한다:
+	//   - CurrentCertificateID == certificate_id  → 서비스 중
+	//   - CurrentCertificateID != certificate_id  → 다른 인증서로 교체됨(구버전 잔존)
+	//   - CurrentFingerprint == nil               → 확인 안 됨
+	CurrentCertificateID *string   `json:"current_certificate_id"`
+	Target               TargetRef `json:"target"`
 }
 
 // OwnerRef는 인증서 소유자 표시용 요약이다. 화면이 owner_id(UUID)를 그대로
@@ -380,13 +391,19 @@ func (s *Store) GetCertificateDetail(ctx context.Context, id string) (*Certifica
 		return nil, fmt.Errorf("store: get certificate: %w", err)
 	}
 
+	// endpoint_monitors LEFT JOIN은 "이 위치의 엔드포인트에 지금 무엇이 붙어 있나"를
+	// 붙인다 — 인증서 1행 : 위치 N행 구조에서 위치별 서비스 여부를 가르는 근거다.
+	// 지문 유니크 인덱스를 타는 등가 조인이라 행이 늘지 않는다.
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT l.id, l.certificate_id, l.target_id, l.location_type, l.file_path,
 			l.store_name, l.service_name, l.port, l.last_verified_at, l.deployment_status,
-			l.tls_version,
+			l.tls_version, m.current_fingerprint, mc.id,
 			t.id, t.name, t.target_type, t.hostname, host(t.ip_address)
 		FROM certificate_locations l
 		JOIN targets t ON t.id = l.target_id
+		LEFT JOIN endpoint_monitors m ON m.target_id = l.target_id AND m.port = l.port
+		LEFT JOIN certificates mc ON m.current_fingerprint IS NOT NULL
+			AND mc.fingerprint_sha256 = m.current_fingerprint
 		WHERE l.certificate_id = $1
 		ORDER BY t.name, l.id`, cert.ID)
 	if err != nil {
@@ -401,7 +418,7 @@ func (s *Store) GetCertificateDetail(ctx context.Context, id string) (*Certifica
 		if err := rows.Scan(
 			&l.ID, &l.CertificateID, &l.TargetID, &locType, &l.FilePath,
 			&l.StoreName, &l.ServiceName, &l.Port, &l.LastVerifiedAt, &depStatus,
-			&l.TLSVersion,
+			&l.TLSVersion, &l.CurrentFingerprint, &l.CurrentCertificateID,
 			&l.Target.ID, &l.Target.Name, &l.Target.TargetType, &l.Target.Hostname, &l.Target.IPAddress,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan location: %w", err)
