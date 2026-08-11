@@ -66,6 +66,10 @@ Fix: keep `DisallowUnknownFields` on the single decoder (`decodeUserRequest`), u
 Cause: `scripts/bundle-offline.sh` asserts `VERSION` against the compose tag defaults, `frontend/package.json`+`package-lock.json` (3 spots: lock top level and `packages[""]`) and a `## v<version> (` grep — a heading like `## 1.1.0 - date` fails checks 4/6; and MANIFEST freezes the source commit, so amending the release commit leaves shipped packages pointing at a dangling hash. v1.0.0 shipped with the frontend still at 0.1.0 because check 7 did not exist yet.
 Fix: bump all 4 places together, keep the heading exactly `## v<version> (<date>)`, and if you amend the release commit re-run the bundler with `--skip-build` to realign MANIFEST with HEAD. (last recurrence: 2026-08)
 
+**Upgrading an HTTPS install with a bare `install.sh` breaks login only — everything else looks fine**
+Cause: `dc()` adds `docker-compose.https.yml` only when `CFG_HTTPS=1`, so install/reconfigure recreates the stack without the proxy while the inherited `.env` keeps `SESSION_COOKIE_SECURE=true` — the API answers 200 and the browser silently drops the cookie. Since 1.1.0 `detect_https_deployment` covers this, but it is an AND gate: trace (`HTTPS_PORT` / `SESSION_COOKIE_SECURE=true` / a `proxy` container) **and** `deploy/tls/server.crt`+`.key` present **and** the overlay file **and** compose ≥ 2.24.4 — and `deploy/tls/*` is a customer file that ships in no package, so a fresh version directory has none of it.
+Fix: on upgrade copy `deploy/tls/` into the new directory and run `bash install.sh --mode https` explicitly; `--mode https` skips detection entirely. (last recurrence: 2026-08)
+
 ## Frontend & deployment
 
 **Compose derives the project name from the directory, so an upgrade comes up with an empty database**
@@ -79,10 +83,6 @@ Fix: locate the root by walking up for `docker-compose.yml` and branch on that m
 **TLS flags lock you out: `SESSION_COOKIE_SECURE` over plain HTTP, HSTS before a trusted cert**
 Cause: with Secure set on HTTP the API returns 200 with Set-Cookie and only the browser drops it, so the screen bounces back to /login while every server log says success; HSTS removes the "proceed anyway" escape hatch for a self-signed cert and the pin outlives the config change (max-age).
 Fix: flip the reverse proxy and `SESSION_COOKIE_SECURE` together; enable HSTS only after the customer's own trusted certificate is installed. (last recurrence: 2026-08)
-
-**eslint `react-hooks/purity` + `set-state-in-effect` block the usual "elapsed time" tick**
-Cause: the config rejects `Date.now()` during render AND a bare `setState` inside an effect body, so both obvious ways to keep a ticking clock fail `npm run lint`.
-Fix: `useState(() => Date.now())` lazy initializer + a `setInterval` inside the effect that updates it. (last recurrence: 2026-08)
 
 **`page_size` over 200 is a 400, and every local check stays green**
 Cause: every list endpoint caps `page_size` at 200; the dashboard asked for 500 inside a `Promise.all`, so one rejected fetch took the whole screen down to an error alert — tsc, lint, unit tests and `next build` all pass because the limit lives on the server.
