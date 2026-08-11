@@ -13,6 +13,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/certrisk"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/domain"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/store"
 )
@@ -37,6 +38,9 @@ type certificateDetailResponse struct {
 	Owner     *store.OwnerRef            `json:"owner"`
 	Locations []store.LocationWithTarget `json:"locations"`
 	Chain     []store.ChainItem          `json:"chain"` // 자신→상위→루트 순, 미보유 상위는 stored=false
+	// Risk는 조회 시점에 계산한 위험 판정이다(저장하지 않는다 — 기준선이 움직인다).
+	// 상세는 위치 배열을 가지고 있으므로 위치 축(scope=location) 판정도 함께 실린다.
+	Risk certrisk.Assessment `json:"risk"`
 }
 
 // paramError는 쿼리 파라미터 검증 실패다 (통일 오류 형식의 code·message로 그대로 나간다).
@@ -149,6 +153,23 @@ func parseListParams(r *http.Request) (store.ListCertificatesInput, *paramError)
 		}
 		in.IssuedBy = &v
 	}
+	// 위험 판정 필터 2종. risk는 **최고 심각도** 기준이라 값들이 인벤토리를 겹침 없이
+	// 나눈다(대시보드 집계에서 숫자를 클릭해 들어오는 경로와 같은 기준).
+	// risk_code는 항목 단위이며 한 인증서가 여러 항목에 걸릴 수 있다.
+	for _, v := range splitMulti(q["risk"]) {
+		if !certrisk.IsSeverity(v) {
+			return in, &paramError{"invalid_risk", "risk는 danger/warn/info/ok 중 하나여야 합니다."}
+		}
+		in.RiskSeverities = append(in.RiskSeverities, certrisk.Severity(v))
+	}
+	for _, v := range splitMulti(q["risk_code"]) {
+		r, ok := certrisk.LookupRule(v)
+		if !ok {
+			return in, &paramError{"invalid_risk_code",
+				"risk_code는 GET /api/v1/certificates/risks가 반환하는 판정 항목 코드여야 합니다."}
+		}
+		in.RiskCodes = append(in.RiskCodes, r.Code)
+	}
 	if v := q.Get("expires_within_days"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 || n > 3650 {
@@ -234,6 +255,7 @@ func handleGetCertificate(st *store.Store) http.HandlerFunc {
 			Owner:       res.Owner,
 			Locations:   res.Locations,
 			Chain:       res.Chain,
+			Risk:        res.Risk,
 		})
 	}
 }

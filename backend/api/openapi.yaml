@@ -97,7 +97,9 @@ paths:
       description: >
         인벤토리 인증서 목록을 조회한다. 인증된 전 역할(6종) 접근 가능.
         만료 관련 필터(expired, expires_within_days)는 저장된 status가 아니라
-        not_after에서 파생 계산한다. 읽기 전용이라 감사 이벤트를 남기지 않는다.
+        not_after에서 파생 계산한다. 각 원소에는 조회 시점에 계산한 위험 판정(risk)이
+        함께 실리며 risk·risk_code로 거를 수 있다 — 판정은 저장하지 않는다.
+        읽기 전용이라 감사 이벤트를 남기지 않는다.
       tags: [certificates]
       parameters:
         - name: q
@@ -157,6 +159,29 @@ paths:
             매칭은 상세 응답 chain과 같은 규칙 — SKI=AKI 정확 일치 우선,
             키 식별자가 없는 데이터는 issuer_dn = subject_dn 폴백.
           schema: { type: string, format: uuid }
+        - name: risk
+          in: query
+          description: >
+            위험 판정 **최고 심각도** 필터. 반복 지정 또는 쉼표 구분 다중 값 허용.
+            최고 심각도 기준이므로 네 값이 인벤토리를 겹침 없이 나눈다 — danger는
+            "danger 항목이 하나라도 있는" 인증서이고 warn은 "warn은 있지만 danger는
+            없는" 인증서다. ok는 위험 항목이 하나도 없다는 뜻이다.
+            집계(GET /certificates/risks)의 severities에서 클릭해 들어오는 경로다.
+          schema:
+            type: string
+            enum: [danger, warn, info, ok]
+        - name: risk_code
+          in: query
+          description: >
+            판정 항목 코드 필터(해당 항목이 잡힌 인증서). 반복 지정 또는 쉼표 구분
+            다중 값 허용이며 여러 개면 OR다. 코드 목록은 GET /certificates/risks의
+            findings가 건수 0인 항목까지 포함해 내려준다. risk와 함께 주면 AND로 겹친다.
+          schema:
+            type: string
+            enum: [weak_key, key_deprecated_2030, key_strong, ed25519_key,
+                   weak_signature, no_san, wildcard, wildcard_broad,
+                   wildcard_multi_label, long_validity, expired_ca, self_signed,
+                   chain_anomaly, legacy_tls]
         - name: sort
           in: query
           description: 정렬 필드 (기본 not_after)
@@ -233,6 +258,38 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+  /api/v1/certificates/risks:
+    get:
+      operationId: getCertificateRisks
+      summary: 위험 판정 집계 (최고 심각도별·판정 항목별 건수)
+      description: >
+        인벤토리 전체의 위험 판정을 집계한다. **판정은 저장하지 않고 요청마다
+        계산한다** — 판정 기준선이 2027·2030에 움직이므로(NIST IR 8547, CA/B Forum
+        수명 단축 일정) 저장하면 낡는다. 만료 판정을 not_after에서 파생 계산하는 것과
+        같은 규약이다.
+        severities는 최고 심각도 기준 분할이라 count의 합이 total과 같고,
+        findings는 항목별 건수라 인증서 1건이 여러 항목에 걸려 합이 total과 다르다.
+        findings는 건수 0인 항목까지 카탈로그 순서 그대로 내려준다(화면 목록이
+        데이터에 따라 흔들리지 않게).
+        severities의 severity를 목록 API의 risk=에, findings의 code를 risk_code=에
+        넣으면 해당 인증서 목록으로 이동한다 — 두 API가 같은 술어를 쓴다.
+        집계는 status=replaced를 제외하므로(대시보드 요약과 같은 규약) 목록으로
+        이동할 때 exclude_status=replaced를 함께 보내야 숫자가 맞는다.
+        이번 판정 항목은 전부 사설 PKI에도 유효한 것뿐이다 — 공인(publicly trusted)
+        인증서 전용 규칙은 포함하지 않는다(public_trust_only 필드가 그 구분 자리다).
+        인증된 전 역할(6종) 접근 가능. 읽기 전용이라 감사 이벤트를 남기지 않는다.
+      tags: [certificates]
+      responses:
+        "200":
+          description: 위험 판정 집계
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CertificateRisks"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
   /api/v1/certificates/export:
     get:
       operationId: exportCertificates
@@ -292,6 +349,26 @@ paths:
           in: query
           description: 지정한 CA 인증서가 발급한 인증서만 (목록과 같은 의미)
           schema: { type: string, format: uuid }
+        - name: risk
+          in: query
+          description: >
+            위험 판정 최고 심각도 필터 (목록과 같은 의미). 행 수를 바꾸므로
+            certificate.export 감사 이벤트의 risk_severities에 함께 기록된다.
+          schema:
+            type: string
+            enum: [danger, warn, info, ok]
+        - name: risk_code
+          in: query
+          description: >
+            판정 항목 코드 필터 (목록과 같은 의미). certificate.export 감사 이벤트의
+            risk_codes에 함께 기록된다. CSV 열에는 판정 결과가 실리지 않는다 —
+            판정은 조회 시점 계산값이라 파일로 굳히면 낡는다.
+          schema:
+            type: string
+            enum: [weak_key, key_deprecated_2030, key_strong, ed25519_key,
+                   weak_signature, no_san, wildcard, wildcard_broad,
+                   wildcard_multi_label, long_validity, expired_ca, self_signed,
+                   chain_anomaly, legacy_tls]
         - name: sort
           in: query
           description: 정렬 필드 (기본 not_after)
@@ -336,6 +413,8 @@ paths:
         chain은 자신→상위→루트 순의 발급자 관계 배열이다. 상위 매칭은 AKI = SKI
         정확 일치 우선, 키 식별자가 없는 데이터(0008 이전)는 issuer_dn = subject_dn
         폴백이다. 인벤토리에 없는 상위는 stored=false 항목으로 표시된다.
+        risk는 조회 시점에 계산한 위험 판정이며 저장 컬럼이 아니다 — 상세는 위치
+        배열을 가지고 있으므로 위치 축(scope=location) 판정도 함께 실린다.
       tags: [certificates]
       parameters:
         - name: id
@@ -1932,6 +2011,96 @@ components:
           description: 교체로 판정된 시각. 마지막 실관측 시각이 아니다.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+    RiskSeverity:
+      type: string
+      description: >
+        위험 판정 심각도. 제품의 상태 3색 규약(danger/warn/ok)에 정보성 info를 더한
+        4단이며 장식용 색이 아니다 — 사용자가 취할 행동이 단계마다 다르다.
+      enum: [danger, warn, info, ok]
+    RiskFinding:
+      type: object
+      description: >
+        판정 결과 1건. 같은 code의 severity는 항상 같다(강도가 갈리는 판정은 코드를
+        나눈다 — weak_key / key_deprecated_2030 / key_strong). message는 사람이 읽는
+        사유이며 인증서 원문·개인키는 담기지 않는다(저장 자체를 하지 않는다).
+      required: [code, severity, scope, title, public_trust_only, message]
+      properties:
+        code:
+          type: string
+          enum: [weak_key, key_deprecated_2030, key_strong, ed25519_key,
+                 weak_signature, no_san, wildcard, wildcard_broad,
+                 wildcard_multi_label, long_validity, expired_ca, self_signed,
+                 chain_anomaly, legacy_tls]
+        severity: { $ref: "#/components/schemas/RiskSeverity" }
+        scope:
+          type: string
+          enum: [certificate, location]
+          description: >
+            판정 대상 축. certificate는 인증서 자체의 속성이고 location은 인증서가
+            설치된 위치(엔드포인트)의 속성이다 — 조치 주체가 다르다. legacy_tls는
+            인증서를 재발급해도 해결되지 않고 서버 설정을 고쳐야 한다.
+        title: { type: string, description: 화면 표시용 짧은 항목 이름 }
+        public_trust_only:
+          type: boolean
+          description: >
+            공인(publicly trusted) 인증서에만 적용되는 규칙인지. 폐쇄망 사설 PKI가
+            주 사용처이므로 공인 전용 규칙을 사설 인증서에 danger로 띄우면 전건이
+            빨간불이 된다 — 화면이 이 필드로 갈라 낼 수 있어야 한다.
+            현재 판정 항목은 전부 false다(공인 전용 규칙은 아직 없다).
+        message: { type: string }
+    RiskAssessment:
+      type: object
+      description: >
+        인증서 1건의 위험 판정. **저장하지 않고 조회 시 계산한다** — 기준선이
+        2027·2030에 움직이므로 저장하면 낡는다(만료 판정과 같은 규약).
+      required: [severity, findings]
+      properties:
+        severity:
+          allOf: [{ $ref: "#/components/schemas/RiskSeverity" }]
+          description: findings의 최고 심각도. 판정 항목이 하나도 없으면 ok다.
+        findings:
+          type: array
+          description: 카탈로그 고정 순서 (요청마다 순서가 바뀌지 않는다)
+          items: { $ref: "#/components/schemas/RiskFinding" }
+    RiskSeverityCount:
+      type: object
+      required: [severity, count]
+      properties:
+        severity: { $ref: "#/components/schemas/RiskSeverity" }
+        count: { type: integer }
+    RiskFindingCount:
+      type: object
+      description: 판정 항목 메타데이터 + 건수. 건수 0인 항목도 내려온다.
+      required: [code, severity, scope, title, public_trust_only, count]
+      properties:
+        code:
+          type: string
+          enum: [weak_key, key_deprecated_2030, key_strong, ed25519_key,
+                 weak_signature, no_san, wildcard, wildcard_broad,
+                 wildcard_multi_label, long_validity, expired_ca, self_signed,
+                 chain_anomaly, legacy_tls]
+        severity: { $ref: "#/components/schemas/RiskSeverity" }
+        scope: { type: string, enum: [certificate, location] }
+        title: { type: string }
+        public_trust_only: { type: boolean }
+        count: { type: integer }
+    CertificateRisks:
+      type: object
+      required: [request_id, total, severities, findings]
+      properties:
+        request_id: { type: string }
+        total:
+          type: integer
+          description: 집계 대상 인증서 수 (status=replaced 제외)
+        severities:
+          type: array
+          description: 최고 심각도 기준 분할 — count의 합이 total과 같다.
+          items: { $ref: "#/components/schemas/RiskSeverityCount" }
+        findings:
+          type: array
+          description: >
+            판정 항목별 건수. 인증서 1건이 여러 항목에 걸리므로 합은 total과 다르다.
+          items: { $ref: "#/components/schemas/RiskFindingCount" }
     CertificateListItem:
       description: >
         목록 1행 = 인증서 + 목록 전용 파생 열. last_seen_at은 인증서의 속성이 아니라
@@ -1939,6 +2108,7 @@ components:
       allOf:
         - $ref: "#/components/schemas/Certificate"
         - type: object
+          required: [risk]
           properties:
             last_seen_at:
               type: string
@@ -1949,6 +2119,12 @@ components:
                 (max(certificate_locations.last_verified_at)). 위치가 없거나 한 번도
                 확인되지 않았으면 null이다. **정렬(sort) 대상이 아니다** — 집계
                 파생값이라 정렬 화이트리스트에 넣지 않는다.
+            risk:
+              allOf: [{ $ref: "#/components/schemas/RiskAssessment" }]
+              description: >
+                조회 시점에 계산한 위험 판정. 목록 경로의 위치 축 입력은
+                "removed가 아닌 위치가 관측한 TLS 버전"뿐이다(위치 배열 전체는
+                상세 응답 소관). 저장 컬럼이 아니므로 CSV 내보내기에는 없다.
     CertificateList:
       type: object
       required: [request_id, items, total, page, page_size]
@@ -2153,10 +2329,16 @@ components:
         is_active: { type: boolean, description: 비활성(퇴사 등) 계정 표시용 }
     CertificateDetail:
       type: object
-      required: [request_id, certificate, locations, chain]
+      required: [request_id, certificate, locations, chain, risk]
       properties:
         request_id: { type: string }
         certificate: { $ref: "#/components/schemas/Certificate" }
+        risk:
+          allOf: [{ $ref: "#/components/schemas/RiskAssessment" }]
+          description: >
+            조회 시점에 계산한 위험 판정. 상세는 위치 배열을 가지고 있으므로
+            위치 축(scope=location) 판정도 실제 위치로 계산한다 —
+            deployment_status=removed 위치의 옛 관측은 판정에서 뺀다.
         owner:
           allOf: [{ $ref: "#/components/schemas/OwnerRef" }]
           nullable: true

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/certrisk"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/domain"
 )
 
@@ -107,6 +108,8 @@ func TestParseListParamsInvalid(t *testing.T) {
 		"oversized page_size":      {"page_size=1000", "invalid_page_size"},
 		"zero page_size":           {"page_size=0", "invalid_page_size"},
 		"overlong search":          {"q=" + strings.Repeat("a", 201), "invalid_search"},
+		"unknown risk severity":    {"risk=critical", "invalid_risk"},
+		"unknown risk code":        {"risk_code=rot13_key", "invalid_risk_code"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -115,6 +118,47 @@ func TestParseListParamsInvalid(t *testing.T) {
 				t.Errorf("perr = %+v, want code %s", perr, tc.wantCode)
 			}
 		})
+	}
+}
+
+func TestParseListParamsRiskFilters(t *testing.T) {
+	// 집계(GET /certificates/risks)에서 숫자를 클릭해 들어오는 경로다.
+	// 반복 지정·쉼표 구분은 다른 필터와 같은 규약.
+	r := httptest.NewRequest("GET",
+		"/api/v1/certificates?risk=danger,warn&risk_code=weak_key&risk_code=legacy_tls", nil)
+	in, perr := parseListParams(r)
+	if perr != nil {
+		t.Fatalf("perr = %+v, want nil", perr)
+	}
+	if len(in.RiskSeverities) != 2 ||
+		in.RiskSeverities[0] != certrisk.SeverityDanger || in.RiskSeverities[1] != certrisk.SeverityWarn {
+		t.Errorf("risk = %v", in.RiskSeverities)
+	}
+	if len(in.RiskCodes) != 2 ||
+		in.RiskCodes[0] != certrisk.CodeWeakKey || in.RiskCodes[1] != certrisk.CodeLegacyTLS {
+		t.Errorf("risk_code = %v", in.RiskCodes)
+	}
+
+	// 미지정이면 필터 없음.
+	r = httptest.NewRequest("GET", "/api/v1/certificates", nil)
+	in, _ = parseListParams(r)
+	if len(in.RiskSeverities) != 0 || len(in.RiskCodes) != 0 {
+		t.Errorf("defaults risk/risk_code = %v/%v, want empty", in.RiskSeverities, in.RiskCodes)
+	}
+
+	// 카탈로그의 모든 코드·심각도가 파라미터로 받아들여져야 한다 — 집계 응답이
+	// 내려보낸 값을 목록 필터가 거부하면 클릭 이동이 깨진다.
+	for _, rule := range certrisk.Rules() {
+		r = httptest.NewRequest("GET", "/api/v1/certificates?risk_code="+string(rule.Code), nil)
+		if _, perr := parseListParams(r); perr != nil {
+			t.Errorf("risk_code=%s rejected: %+v", rule.Code, perr)
+		}
+	}
+	for _, sev := range certrisk.Severities() {
+		r = httptest.NewRequest("GET", "/api/v1/certificates?risk="+string(sev), nil)
+		if _, perr := parseListParams(r); perr != nil {
+			t.Errorf("risk=%s rejected: %+v", sev, perr)
+		}
 	}
 }
 

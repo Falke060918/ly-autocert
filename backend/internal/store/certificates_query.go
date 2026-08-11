@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/certrisk"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/domain"
 )
 
@@ -53,10 +54,10 @@ type ListCertificatesInput struct {
 	// (설계 06 14.2 ⑥). 제외는 호출자가 명시적으로 요청한다.
 	ExcludeStatuses   []domain.CertificateStatus
 	Types             []domain.CertificateType
-	Expired           *bool  // 파생 상태: not_after 기준 만료 여부
-	ExpiresWithinDays *int   // 파생 상태: 오늘부터 N일 이내 만료(이미 만료된 것 제외)
-	SelfSigned        *bool  // 파생 상태: subject_dn = issuer_dn (이슈 #8 대시보드 이동용)
-	Unowned           *bool  // 파생 상태: owner_id IS NULL
+	Expired           *bool // 파생 상태: not_after 기준 만료 여부
+	ExpiresWithinDays *int  // 파생 상태: 오늘부터 N일 이내 만료(이미 만료된 것 제외)
+	SelfSigned        *bool // 파생 상태: subject_dn = issuer_dn (이슈 #8 대시보드 이동용)
+	Unowned           *bool // 파생 상태: owner_id IS NULL
 	// IssuerOrg는 발급 기관(issuer_organization, 0016) 정확 일치 필터다.
 	// 분포 집계(GET /certificates/issuers)에서 클릭해 들어오는 경로라 부분 일치가 아니다.
 	// 빈 문자열은 "조직 미상"(issuer_organization IS NULL), nil만 필터 없음이다.
@@ -65,10 +66,16 @@ type ListCertificatesInput struct {
 	// 매칭은 certificates_chain.go findIssuer의 역방향과 같다:
 	// SKI=AKI 정확 일치 우선, 키 식별자가 없으면 issuer_dn = subject_dn 폴백.
 	IssuedBy *string
-	SortField         string // listSortColumns 키. 빈 값이면 not_after
-	SortDesc          bool
-	Page              int // 1부터
-	PageSize          int // 1..maxPageSize
+	// RiskSeverities는 위험 판정 **최고 심각도** 필터다 (danger/warn/info/ok).
+	// 최고 심각도 기준이라 값들이 인벤토리를 겹침 없이 분할한다 — 대시보드 집계
+	// (CertificateRisks)에서 숫자를 클릭해 들어오는 경로와 같은 기준이다.
+	RiskSeverities []certrisk.Severity
+	// RiskCodes는 판정 항목 코드 필터다(해당 항목이 잡힌 인증서). 여러 개면 OR.
+	RiskCodes []certrisk.Code
+	SortField string // listSortColumns 키. 빈 값이면 not_after
+	SortDesc  bool
+	Page      int // 1부터
+	PageSize  int // 1..maxPageSize
 }
 
 // CertificateListItem은 목록 1행이다 — 인증서 + 목록 전용 파생 열.
@@ -83,6 +90,10 @@ type CertificateListItem struct {
 	// 확인되지 않았으면 nil이다. **정렬 화이트리스트에는 넣지 않는다** —
 	// 집계 파생값이라 ORDER BY 컬럼으로 안전하게 끼워 넣을 수 없다(설계 06 11.3).
 	LastSeenAt *time.Time `json:"last_seen_at"`
+	// Risk는 조회 시점에 계산한 위험 판정이다 — **저장하지 않는다**(certrisk 패키지
+	// 주석). 목록 경로에서는 위치 축 입력으로 "removed가 아닌 위치가 관측한 TLS 버전"만
+	// 싣는다(위치 배열 전체는 상세 응답 소관).
+	Risk certrisk.Assessment `json:"risk"`
 }
 
 // CertificateList는 목록 조회 결과다.
@@ -130,6 +141,9 @@ type CertificateDetail struct {
 	Owner     *OwnerRef
 	Locations []LocationWithTarget
 	Chain     []ChainItem // 자신→상위→루트 순 (certificates_chain.go)
+	// Risk는 조회 시점에 계산한 위험 판정이다(저장하지 않는다).
+	// 상세는 위치 배열을 가지고 있으므로 위치 축 판정도 실제 위치로 계산한다.
+	Risk certrisk.Assessment
 }
 
 // certificateColumns는 scanCertificate와 순서가 일치해야 한다.
@@ -178,17 +192,34 @@ func scanCertificate(sc interface{ Scan(...any) error }) (domain.Certificate, er
 	return c, nil
 }
 
-// scanCertificateWithLastSeen은 certificateColumns 뒤에 last_seen_at 파생 열이
-// 하나 더 붙은 행을 읽는다(목록 전용).
-func scanCertificateWithLastSeen(sc interface{ Scan(...any) error }, lastSeen **time.Time) (domain.Certificate, error) {
+// scanCertificateListRow는 certificateColumns 뒤에 목록 전용 파생 열 2개
+// (last_seen_at, 위치가 관측한 TLS 버전 목록)가 붙은 행을 읽는다.
+func scanCertificateListRow(sc interface{ Scan(...any) error }, lastSeen **time.Time, tlsVersions *sql.NullString) (domain.Certificate, error) {
 	var c domain.Certificate
 	var sans, ctype, status string
-	dest := append(certificateScanDest(&c, &sans, &ctype, &status), lastSeen)
+	dest := append(certificateScanDest(&c, &sans, &ctype, &status), lastSeen, tlsVersions)
 	if err := sc.Scan(dest...); err != nil {
 		return c, err
 	}
 	finishCertificate(&c, sans, ctype, status)
 	return c, nil
+}
+
+// tlsVersionLocations는 chr(31) 연결 문자열로 받은 관측 TLS 버전 목록을
+// 위치 축 판정 입력으로 편다. 이미 removed 위치를 뺀 목록이므로 Removed는 false다.
+func tlsVersionLocations(joined sql.NullString) []certrisk.LocationInput {
+	if !joined.Valid || joined.String == "" {
+		return nil
+	}
+	parts := strings.Split(joined.String, sansSep)
+	out := make([]certrisk.LocationInput, 0, len(parts))
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		out = append(out, certrisk.LocationInput{TLSVersion: p})
+	}
+	return out
 }
 
 // escapeLike는 LIKE 패턴 메타문자를 이스케이프한다 (ESCAPE '\'와 짝).
@@ -289,6 +320,10 @@ func buildListWhere(in ListCertificatesInput) (conds []string, args []any) {
 			         AND (certificates.authority_key_id IS NULL OR ic.subject_key_id IS NULL))
 			   ))`, ph))
 	}
+	// 위험 판정 필터는 바인드 파라미터를 쓰지 않는다 — 값이 아니라 코드·심각도로만
+	// 받고 술어는 certificates_risk.go의 고정 문자열이다(사용자 입력이 SQL 조각으로
+	// 들어가지 않는다. 정렬 화이트리스트와 같은 규약).
+	conds = append(conds, buildRiskConds(in)...)
 	return conds, args
 }
 
@@ -332,10 +367,17 @@ func (s *Store) ListCertificates(ctx context.Context, in ListCertificatesInput) 
 	}
 
 	// id 보조 정렬로 페이지 경계를 안정화한다.
-	// last_seen_at은 상관 서브쿼리 1개로 붙인다(정렬·필터에는 쓰지 않는다).
+	// last_seen_at·관측 TLS 버전은 상관 서브쿼리로 붙인다(정렬·필터에는 쓰지 않는다).
+	// TLS 버전은 위험 판정의 위치 축 입력이며 removed 위치의 옛 관측은 제외한다
+	// (certrisk.legacyTLSRule·riskLegacyTLSSQL과 같은 기준).
 	query := fmt.Sprintf(`SELECT %s,
 			(SELECT max(l.last_verified_at) FROM certificate_locations l
-			  WHERE l.certificate_id = certificates.id)
+			  WHERE l.certificate_id = certificates.id),
+			(SELECT array_to_string(array_agg(DISTINCT l.tls_version), chr(31))
+			   FROM certificate_locations l
+			  WHERE l.certificate_id = certificates.id
+			    AND l.deployment_status <> 'removed'
+			    AND l.tls_version IS NOT NULL)
 		 FROM certificates%s ORDER BY %s %s, id ASC LIMIT $%d OFFSET $%d`,
 		certificateColumns, where, col, dir, len(args)+1, len(args)+2)
 	rows, err := s.db.QueryContext(ctx, query, append(args, size, (page-1)*size)...)
@@ -344,14 +386,23 @@ func (s *Store) ListCertificates(ctx context.Context, in ListCertificatesInput) 
 	}
 	defer rows.Close() //nolint:errcheck
 
+	// 판정 기준 시각은 페이지 전체에 하나만 쓴다 — 같은 응답 안에서 행마다
+	// 만료 판정 기준이 달라지지 않게 한다.
+	now := time.Now()
 	items := []CertificateListItem{} // 빈 결과도 JSON []로 나가도록 nil이 아닌 슬라이스
 	for rows.Next() {
 		var item CertificateListItem
-		c, err := scanCertificateWithLastSeen(rows, &item.LastSeenAt)
+		var tlsVersions sql.NullString
+		c, err := scanCertificateListRow(rows, &item.LastSeenAt, &tlsVersions)
 		if err != nil {
 			return nil, fmt.Errorf("store: scan certificate: %w", err)
 		}
 		item.Certificate = c
+		item.Risk = certrisk.Evaluate(certrisk.Input{
+			Certificate: c,
+			Locations:   tlsVersionLocations(tlsVersions),
+			Now:         now,
+		})
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -423,9 +474,29 @@ func (s *Store) GetCertificateDetail(ctx context.Context, id string) (*Certifica
 	if err != nil {
 		return nil, err
 	}
+	risk := certrisk.Evaluate(certrisk.Input{
+		Certificate: cert,
+		Locations:   locationRiskInputs(locations),
+		Now:         time.Now(),
+	})
 	return &CertificateDetail{
-		Certificate: cert, Owner: owner, Locations: locations, Chain: chain,
+		Certificate: cert, Owner: owner, Locations: locations, Chain: chain, Risk: risk,
 	}, nil
+}
+
+// locationRiskInputs는 상세 조회의 설치 위치를 위치 축 판정 입력으로 옮긴다.
+// deployment_status='removed'는 더 이상 인증서를 제공하지 않는 위치이므로
+// 옛 관측으로 판정하지 않는다(목록 경로의 서브쿼리 조건과 같은 기준).
+func locationRiskInputs(locs []LocationWithTarget) []certrisk.LocationInput {
+	out := make([]certrisk.LocationInput, 0, len(locs))
+	for _, l := range locs {
+		in := certrisk.LocationInput{Removed: l.DeploymentStatus == domain.DeployRemoved}
+		if l.TLSVersion != nil {
+			in.TLSVersion = *l.TLSVersion
+		}
+		out = append(out, in)
+	}
+	return out
 }
 
 // getCertificateOwner는 owner_id에 해당하는 계정 요약을 조회한다.
