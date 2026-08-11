@@ -10,6 +10,8 @@
  * (06-rescan-and-replacement 11.3).
  *
  * 상대 시각 포맷터는 알림 벨의 것을 재사용한다 — 두 번째 포맷터를 만들지 않는다.
+ * 색은 상태 토큰(warn/danger)만 쓴다(`.claude/conventions/frontend-ui.md`) —
+ * 신선도는 "이 정보를 믿어도 되나"라 인증서 상태와 같은 색 예산을 공유한다.
  */
 
 import { relativeTime } from "@/components/notification-bell";
@@ -60,8 +62,8 @@ export function FreshnessText({
       className={cn(
         "font-mono text-xs tabular-nums",
         tone === "fresh" && "text-muted-foreground/70",
-        tone === "warn" && "text-amber-700",
-        tone === "stale" && "text-red-600",
+        tone === "warn" && "text-warn",
+        tone === "stale" && "text-danger",
         className,
       )}
       title={

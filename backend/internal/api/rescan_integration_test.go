@@ -169,7 +169,7 @@ func TestRescanRunWithWiring(t *testing.T) {
 		if !out.Wired || out.Enabled {
 			t.Errorf("wired/enabled = %v/%v, want true/false", out.Wired, out.Enabled)
 		}
-		if out.IntervalSeconds != int((6 * time.Hour) / time.Second) {
+		if out.IntervalSeconds != int((6*time.Hour)/time.Second) {
 			t.Errorf("interval_seconds = %d, want 21600 (배선 값이 기본값을 이긴다)",
 				out.IntervalSeconds)
 		}

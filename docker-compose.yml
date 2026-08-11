@@ -1,4 +1,10 @@
-# INHERIT_AutoCert 개발환경. 실행: cp .env.example .env && docker compose up --build
+# INHERIT_AutoCert 스택 정의.
+#
+# 개발 환경(소스 빌드): cp .env.example .env && docker compose up --build
+# 고객사 서버: 이 파일을 직접 실행하지 않는다 — `./install.sh` 를 띄우고 메뉴에서
+#   [설치] 또는 [패치]를 고른다. 스크립트가 .env 생성·오프라인 이미지 적재·DB 백업·
+#   기동까지 한다(절차 정본: docs/manual/INSTALL.md 5.1.4). 폐쇄망은 Go 모듈·npm을
+#   받을 수 없어 `--build` 경로 자체가 성립하지 않는다.
 #
 # 포트는 전부 .env로 바꿀 수 있다 (INSTALL.md 5.5 "포트 변경 절차").
 #   호스트 노출:  FRONTEND_PORT(3000) / BACKEND_PORT(8080) / SENSOR_GATEWAY_PORT(8443)

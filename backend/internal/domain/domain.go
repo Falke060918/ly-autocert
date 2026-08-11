@@ -34,11 +34,11 @@ const (
 
 // Certificate는 인벤토리의 중심 엔티티다. 개인키는 포함하지 않는다.
 type Certificate struct {
-	ID                 string            `json:"id"`
-	FingerprintSHA256  string            `json:"fingerprint_sha256"` // 소문자 hex 64자, 중복 판정 키
-	SerialNumber       string            `json:"serial_number"`
-	SubjectDN          string            `json:"subject_dn"`
-	IssuerDN           string            `json:"issuer_dn"`
+	ID                string `json:"id"`
+	FingerprintSHA256 string `json:"fingerprint_sha256"` // 소문자 hex 64자, 중복 판정 키
+	SerialNumber      string `json:"serial_number"`
+	SubjectDN         string `json:"subject_dn"`
+	IssuerDN          string `json:"issuer_dn"`
 	// IssuerOrganization은 발급자 DN의 O(Organization) 값이다 (0016).
 	// 신규 행은 certparse.Describe가 x509 pkix.Name에서 직접 뽑고,
 	// 0016 이전 행은 issuer_dn 문자열에서 소급 백필됐다. O가 없으면 nil.

@@ -218,8 +218,8 @@ func (s *Service) CreateUserWithEmail(ctx context.Context, username, password st
 		RequestID:  meta.RequestID,
 		After: map[string]any{"username": u.Username, "role": u.Role,
 			"is_active": u.IsActive, "email": u.Email},
-		Result:     domain.AuditSuccess,
-		SourceIP:   meta.SourceIP,
+		Result:   domain.AuditSuccess,
+		SourceIP: meta.SourceIP,
 	}); err != nil {
 		return nil, err
 	}

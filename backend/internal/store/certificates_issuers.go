@@ -159,8 +159,8 @@ func (s *Store) listCAIssuers(ctx context.Context) ([]caIssuerRow, error) {
 // 고르고, maxChainDepth·방문 집합으로 순환을 끊는다 (certificates_chain.go 규약).
 func buildCATree(cas []caIssuerRow) []CATreeNode {
 	roots := []CATreeNode{}
-	rootIdx := map[string]int{}      // 보유 루트: CA id → roots 인덱스
-	orphanIdx := map[string]int{}    // 미보유 루트 placeholder: issuer_dn → roots 인덱스
+	rootIdx := map[string]int{}   // 보유 루트: CA id → roots 인덱스
+	orphanIdx := map[string]int{} // 미보유 루트 placeholder: issuer_dn → roots 인덱스
 	addStoredRoot := func(c caIssuerRow) int {
 		if i, ok := rootIdx[c.id]; ok {
 			return i

@@ -3,6 +3,7 @@
 import * as React from "react";
 import { Plus } from "lucide-react";
 
+import { RequiredMark } from "@/components/required-mark";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -256,7 +257,7 @@ function CreateSensorDialog({
             </DialogHeader>
             <div className="space-y-2">
               <Label htmlFor="sensor-name">
-                센서 이름 <span className="text-red-600">*</span>
+                센서 이름 <RequiredMark />
               </Label>
               <Input
                 id="sensor-name"
