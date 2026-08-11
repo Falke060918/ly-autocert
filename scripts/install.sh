@@ -80,6 +80,12 @@ SKIP_LOAD=""
 FORCE_BUILD=""
 REQUESTED_MODE=""
 REQUESTED_SCHEME=""
+FORCE_NEW=""
+# 패치 모드 인자 — 인자 파싱이 이 파일 위쪽에서 돌므로 선언도 여기 있어야 한다
+# (아래 패치 절에서 선언하면 파싱 결과를 그 초기화가 덮어쓴다).
+PATCH_FROM=""
+SKIP_BACKUP=""
+BACKUP_DIR=""
 
 ENV_TMP=""
 COMPOSE_VERSION=""
@@ -111,11 +117,24 @@ INHERIT AutoCert 설치 마법사
 옵션:
   -y, --yes             전부 기본값으로 진행한다(질문 없음)
       --non-interactive 화면 조작 없이 진행한다(-y 포함, 판단이 필요하면 실패)
-      --mode <모드>     install | https | reconfigure | status
+      --mode <모드>     install | patch | reconfigure | status | https
+      --scheme <방식>   http | https  (콘솔 접속 방식 — 묻지 않고 이 값을 쓴다)
+      --from <경로>     [patch] 구버전 설치 디렉터리(또는 그 .env)
+      --skip-backup     [patch] DB 백업을 건너뛴다 (기본은 백업하고, 실패하면 중단한다)
+      --backup-dir <경로>
+                        [patch] 백업 저장 위치 (기본: <설치 루트>/backups)
+      --force-new       기존 설치가 감지돼도 신규 설치를 강행한다
       --check-only      사전 점검만 하고 끝낸다(아무것도 바꾸지 않는다)
       --skip-load       오프라인 번들 자동 적재를 건너뛴다
       --build           적재된 이미지가 없을 때 소스에서 빌드한다
   -h, --help            이 도움말
+
+모드:
+  install      새 서버에 처음 설치한다
+  patch        이미 깔려 있는 설치를 이 버전으로 올린다 (DB·설정·인증서를 승계한다)
+  reconfigure  설정만 바꿔 다시 기동한다
+  status       상태만 확인한다
+  https        reconfigure --scheme https 의 별칭 (옛 인자 호환)
 
 환경변수 오버라이드(설정하면 묻지 않는다):
   FRONTEND_PORT  BACKEND_PORT  SENSOR_GATEWAY_PORT
@@ -127,6 +146,8 @@ INHERIT AutoCert 설치 마법사
   bash scripts/install.sh                          대화형 설치
   bash scripts/install.sh --check-only             설치 가능 여부만 확인
   bash scripts/install.sh --yes --mode install     무인 설치(전부 기본값)
+  bash scripts/install.sh --mode patch             기존 설치 업그레이드(구버전 자동 탐색)
+  bash scripts/install.sh --mode patch --from /opt/main_1.0.0
 EOF
 }
 
@@ -154,10 +175,36 @@ while [ $# -gt 0 ]; do
 			REQUESTED_MODE=$2; shift 2
 			;;
 		--mode=*) REQUESTED_MODE=${1#--mode=}; shift ;;
+		--scheme)
+			[ $# -ge 2 ] || { usage >&2; exit 2; }
+			REQUESTED_SCHEME=$2; shift 2
+			;;
+		--scheme=*) REQUESTED_SCHEME=${1#--scheme=}; shift ;;
+		--from)
+			[ $# -ge 2 ] || { usage >&2; exit 2; }
+			PATCH_FROM=$2; shift 2
+			;;
+		--from=*) PATCH_FROM=${1#--from=}; shift ;;
+		--skip-backup) SKIP_BACKUP=1; shift ;;
+		--backup-dir)
+			[ $# -ge 2 ] || { usage >&2; exit 2; }
+			BACKUP_DIR=$2; shift 2
+			;;
+		--backup-dir=*) BACKUP_DIR=${1#--backup-dir=}; shift ;;
+		--force-new) FORCE_NEW=1; shift ;;
 		-h | --help) usage; exit 0 ;;
 		*) usage >&2; printf '알 수 없는 옵션: %s\n' "$1" >&2; exit 2 ;;
 	esac
 done
+
+case "$REQUESTED_MODE" in
+	"" | install | patch | reconfigure | status | https) : ;;
+	*) usage >&2; printf '알 수 없는 모드: %s\n' "$REQUESTED_MODE" >&2; exit 2 ;;
+esac
+case "$REQUESTED_SCHEME" in
+	"" | http | https) : ;;
+	*) usage >&2; printf '알 수 없는 접속 방식: %s (http|https)\n' "$REQUESTED_SCHEME" >&2; exit 2 ;;
+esac
 
 if [ -n "$ASSUME_YES" ]; then TUI_ASSUME_YES=1; fi
 tui_init
@@ -1010,6 +1057,43 @@ inject_trusted_proxies() {
 	ui_ok "신뢰 프록시 대역 자동 설정: $DEFAULT_TRUSTED_PROXIES (compose 네트워크 — 접근 IP 제한이 브라우저 IP로 동작하게 한다)"
 }
 
+# 이 서버가 붙어 있는 대역을 스캔 대상 제안에 실어 준다. 질문은 늘리지 않는다 —
+# 이 값이 비어 있으면 디스커버리 화면의 "설치 시 감지" 칩이 늘 비어서, 첫 스캔에
+# 반드시 수기 입력이 필요하다. 기존 값이 있으면 손대지 않는다.
+ensure_scan_suggestions() {
+	local cur nets
+	cur=$(value_for SCAN_SUGGESTED_NETWORKS "")
+	if [ -n "$cur" ]; then
+		env_set SCAN_SUGGESTED_NETWORKS "$cur"
+		return 0
+	fi
+	nets=$(detect_local_networks)
+	[ -n "$nets" ] || return 0
+	env_set SCAN_SUGGESTED_NETWORKS "$nets"
+	ui_ok "스캔 대상 제안에 이 서버의 대역을 넣었다: $nets"
+	ui_info "발견 화면의 '설치 시 감지' 칩으로 나온다 — 대역이 다르면 화면에서 직접 입력한다."
+}
+
+# NIC IPv4를 /24로 묶는다. 루프백·링크로컬과 도커 기본 주소 풀(172.17~172.31)은 뺀다.
+detect_local_networks() {
+	local ip net out="" count=0
+	for ip in $(detect_ips); do
+		case "$ip" in
+			127.* | 169.254.* | 0.*) continue ;;
+			172.1[789].* | 172.2[0-9].* | 172.3[01].*) continue ;;
+		esac
+		net=$(printf '%s' "$ip" | awk -F. 'NF==4 && $4 != "" {print $1"."$2"."$3".0/24"}')
+		[ -n "$net" ] || continue
+		case ",$out," in
+			*",$net,"*) continue ;;
+		esac
+		out="${out}${out:+,}${net}"
+		count=$((count + 1))
+		[ "$count" -lt 8 ] || break
+	done
+	printf '%s' "$out"
+}
+
 # 기동 후 실제 compose 네트워크 대역을 확인해 필요하면 보정한다.
 fix_trusted_proxies_after_up() {
 	local cid net subnet cur
@@ -1112,20 +1196,32 @@ print_status() {
 	ui_title "상태"
 	dc ps >&3 2>&3 || true
 	ui_blank
-	local fp bp
+	local fp bp hp
 	fp=$(env_get FRONTEND_PORT); fp=${fp:-$DEFAULT_FRONTEND_PORT}
 	bp=$(env_get BACKEND_PORT); bp=${bp:-$DEFAULT_BACKEND_PORT}
+	CFG_FRONTEND_PORT=$fp
+	CFG_BACKEND_PORT=$bp
+
 	if http_ok "http://127.0.0.1:${bp}/healthz"; then
 		ui_ok "백엔드 /healthz 정상"
 	else
 		ui_warn "백엔드 /healthz 무응답 (포트 ${bp})"
 	fi
 	if http_ok "http://127.0.0.1:${fp}/"; then
-		ui_ok "웹 콘솔 응답 정상"
+		ui_ok "웹 콘솔 응답 정상 (내부 ${fp})"
 	else
-		ui_warn "웹 콘솔 무응답 (포트 ${fp})"
+		ui_warn "웹 콘솔 무응답 (내부 포트 ${fp})"
 	fi
-	ui_info "접속: http://${PRIMARY_IP}:${fp}"
+	# HTTPS 구성에서는 3000·8080이 루프백 전용이다 — 그 주소를 안내하면 틀린 안내가 된다.
+	if scheme_is_https; then
+		hp=$(env_get HTTPS_PORT); hp=${hp:-443}
+		if https_probe "$hp"; then
+			ui_ok "HTTPS 응답 정상 (포트 ${hp})"
+		else
+			ui_warn "HTTPS 무응답 (포트 ${hp}) — 프록시 로그를 확인한다: docker compose logs proxy"
+		fi
+	fi
+	ui_info "접속: $(console_base_url)"
 }
 
 print_done() {
@@ -1579,6 +1675,7 @@ mode_install() {
 	ask_ports
 	ask_sensor
 	inject_trusted_proxies
+	ensure_scan_suggestions
 	ensure_postgres_password
 	persist_scheme
 	ensure_notify_base_url
@@ -1639,10 +1736,6 @@ OLD_VERSION=""
 OLD_SCHEME="http"
 OLD_HAS_TLS=0
 BACKUP_PATH=""
-
-PATCH_FROM=""
-SKIP_BACKUP=""
-BACKUP_DIR=""
 
 PATCH_CAND_DIR=()
 PATCH_CAND_PROJ=()
@@ -2142,6 +2235,7 @@ mode_patch() {
 	ensure_images
 
 	patch_ask_minimal         # P9 최소 문답
+	ensure_scan_suggestions
 	ensure_postgres_password
 	persist_scheme
 	ensure_notify_base_url
@@ -2231,6 +2325,62 @@ console_base_url() {
 	printf 'http://%s:%s' "$host" "$port"
 }
 
+# --- 기존 설치 감지 (사고 방지) ------------------------------------------------
+
+EXISTING_HINT_PROJECT=""
+EXISTING_HINT_DIR=""
+
+# 배너·가드용으로는 **강한 신호**만 본다 — 우리 이미지로 떴던 컨테이너, 또는
+# 이름에 autocert가 든 pgdata 볼륨. 남의 *_pgdata 하나 때문에 신규 설치를 막지 않는다.
+strong_existing_projects() {
+	have docker || return 0
+	docker info >/dev/null 2>&1 || return 0
+	{
+		docker ps -a --format '{{.Label "com.docker.compose.project"}}|{{.Image}}' 2>/dev/null |
+			grep -i 'autocert' | cut -d'|' -f1
+		docker volume ls -q 2>/dev/null | grep -i 'autocert' | sed -n 's/_pgdata$//p'
+	} | grep -v '^$' | sort -u
+}
+
+# 이 디렉터리에는 .env가 없는데 서버에는 우리 흔적이 있다 = 신규 설치가 아니다.
+detect_existing_install() {
+	EXISTING_HINT_PROJECT=""
+	EXISTING_HINT_DIR=""
+	[ ! -f "$ENV_FILE" ] || return 1
+	local p wd
+	while IFS= read -r p; do
+		[ -n "$p" ] || continue
+		wd=$(docker_project_label "$p" "com.docker.compose.project.working_dir" || true)
+		if [ -n "$wd" ] && [ "$wd" = "$ROOT_DIR" ]; then continue; fi
+		EXISTING_HINT_PROJECT=$p
+		EXISTING_HINT_DIR=$wd
+		if [ -n "$EXISTING_HINT_DIR" ]; then break; fi
+	done <<EOF
+$(strong_existing_projects)
+EOF
+	[ -n "$EXISTING_HINT_PROJECT" ] || return 1
+	return 0
+}
+
+# 기존 설치가 있는 서버에서 [신규 설치]를 고르면 새 DB 비밀번호가 생성되어
+# 기존 DB에 붙지 못한다. 0을 반환하면 호출부가 모드를 patch로 바꾼다.
+guard_install_over_existing() {
+	[ -z "$FORCE_NEW" ] || return 1
+	[ -n "$EXISTING_HINT_PROJECT" ] || return 1
+
+	ui_blank
+	ui_err "기존 설치가 있는 서버에서 [신규 설치]를 고르면 새 DB 비밀번호가 만들어져 **기존 DB에 붙지 못한다**."
+	ui_info "감지된 기존 설치: 프로젝트 ${EXISTING_HINT_PROJECT}${EXISTING_HINT_DIR:+ · ${EXISTING_HINT_DIR}}"
+	if [ "$TUI_MODE" = "none" ] || [ -n "$ASSUME_YES" ]; then
+		die "비대화 모드에서는 그대로 진행하지 않는다 — --mode patch 를 쓰거나, 정말 새로 깔 거면 --force-new 를 준다."
+	fi
+	if tui_confirm "그래도 신규 설치로 진행할까? (기존 데이터는 남지만 이 설치에서는 보이지 않는다)" no; then
+		return 1
+	fi
+	ui_ok "패치 모드로 바꾼다."
+	return 0
+}
+
 # --- 진입점 ------------------------------------------------------------------
 
 main() {
@@ -2262,6 +2412,12 @@ main() {
 	# COMPOSE_HTTPS_OK를 보므로 preflight 뒤여야 한다.
 	resolve_scheme
 
+	# 신규 설치로 착각해 기존 DB를 못 붙는 사고를 메뉴 **앞에서** 막는다.
+	if detect_existing_install; then
+		ui_blank
+		ui_warn "이 서버에 기존 설치가 감지됐다 (프로젝트 ${EXISTING_HINT_PROJECT}${EXISTING_HINT_DIR:+ · 디렉터리 ${EXISTING_HINT_DIR}}) — 신규가 아니라 [패치]를 고른다."
+	fi
+
 	local mode=$REQUESTED_MODE
 	if [ -z "$mode" ]; then
 		if stack_running; then
@@ -2270,32 +2426,36 @@ main() {
 			dc ps --format 'table {{.Service}}\t{{.Status}}' >&3 2>&3 || dc ps >&3 2>&3 || true
 			tui_select "무엇을 할까?" 0 \
 				"설정 변경·재기동" \
+				"패치 — 기존 설치 업그레이드" \
 				"상태 확인" \
-				"HTTPS 적용" \
 				"서버 설치(신규) — 설정을 다시 만든다" \
 				"종료"
 			case "$TUI_INDEX" in
 				0) mode=reconfigure ;;
-				1) mode=status ;;
-				2) mode=https ;;
+				1) mode="patch" ;;
+				2) mode=status ;;
 				3) mode=install ;;
 				*) mode=quit ;;
 			esac
 		else
 			tui_select "무엇을 할까?" 0 \
 				"서버 설치(신규)" \
-				"HTTPS 적용" \
+				"패치 — 기존 설치 업그레이드" \
 				"설정 변경·재기동" \
 				"상태 확인" \
 				"종료"
 			case "$TUI_INDEX" in
 				0) mode=install ;;
-				1) mode=https ;;
+				1) mode="patch" ;;
 				2) mode=reconfigure ;;
 				3) mode=status ;;
 				*) mode=quit ;;
 			esac
 		fi
+	fi
+
+	if [ "$mode" = "install" ] && guard_install_over_existing; then
+		mode="patch"
 	fi
 
 	case "$mode" in
