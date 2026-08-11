@@ -14,11 +14,11 @@
 
 ### 0.1 서버 설치 — 명령 3줄
 
-반입할 것은 **서버 패키지 `main_<버전>.tar.gz`와 그 `.sha256`** 둘뿐이다. 매체를 서버에 복사한 디렉터리에서 순서대로 실행한다. (버전 `1.0.0`은 반입한 파일명에 맞춘다.)
+반입할 것은 **서버 패키지 `main_<버전>.tar.gz`와 그 `.sha256`** 둘뿐이다. 매체를 서버에 복사한 디렉터리에서 순서대로 실행한다. (버전 `1.1.0`은 반입한 파일명에 맞춘다.)
 
 ```sh
-sha256sum -c main_1.0.0.tar.gz.sha256
-tar xzf main_1.0.0.tar.gz && cd main_1.0.0
+sha256sum -c main_1.1.0.tar.gz.sha256
+tar xzf main_1.1.0.tar.gz && cd main_1.1.0
 bash install.sh
 ```
 
@@ -327,11 +327,11 @@ sh scripts/bundle-offline.sh --target sensor-linux,sensor-windows
 매체를 서버에 복사한 뒤, 아래가 전부다. (**0.1절의 3줄과 같은 절차**이며, 여기서는 마지막 `bash install.sh` 대신 5.2–5.3을 손으로 한다.)
 
 ```sh
-sha256sum -c main_1.0.0.tar.gz.sha256
-tar xzf main_1.0.0.tar.gz
-cd main_1.0.0
+sha256sum -c main_1.1.0.tar.gz.sha256
+tar xzf main_1.1.0.tar.gz
+cd main_1.1.0
 sh load-offline.sh
-tar xzf source/autocert-source-1.0.0.tar.gz --strip-components=1
+tar xzf source/autocert-source-1.1.0.tar.gz --strip-components=1
 ```
 
 | 줄 | 하는 일 |
@@ -339,7 +339,7 @@ tar xzf source/autocert-source-1.0.0.tar.gz --strip-components=1
 | 1 | 매체 손상 확인 |
 | 2–3 | 패키지 해제 후 그 안으로 이동 — **여기가 설치 루트다** |
 | 4 | 체크섬 대조 + `docker load` |
-| 5 | 제품 소스를 **패키지 루트에 그대로 전개** (`--strip-components=1`이 아카이브 안 `autocert-1.0.0/` 접두어를 벗긴다) |
+| 5 | 제품 소스를 **패키지 루트에 그대로 전개** (`--strip-components=1`이 아카이브 안 `autocert-1.1.0/` 접두어를 벗긴다) |
 
 `load-offline.sh`는 ① `SHA256SUMS` 전건 대조 ② `docker load` ③ 매니페스트의 이미지 태그가 실제로 적재됐는지 확인, 순서로 진행한다.
 
@@ -379,7 +379,15 @@ cd <신버전 디렉터리> && bash install.sh
 | 3 | 신버전 이미지 적재 + 기동. 기존 `.env`를 발견하면 값을 유지한다 |
 
 > **HTTPS로 운영 중이면 3번째 줄을 `bash install.sh --mode https`로 실행한다.**
-> 인자 없는 `install.sh`(install/reconfigure 모드)는 `docker-compose.https.yml` 오버레이를 붙이지 않아 **TLS 프록시가 빠진 채 재기동된다.** 그런데 승계한 `.env`의 `SESSION_COOKIE_SECURE=true`는 그대로 남아 있으므로, 평문 HTTP로 열린 화면에서 브라우저가 세션 쿠키를 버려 **API는 200인데 로그인만 조용히 실패한다**(TLS.md 7장). 기존 HTTPS 설정을 감지해 자동으로 오버레이를 붙이는 폴백이 있지만, 확실한 쪽은 모드를 명시하는 것이다.
+> 인자 없는 `install.sh`(install/reconfigure 모드)는 원래 `docker-compose.https.yml` 오버레이를 붙이지 않아 **TLS 프록시가 빠진 채 재기동된다.** 그런데 승계한 `.env`의 `SESSION_COOKIE_SECURE=true`는 그대로 남아 있으므로, 평문 HTTP로 열린 화면에서 브라우저가 세션 쿠키를 버려 **API는 200인데 로그인만 조용히 실패한다**(TLS.md 7장).
+>
+> 1.1.0부터 자동 감지 폴백이 붙었다. 다만 오탐으로 켜면 프록시가 인증서를 못 찾아 기동 자체가 깨지므로 **아래 네 가지를 모두 만족할 때만** 오버레이를 유지한다.
+> 1. HTTPS 흔적이 하나 이상 — `.env`의 `HTTPS_PORT` 값이 있거나 `SESSION_COOKIE_SECURE=true`이거나, 이 프로젝트에 `proxy` 컨테이너가 남아 있다
+> 2. `deploy/tls/server.crt`·`server.key`가 **신버전 디렉터리에 실제로 있다** — 이 두 파일은 고객사가 직접 둔 것이라 패키지에 들어 있지 않다. **업그레이드 시 구버전 디렉터리에서 함께 복사해 오지 않으면 감지되지 않는다**
+> 3. 패키지에 `docker-compose.https.yml`이 있다
+> 4. compose 버전이 2.24.4 이상이다 (`ports: !override` 지원)
+>
+> 하나라도 어긋나면 경고만 내고 HTTP 구성으로 진행한다. 그래서 **확실한 쪽은 여전히 모드를 명시하는 것이다** — `--mode https`는 감지를 거치지 않는다.
 
 - 승계한 `.env`에 `COMPOSE_PROJECT_NAME`이 없으면(1.0.0에서 손으로 설치한 경우) **위 줄을 직접 추가하되, 값은 구버전 디렉터리명과 같게 맞춘다.** 이미 그 이름으로 볼륨이 만들어져 있기 때문이다. 확인은 `docker volume ls`.
 - 승계한 `.env`에 `AUTOCERT_VERSION`을 손으로 박아 뒀다면 **지우거나 새 버전 값으로 고친다.** 그대로 두면 신버전 디렉터리에서 기동해도 `.env`의 값이 이겨 **구버전 이미지로 그대로 뜬다**(적재만 되고 아무것도 바뀌지 않는다). 반입 패키지를 그대로 쓴다면 이 줄 자체가 없는 것이 정상이다 (5.2절).

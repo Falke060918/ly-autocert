@@ -157,18 +157,18 @@ SENSOR_ADVERTISED_HOSTS=10.20.0.5,autocert.internal
 **Linux**
 
 ```sh
-sha256sum -c sensor_linux_1.0.0.tar.gz.sha256
-tar xzf sensor_linux_1.0.0.tar.gz
-cd sensor_linux_1.0.0
+sha256sum -c sensor_linux_1.1.0.tar.gz.sha256
+tar xzf sensor_linux_1.1.0.tar.gz
+cd sensor_linux_1.1.0
 sha256sum -c SHA256SUMS
 ```
 
 **Windows** (PowerShell)
 
 ```powershell
-Get-FileHash .\sensor_windows_1.0.0.zip -Algorithm SHA256
-Get-Content .\sensor_windows_1.0.0.zip.sha256
-Expand-Archive .\sensor_windows_1.0.0.zip -DestinationPath .
+Get-FileHash .\sensor_windows_1.1.0.zip -Algorithm SHA256
+Get-Content .\sensor_windows_1.1.0.zip.sha256
+Expand-Archive .\sensor_windows_1.1.0.zip -DestinationPath .
 ```
 
 - Windows는 위 두 해시를 **눈으로 대조**한다. 압축을 푼 뒤 패키지 안 `SHA256SUMS` 전건 대조는 `install-sensor.ps1`이 실행 전에 자동으로 수행하므로 손으로 할 필요가 없다 (`certutil -hashfile <파일> SHA256`으로 개별 확인은 가능하다).
@@ -293,7 +293,7 @@ schtasks /Run /TN "AutocertSensor"
 - **클라이언트 인증서 자동 갱신**: 인증서는 90일 유효이며, 센서가 기동 시와 하루 1회 잔여 기간을 검사해 **30일 미만이면 자동 갱신**한다(무중단, `sensor.renew` 감사 기록). 운영자가 할 일은 없다. 단, 센서를 90일 넘게 꺼두면 인증서가 만료되어 재등록이 필요하다.
 - **비활성화**: [센서] 화면에서 비활성화(System Administrator 전용)하면 **다음 요청부터 즉시 차단**된다(401). 되돌릴 수 없으며 다시 쓰려면 새로 등록한다. 미사용 등록 토큰 회수(대기 상태 센서)도 같은 버튼으로 한다.
 - **감사 로그**: 토큰 발급(`sensor.token.issue`)·등록(`sensor.enroll`, 실패 포함)·인증서 갱신(`sensor.renew`)·비활성화(`sensor.disable`)는 전건 감사 이벤트로 기록된다 (OPERATIONS.md 3.1절).
-- **버전 확인**: `autocert-sensor --version`이 빌드된 버전을 출력한다(`autocert-sensor 1.0.0`). 버전을 새기지 않고 빌드한 바이너리는 `dev`로 나온다 — 정식 패키지에서 `dev`가 보이면 그 바이너리는 릴리즈 산출물이 아니다. 서버와 버전이 어긋나면 8.1절을 본다.
+- **버전 확인**: `autocert-sensor --version`이 빌드된 버전을 출력한다(`autocert-sensor 1.1.0`). 버전을 새기지 않고 빌드한 바이너리는 `dev`로 나온다 — 정식 패키지에서 `dev`가 보이면 그 바이너리는 릴리즈 산출물이 아니다. 서버와 버전이 어긋나면 8.1절을 본다.
 - **로그**: 센서는 구조화 JSON 로그를 표준 출력으로 남긴다. 개인키·인증서·토큰은 로그에 출력되지 않는다 — 발견되면 제품 결함이므로 즉시 보고할 것.
 
 ## 8. 업데이트
