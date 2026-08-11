@@ -1961,7 +1961,7 @@ patch_resolve_project() {
 		ui_note "구버전 프로젝트명을 기본값으로 본다: $OLD_PROJECT (${OLD_PROJECT}_pgdata 볼륨 확인됨)"
 		return 0
 	fi
-	ui_warn "구버전 compose 프로젝트명을 확정하지 못했다 — 기동 후 빈 DB 검증에서 다시 확인한다."
+	ui_warn "구버전 compose 프로젝트명을 확정하지 못했다${derived:+ (디렉터리명 파생 후보: $derived)} — 기동 후 빈 DB 검증에서 다시 확인한다."
 }
 
 # 구버전의 접속 방식: AUTOCERT_SCHEME > config_files 라벨 > 레거시 흔적.
@@ -2007,7 +2007,10 @@ patch_compare_versions() {
 # 구버전 스택을 그때의 compose 파일 조합 그대로 다룬다.
 # **-v 는 이 함수에도, 호출부에도 없다** — 볼륨을 지우면 그것이 곧 데이터 소실이다.
 old_dc() {
-	local fargs=() f files=()
+	local fargs=() pargs=() f files=()
+	# 프로젝트명을 못 찾았으면 -p 를 붙이지 않는다 — compose가 그때와 같은 규칙
+	# (구버전 디렉터리명)으로 다시 파생시키는 편이 빈 이름으로 실패하는 것보다 낫다.
+	if [ -n "$OLD_PROJECT" ]; then pargs=(-p "$OLD_PROJECT"); fi
 	if [ -n "$OLD_CONFIG_FILES" ]; then
 		local IFS=','
 		# shellcheck disable=SC2206 # 콤마 분리가 목적이라 의도적인 분할이다
@@ -2024,7 +2027,7 @@ old_dc() {
 			fargs+=(-f "$OLD_DIR/docker-compose.https.yml")
 		fi
 	fi
-	docker compose -p "$OLD_PROJECT" --project-directory "$OLD_DIR" "${fargs[@]}" "$@"
+	docker compose ${pargs[@]+"${pargs[@]}"} --project-directory "$OLD_DIR" "${fargs[@]}" "$@"
 }
 
 # P4 — DB 백업. 기본 ON이고 실패하면 여기서 멈춘다.
@@ -2142,6 +2145,10 @@ patch_stop_old() {
 		ui_warn "구버전 정지 명령이 실패했다."
 	fi
 	local left
+	if [ -z "$OLD_PROJECT" ]; then
+		ui_warn "구버전 프로젝트명을 몰라 정지 결과를 확인하지 못했다 — docker compose ps 로 직접 본다."
+		return 0
+	fi
 	left=$(docker ps -q --filter "label=com.docker.compose.project=$OLD_PROJECT" 2>/dev/null | grep -c . || true)
 	if [ "${left:-0}" -gt 0 ]; then
 		ui_warn "구버전 컨테이너 ${left}개가 아직 떠 있다 — 포트가 겹치면 신버전 기동이 실패한다."
