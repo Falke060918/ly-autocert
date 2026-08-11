@@ -101,6 +101,12 @@ export interface Certificate {
 }
 
 /**
+ * 스캔이 관측한 협상 TLS 버전. 표기 정본은 백엔드 스캐너(discovery.TLSVersionNames)이고
+ * 목록 필터(tls_version=)가 이 네 값만 받는다 — 밖의 값은 400이라 유니온으로 고정한다.
+ */
+export type TlsVersion = "TLS 1.0" | "TLS 1.1" | "TLS 1.2" | "TLS 1.3";
+
+/**
  * 위험 판정 심각도 4단. ok는 "위험 항목이 하나도 없음"이고, **최고 심각도** 기준이라
  * 네 값이 인벤토리를 겹침 없이 나눈다(합 = total).
  */
@@ -166,6 +172,14 @@ export interface CertificateListItem extends Certificate {
    * 확인되지 않았으면 null이다. 서버 정렬 화이트리스트에 없어 정렬은 불가하다.
    */
   last_seen_at: string | null;
+  /**
+   * removed 아닌 설치 위치들이 관측한 협상 TLS 버전 집합 (중복 제거·오름차순).
+   * **null이 아니다** — 관측 이력이 없으면 빈 배열이며, 빈 배열만으로는 "스캔한 적
+   * 없음"과 "TLS를 쓰지 않음"을 구분할 수 없다(구분하려면 last_seen_at을 함께 본다).
+   * 서버가 함께 열어 둔 다른 버전은 담기지 않는다 — 그쪽은 설치 위치의
+   * supported_tls_versions이며 별개 필드다. last_seen_at과 같은 이유로 정렬은 불가하다.
+   */
+  tls_versions: TlsVersion[];
   /** 조회 시점에 계산한 위험 판정 (저장하지 않는다). */
   risk: RiskAssessment;
 }
