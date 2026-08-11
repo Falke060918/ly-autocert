@@ -59,6 +59,11 @@ ENV_FILE="$ROOT_DIR/.env"
 COMPOSE_FILE="$ROOT_DIR/docker-compose.yml"
 COMPOSE_HTTPS_FILE="$ROOT_DIR/docker-compose.https.yml"
 VERSION_FILE="$ROOT_DIR/VERSION"
+# 서버 인증서·개인키. 어떤 패키지에도 들어 있지 않은 **고객사 파일**이라
+# 신버전 디렉터리에는 기본적으로 없다(업그레이드 때 승계해야 한다).
+TLS_DIR="$ROOT_DIR/deploy/tls"
+TLS_CRT="$TLS_DIR/server.crt"
+TLS_KEY="$TLS_DIR/server.key"
 
 DEFAULT_FRONTEND_PORT=3000
 DEFAULT_BACKEND_PORT=8080
@@ -74,6 +79,13 @@ CHECK_ONLY=""
 SKIP_LOAD=""
 FORCE_BUILD=""
 REQUESTED_MODE=""
+REQUESTED_SCHEME=""
+FORCE_NEW=""
+# 패치 모드 인자 — 인자 파싱이 이 파일 위쪽에서 돌므로 선언도 여기 있어야 한다
+# (아래 패치 절에서 선언하면 파싱 결과를 그 초기화가 덮어쓴다).
+PATCH_FROM=""
+SKIP_BACKUP=""
+BACKUP_DIR=""
 
 ENV_TMP=""
 COMPOSE_VERSION=""
@@ -88,7 +100,12 @@ CFG_FRONTEND_PORT=""
 CFG_BACKEND_PORT=""
 CFG_SENSOR_PORT=""
 CFG_SENSOR_ENABLED=0
-CFG_HTTPS=0
+# 접속 방식의 정본. http | https 둘 중 하나다 — "둘 다 동시 서비스"는 없다
+# (HTTPS 구성은 80→443 리다이렉트를 이미 포함한다).
+CFG_SCHEME="http"
+CFG_HTTPS=0                # CFG_SCHEME의 내부 호환 미러(0|1). 판정은 CFG_SCHEME으로만 한다.
+CFG_PUBLIC_HOST=""         # 접속 FQDN(HTTPS에서 묻는다). 비면 PRIMARY_IP를 쓴다.
+COMPOSE_OVERLAYS=()        # dc()가 base 위에 얹을 오버레이 파일 목록
 
 usage() {
 	cat <<'EOF'
@@ -100,11 +117,24 @@ INHERIT AutoCert 설치 마법사
 옵션:
   -y, --yes             전부 기본값으로 진행한다(질문 없음)
       --non-interactive 화면 조작 없이 진행한다(-y 포함, 판단이 필요하면 실패)
-      --mode <모드>     install | https | reconfigure | status
+      --mode <모드>     install | patch | reconfigure | status | https
+      --scheme <방식>   http | https  (콘솔 접속 방식 — 묻지 않고 이 값을 쓴다)
+      --from <경로>     [patch] 구버전 설치 디렉터리(또는 그 .env)
+      --skip-backup     [patch] DB 백업을 건너뛴다 (기본은 백업하고, 실패하면 중단한다)
+      --backup-dir <경로>
+                        [patch] 백업 저장 위치 (기본: <설치 루트>/backups)
+      --force-new       기존 설치가 감지돼도 신규 설치를 강행한다
       --check-only      사전 점검만 하고 끝낸다(아무것도 바꾸지 않는다)
       --skip-load       오프라인 번들 자동 적재를 건너뛴다
       --build           적재된 이미지가 없을 때 소스에서 빌드한다
   -h, --help            이 도움말
+
+모드:
+  install      새 서버에 처음 설치한다
+  patch        이미 깔려 있는 설치를 이 버전으로 올린다 (DB·설정·인증서를 승계한다)
+  reconfigure  설정만 바꿔 다시 기동한다
+  status       상태만 확인한다
+  https        reconfigure --scheme https 의 별칭 (옛 인자 호환)
 
 환경변수 오버라이드(설정하면 묻지 않는다):
   FRONTEND_PORT  BACKEND_PORT  SENSOR_GATEWAY_PORT
@@ -116,6 +146,8 @@ INHERIT AutoCert 설치 마법사
   bash scripts/install.sh                          대화형 설치
   bash scripts/install.sh --check-only             설치 가능 여부만 확인
   bash scripts/install.sh --yes --mode install     무인 설치(전부 기본값)
+  bash scripts/install.sh --mode patch             기존 설치 업그레이드(구버전 자동 탐색)
+  bash scripts/install.sh --mode patch --from /opt/main_1.0.0
 EOF
 }
 
@@ -143,10 +175,36 @@ while [ $# -gt 0 ]; do
 			REQUESTED_MODE=$2; shift 2
 			;;
 		--mode=*) REQUESTED_MODE=${1#--mode=}; shift ;;
+		--scheme)
+			[ $# -ge 2 ] || { usage >&2; exit 2; }
+			REQUESTED_SCHEME=$2; shift 2
+			;;
+		--scheme=*) REQUESTED_SCHEME=${1#--scheme=}; shift ;;
+		--from)
+			[ $# -ge 2 ] || { usage >&2; exit 2; }
+			PATCH_FROM=$2; shift 2
+			;;
+		--from=*) PATCH_FROM=${1#--from=}; shift ;;
+		--skip-backup) SKIP_BACKUP=1; shift ;;
+		--backup-dir)
+			[ $# -ge 2 ] || { usage >&2; exit 2; }
+			BACKUP_DIR=$2; shift 2
+			;;
+		--backup-dir=*) BACKUP_DIR=${1#--backup-dir=}; shift ;;
+		--force-new) FORCE_NEW=1; shift ;;
 		-h | --help) usage; exit 0 ;;
 		*) usage >&2; printf '알 수 없는 옵션: %s\n' "$1" >&2; exit 2 ;;
 	esac
 done
+
+case "$REQUESTED_MODE" in
+	"" | install | patch | reconfigure | status | https) : ;;
+	*) usage >&2; printf '알 수 없는 모드: %s\n' "$REQUESTED_MODE" >&2; exit 2 ;;
+esac
+case "$REQUESTED_SCHEME" in
+	"" | http | https) : ;;
+	*) usage >&2; printf '알 수 없는 접속 방식: %s (http|https)\n' "$REQUESTED_SCHEME" >&2; exit 2 ;;
+esac
 
 if [ -n "$ASSUME_YES" ]; then TUI_ASSUME_YES=1; fi
 tui_init
@@ -180,17 +238,30 @@ ver_ge() {
 	return 0
 }
 
+# CFG_SCHEME을 세우는 유일한 통로다. 오버레이 목록도 여기서만 바뀐다 —
+# 스킴 판정과 compose 인자가 어긋나는 것이 그 자체로 사고이기 때문이다.
+set_scheme() {
+	# shellcheck disable=SC2034 # CFG_HTTPS는 판정에 쓰지 않는 호환용 미러다(로그·디버깅용)
+	case "$1" in
+		https) CFG_SCHEME="https"; CFG_HTTPS=1 ;;
+		*)     CFG_SCHEME="http";  CFG_HTTPS=0 ;;
+	esac
+	COMPOSE_OVERLAYS=()
+	if [ "$CFG_SCHEME" = "https" ]; then COMPOSE_OVERLAYS+=("$COMPOSE_HTTPS_FILE"); fi
+}
+
+scheme_is_https() { [ "$CFG_SCHEME" = "https" ]; }
+
 dc() {
 	# 프로젝트명을 명시한다 — .env의 COMPOSE_PROJECT_NAME과 같은 값이지만, .env를 쓰기
 	# 전(사전 점검·기존 스택 감지) 단계에서도 같은 프로젝트를 봐야 한다.
-	local pargs=()
+	local pargs=() fargs=(-f "$COMPOSE_FILE") f
 	if [ -n "$COMPOSE_PROJECT" ]; then pargs=(-p "$COMPOSE_PROJECT"); fi
 	# ${a[@]+"${a[@]}"} — 빈 배열을 set -u 에서 참조해도 안전한 형태(bash 4.2 대응).
-	if [ "$CFG_HTTPS" -eq 1 ]; then
-		docker compose ${pargs[@]+"${pargs[@]}"} --project-directory "$ROOT_DIR" -f "$COMPOSE_FILE" -f "$COMPOSE_HTTPS_FILE" "$@"
-	else
-		docker compose ${pargs[@]+"${pargs[@]}"} --project-directory "$ROOT_DIR" -f "$COMPOSE_FILE" "$@"
-	fi
+	for f in ${COMPOSE_OVERLAYS[@]+"${COMPOSE_OVERLAYS[@]}"}; do
+		fargs+=(-f "$f")
+	done
+	docker compose ${pargs[@]+"${pargs[@]}"} --project-directory "$ROOT_DIR" "${fargs[@]}" "$@"
 }
 
 # compose v2의 기본 프로젝트명 규칙: 소문자화 → [a-z0-9_-] 밖의 문자 제거 → 앞쪽 _- 제거.
@@ -343,6 +414,20 @@ http_ok() {
 	_http_ok_bash "$url"
 }
 
+# 응답 본문이 필요할 때. 못 읽으면 빈 문자열이다(판정은 호출부가 한다).
+http_body() {
+	local url=$1
+	if have curl; then
+		curl -fsS --max-time 5 "$url" 2>/dev/null
+		return $?
+	fi
+	if have wget; then
+		wget -q -O - -T 5 "$url" 2>/dev/null
+		return $?
+	fi
+	return 1
+}
+
 _http_ok_bash() {
 	local url=$1 hostport path host port line
 	url=${url#http://}
@@ -368,12 +453,15 @@ _http_ok_bash() {
 
 # --- .env 편집 ---------------------------------------------------------------
 
+# env_open [시드파일] — 작업용 사본을 연다.
+# 시드를 생략하면 설치 루트의 .env 다. 패치 모드는 **구버전 .env**를 시드로 넘긴다.
 env_open() {
+	local seed=${1:-$ENV_FILE}
 	if [ -n "$ENV_TMP" ] && [ -f "$ENV_TMP" ]; then rm -f "$ENV_TMP"; fi
 	ENV_TMP=$(mktemp "${TMPDIR:-/tmp}/autocert-env.XXXXXX")
 	chmod 600 "$ENV_TMP"
-	if [ -f "$ENV_FILE" ]; then
-		cat "$ENV_FILE" > "$ENV_TMP"
+	if [ -f "$seed" ]; then
+		cat "$seed" > "$ENV_TMP"
 	else
 		{
 			printf '# INHERIT AutoCert 설정 — scripts/install.sh 가 생성했다.\n'
@@ -383,10 +471,11 @@ env_open() {
 	fi
 }
 
-env_get() {
-	local k=$1 line
-	[ -f "$ENV_TMP" ] || return 0
-	line=$(grep -m1 "^${k}=" "$ENV_TMP" 2>/dev/null || true)
+# file_env_get 파일 키 — 임의의 .env 파일에서 값 하나를 읽는다(작업 사본과 무관).
+file_env_get() {
+	local f=$1 k=$2 line
+	[ -f "$f" ] || return 0
+	line=$(grep -m1 "^${k}=" "$f" 2>/dev/null || true)
 	line=${line#*=}
 	line=${line%$'\r'}   # Windows에서 편집된 .env 대비
 	# 값이 따옴표로 감싸여 있으면 벗긴다.
@@ -395,6 +484,11 @@ env_get() {
 		\'*\') line=${line#\'}; line=${line%\'} ;;
 	esac
 	printf '%s' "$line"
+}
+
+env_get() {
+	[ -n "$ENV_TMP" ] || return 0
+	file_env_get "$ENV_TMP" "$1"
 }
 
 env_set() {
@@ -412,6 +506,27 @@ env_set() {
 	else
 		printf '%s=%s\n' "$k" "$v" >> "$ENV_TMP"
 	fi
+}
+
+# 키의 **행 자체**를 지운다. 빈 값으로 두는 것과 다르다 — 예를 들어
+# AUTOCERT_VERSION은 값이 남아 있으면 신버전 이미지 태그가 구버전으로 고정된다.
+env_unset() {
+	local k=$1
+	[ -f "$ENV_TMP" ] || return 0
+	grep -q "^${k}=" "$ENV_TMP" 2>/dev/null || return 0
+	awk -v k="$k" 'index($0, k "=") == 1 { next } { print }' "$ENV_TMP" > "$ENV_TMP.new"
+	mv "$ENV_TMP.new" "$ENV_TMP"
+	chmod 600 "$ENV_TMP"
+}
+
+# Windows에서 편집·전송된 .env는 값 끝에 CR이 남아 컨테이너가 "8080\r" 같은 값을 본다.
+env_normalize_crlf() {
+	[ -f "$ENV_TMP" ] || return 0
+	grep -q $'\r' "$ENV_TMP" 2>/dev/null || return 0
+	sed 's/\r$//' "$ENV_TMP" > "$ENV_TMP.new"
+	mv "$ENV_TMP.new" "$ENV_TMP"
+	chmod 600 "$ENV_TMP"
+	ui_note ".env의 CRLF 줄끝을 정규화했다."
 }
 
 env_commit() {
@@ -942,6 +1057,43 @@ inject_trusted_proxies() {
 	ui_ok "신뢰 프록시 대역 자동 설정: $DEFAULT_TRUSTED_PROXIES (compose 네트워크 — 접근 IP 제한이 브라우저 IP로 동작하게 한다)"
 }
 
+# 이 서버가 붙어 있는 대역을 스캔 대상 제안에 실어 준다. 질문은 늘리지 않는다 —
+# 이 값이 비어 있으면 디스커버리 화면의 "설치 시 감지" 칩이 늘 비어서, 첫 스캔에
+# 반드시 수기 입력이 필요하다. 기존 값이 있으면 손대지 않는다.
+ensure_scan_suggestions() {
+	local cur nets
+	cur=$(value_for SCAN_SUGGESTED_NETWORKS "")
+	if [ -n "$cur" ]; then
+		env_set SCAN_SUGGESTED_NETWORKS "$cur"
+		return 0
+	fi
+	nets=$(detect_local_networks)
+	[ -n "$nets" ] || return 0
+	env_set SCAN_SUGGESTED_NETWORKS "$nets"
+	ui_ok "스캔 대상 제안에 이 서버의 대역을 넣었다: $nets"
+	ui_info "발견 화면의 '설치 시 감지' 칩으로 나온다 — 대역이 다르면 화면에서 직접 입력한다."
+}
+
+# NIC IPv4를 /24로 묶는다. 루프백·링크로컬과 도커 기본 주소 풀(172.17~172.31)은 뺀다.
+detect_local_networks() {
+	local ip net out="" count=0
+	for ip in $(detect_ips); do
+		case "$ip" in
+			127.* | 169.254.* | 0.*) continue ;;
+			172.1[789].* | 172.2[0-9].* | 172.3[01].*) continue ;;
+		esac
+		net=$(printf '%s' "$ip" | awk -F. 'NF==4 && $4 != "" {print $1"."$2"."$3".0/24"}')
+		[ -n "$net" ] || continue
+		case ",$out," in
+			*",$net,"*) continue ;;
+		esac
+		out="${out}${out:+,}${net}"
+		count=$((count + 1))
+		[ "$count" -lt 8 ] || break
+	done
+	printf '%s' "$out"
+}
+
 # 기동 후 실제 compose 네트워크 대역을 확인해 필요하면 보정한다.
 fix_trusted_proxies_after_up() {
 	local cid net subnet cur
@@ -1044,42 +1196,57 @@ print_status() {
 	ui_title "상태"
 	dc ps >&3 2>&3 || true
 	ui_blank
-	local fp bp
+	local fp bp hp
 	fp=$(env_get FRONTEND_PORT); fp=${fp:-$DEFAULT_FRONTEND_PORT}
 	bp=$(env_get BACKEND_PORT); bp=${bp:-$DEFAULT_BACKEND_PORT}
+	CFG_FRONTEND_PORT=$fp
+	CFG_BACKEND_PORT=$bp
+
 	if http_ok "http://127.0.0.1:${bp}/healthz"; then
 		ui_ok "백엔드 /healthz 정상"
 	else
 		ui_warn "백엔드 /healthz 무응답 (포트 ${bp})"
 	fi
 	if http_ok "http://127.0.0.1:${fp}/"; then
-		ui_ok "웹 콘솔 응답 정상"
+		ui_ok "웹 콘솔 응답 정상 (내부 ${fp})"
 	else
-		ui_warn "웹 콘솔 무응답 (포트 ${fp})"
+		ui_warn "웹 콘솔 무응답 (내부 포트 ${fp})"
 	fi
-	ui_info "접속: http://${PRIMARY_IP}:${fp}"
+	# HTTPS 구성에서는 3000·8080이 루프백 전용이다 — 그 주소를 안내하면 틀린 안내가 된다.
+	if scheme_is_https; then
+		hp=$(env_get HTTPS_PORT); hp=${hp:-443}
+		if https_probe "$hp"; then
+			ui_ok "HTTPS 응답 정상 (포트 ${hp})"
+		else
+			ui_warn "HTTPS 무응답 (포트 ${hp}) — 프록시 로그를 확인한다: docker compose logs proxy"
+		fi
+	fi
+	ui_info "접속: $(console_base_url)"
 }
 
 print_done() {
-	local scheme="http" webport="$CFG_FRONTEND_PORT"
-	if [ "$CFG_HTTPS" -eq 1 ]; then
-		scheme="https"
+	local webport="$CFG_FRONTEND_PORT" host
+	host=${CFG_PUBLIC_HOST:-$PRIMARY_IP}
+	if scheme_is_https; then
 		webport=$(env_get HTTPS_PORT); webport=${webport:-443}
 	fi
 
 	ui_blank
 	ui_title "설치 완료"
 	if [ "$webport" = "80" ] || [ "$webport" = "443" ]; then
-		ui_step "접속 주소:  ${scheme}://${PRIMARY_IP}"
+		ui_step "접속 주소:  ${CFG_SCHEME}://${host}"
 	else
-		ui_step "접속 주소:  ${scheme}://${PRIMARY_IP}:${webport}"
+		ui_step "접속 주소:  ${CFG_SCHEME}://${host}:${webport}"
 	fi
 	ui_info "브라우저로 열어 첫 화면에서 관리자 계정을 만든다 (초기 비밀번호 같은 건 없다)."
+	if scheme_is_https; then
+		ui_note "HSTS는 고객사의 신뢰된 인증서가 설치된 뒤에 켠다 — 자체 서명 상태에서 켜면 콘솔이 잠긴다."
+	fi
 	ui_blank
 
 	ui_step "방화벽에서 열 포트"
 	ui_info "- ${webport}/tcp  관리 콘솔 (필수)"
-	if [ "$CFG_HTTPS" -eq 1 ]; then
+	if scheme_is_https; then
 		local rport
 		rport=$(env_get HTTP_REDIRECT_PORT); rport=${rport:-80}
 		ui_info "- ${rport}/tcp  HTTPS 리다이렉트 (선택)"
@@ -1134,8 +1301,8 @@ https_proxy_present() {
 # 반대로 오탐으로 켜면 프록시가 인증서를 못 찾아 기동이 깨진다 — 그래서 .env 흔적 1개 이상과
 # **인증서 파일 실존**을 함께 요구한다(server.crt·server.key는 고객사가 직접 둔 파일이다).
 detect_https_deployment() {
-	# --mode https 로 이미 정해진 값은 덮어쓰지 않는다.
-	if [ "$CFG_HTTPS" -eq 1 ]; then return 0; fi
+	# 이미 정해진 값(--scheme https / AUTOCERT_SCHEME)은 덮어쓰지 않는다.
+	if scheme_is_https; then return 0; fi
 
 	local traces="" secure
 	if [ -n "$(env_get HTTPS_PORT)" ]; then traces="HTTPS_PORT"; fi
@@ -1162,82 +1329,95 @@ detect_https_deployment() {
 		return 0
 	fi
 
-	CFG_HTTPS=1
+	set_scheme https
 	ui_ok "기존 설치가 HTTPS 구성으로 판단되어 TLS 오버레이를 유지한다 (근거: ${traces})"
 }
 
-# --- 모드 --------------------------------------------------------------------
-
-mode_install() {
-	ui_title "서버 설치"
-	ensure_source_tree
-	ensure_images
-
-	env_open
+# 이 설치의 접속 방식을 정한다. 우선순위:
+#   1) .env의 AUTOCERT_SCHEME — install.sh가 직접 기록하는 정본
+#   2) 레거시 휴리스틱(detect_https_deployment) — 그 이전 버전으로 깔린 설치 호환
+# 여기서 정해지는 것은 **의도**다. 자산(인증서) 확인은 ensure_tls_assets가 하고,
+# 자산이 없으면 거기서 http로 내려온다.
+resolve_scheme() {
+	local recorded
+	CFG_PUBLIC_HOST=$(value_for AUTOCERT_PUBLIC_HOST "")
+	recorded=$(value_for AUTOCERT_SCHEME "")
+	case "$recorded" in
+		https)
+			set_scheme https
+			ui_ok "기록된 접속 방식: HTTPS (.env AUTOCERT_SCHEME)"
+			return 0
+			;;
+		http)
+			set_scheme http
+			ui_ok "기록된 접속 방식: HTTP (.env AUTOCERT_SCHEME)"
+			return 0
+			;;
+	esac
+	set_scheme http
 	detect_https_deployment
-	persist_project_name
-	collect_our_ports
-	ask_ports
-	ask_sensor
-	inject_trusted_proxies
-	ensure_postgres_password
-	ensure_notify_base_url
-	env_commit
+}
 
-	compose_up
-	fix_trusted_proxies_after_up
-	if wait_health; then
-		print_done
-	else
-		exit 1
+# 다음 실행이 휴리스틱에 기대지 않도록 확정값을 .env에 남긴다.
+persist_scheme() {
+	env_set AUTOCERT_SCHEME "$CFG_SCHEME"
+	if [ -n "$CFG_PUBLIC_HOST" ]; then
+		env_set AUTOCERT_PUBLIC_HOST "$CFG_PUBLIC_HOST"
 	fi
 }
 
-mode_reconfigure() {
-	ui_title "설정 변경·재기동"
-	ensure_source_tree
-	ensure_images
-	env_open
-	detect_https_deployment
-	persist_project_name
-	collect_our_ports
-	ask_ports
-	ask_sensor
-	inject_trusted_proxies
-	ensure_postgres_password
-	ensure_notify_base_url
-	env_commit
+# --- 접속 방식 문답과 TLS 자산 ------------------------------------------------
+#
+# 접속 방식은 HTTP / HTTPS **2지선다**다. "둘 다 동시 서비스"는 제공하지 않는다 —
+# 평문 경로를 열어 두는 순간 그쪽이 상용 경로가 되어 TLS가 장식이 되기 때문이다.
+# HTTPS 구성은 80→443 리다이렉트를 이미 포함하므로 실사용에 불편이 없다.
 
-	compose_up
-	fix_trusted_proxies_after_up
-	if wait_health; then
-		ui_ok "재기동 완료"
-		print_done
+# HTTPS를 고를 수 있는 환경인가 — 오버레이 파일과 compose 버전 둘 다 필요하다.
+https_supported() {
+	[ -f "$COMPOSE_HTTPS_FILE" ] || return 1
+	[ -n "$COMPOSE_HTTPS_OK" ] || return 1
+	return 0
+}
+
+tls_assets_present() { [ -s "$TLS_CRT" ] && [ -s "$TLS_KEY" ]; }
+
+# install·patch·reconfigure가 공유하는 접속 방식 문답. 여기서 CFG_SCHEME이 확정되고,
+# 그 값이 dc()·ensure_notify_base_url·print_done을 지배한다 — compose_up보다 앞이어야 한다.
+ask_scheme() {
+	local want=$CFG_SCHEME def=0
+
+	if [ -n "$REQUESTED_SCHEME" ]; then
+		want=$REQUESTED_SCHEME
+	elif ! https_supported; then
+		# 고를 수 없는 선택지는 보여주지 않는다.
+		if scheme_is_https; then
+			ui_warn "HTTPS 구성이었으나 이 환경에서는 오버레이를 쓸 수 없다(compose ${COMPOSE_VERSION:-?} / 필요: ${COMPOSE_HTTPS_MIN} 이상)."
+		fi
+		want=http
+		ui_note "접속 방식: HTTP (이 환경에서는 HTTPS를 구성할 수 없다)"
 	else
-		exit 1
+		if scheme_is_https; then def=1; fi
+		tui_select "콘솔 접속 방식을 정한다 (한 가지만 쓴다)" "$def" \
+			"HTTP — 평문. 폐쇄망 내부에서만 쓴다" \
+			"HTTPS — nginx가 TLS를 종단한다(80은 443으로 되돌린다). 서버 인증서·개인키가 필요하다"
+		if [ "$TUI_INDEX" -eq 1 ]; then want=https; else want=http; fi
+	fi
+
+	set_scheme "$want"
+
+	if scheme_is_https && ! ensure_tls_assets; then
+		ui_warn "HTTPS에 필요한 인증서를 확보하지 못했다 — HTTP 구성으로 진행한다."
+		set_scheme http
+	fi
+
+	if scheme_is_https; then
+		apply_https_settings
+	else
+		apply_http_settings
 	fi
 }
 
-mode_https() {
-	ui_title "HTTPS 적용"
-	# deploy/tls 는 소스 아카이브 안에 있다 — 인증서를 두기 전에 트리가 있어야 한다.
-	ensure_source_tree
-	if [ -z "$COMPOSE_HTTPS_OK" ]; then
-		ui_warn "compose ${COMPOSE_VERSION:-?} 는 ports: !override 를 지원하지 않는다(필요: ${COMPOSE_HTTPS_MIN} 이상)."
-		ui_info "compose를 올리거나 docs/manual/TLS.md 의 수동 절차를 따른다."
-		return 1
-	fi
-	if [ ! -f "$ROOT_DIR/deploy/tls/server.crt" ] || [ ! -f "$ROOT_DIR/deploy/tls/server.key" ]; then
-		ui_err "deploy/tls/server.crt 와 server.key 가 필요하다."
-		ui_info "서버 인증서와 개인키를 그 이름으로 두고 다시 실행한다 (절차: docs/manual/TLS.md)."
-		ui_info "개인키 권한은 600으로 둔다."
-		return 1
-	fi
-
-	CFG_HTTPS=1
-	env_open
-	persist_project_name
-	collect_our_ports
+apply_https_settings() {
 	local hp rp
 	hp=$(value_for HTTPS_PORT "443")
 	rp=$(value_for HTTP_REDIRECT_PORT "80")
@@ -1252,21 +1432,856 @@ mode_https() {
 	# TLS 종단 뒤에서만 켠다 — 평문 HTTP로 접속하면 브라우저가 Secure 쿠키를 버려
 	# 로그인이 조용히 실패한다(GOTCHAS / TLS.md 7장).
 	env_set SESSION_COOKIE_SECURE "true"
-	CFG_FRONTEND_PORT=$(env_get FRONTEND_PORT); CFG_FRONTEND_PORT=${CFG_FRONTEND_PORT:-$DEFAULT_FRONTEND_PORT}
-	CFG_BACKEND_PORT=$(env_get BACKEND_PORT); CFG_BACKEND_PORT=${CFG_BACKEND_PORT:-$DEFAULT_BACKEND_PORT}
-	CFG_SENSOR_PORT=$(env_get SENSOR_GATEWAY_PORT); CFG_SENSOR_PORT=${CFG_SENSOR_PORT:-$DEFAULT_SENSOR_PORT}
-	if [ -n "$(env_get SENSOR_CA_ENC_KEY)" ]; then CFG_SENSOR_ENABLED=1; fi
+	ask_public_host
+}
+
+apply_http_settings() {
+	local secure
+	secure=$(env_get SESSION_COOKIE_SECURE)
+	case "$secure" in
+		[Tt][Rr][Uu][Ee] | 1)
+			# 위 주석의 반대 방향이다. true인 채로 HTTP를 띄우면 API는 200인데
+			# 브라우저가 쿠키를 버려 로그인 화면만 반복된다.
+			env_set SESSION_COOKIE_SECURE "false"
+			ui_warn "HTTP 구성이라 SESSION_COOKIE_SECURE를 false로 내렸다 (true로 두면 로그인만 조용히 실패한다)."
+			;;
+	esac
+}
+
+# deploy/tls/server.crt·server.key 를 확보한다. 0=확보, 1=확보 실패(HTTP로 내려간다).
+ensure_tls_assets() {
+	mkdir -p "$TLS_DIR" 2>/dev/null || true
+	while :; do
+		if tls_assets_present; then
+			if validate_tls_pair "$TLS_CRT" "$TLS_KEY"; then
+				chmod 600 "$TLS_KEY" 2>/dev/null || true
+				chmod 644 "$TLS_CRT" 2>/dev/null || true
+				ui_ok "서버 인증서 확인: deploy/tls/server.crt · server.key (개인키 권한 600)"
+				return 0
+			fi
+		else
+			ui_warn "deploy/tls/server.crt · server.key 가 없다 — 이 두 파일이 있어야 HTTPS가 뜬다."
+			tls_pfx_hint
+		fi
+
+		if [ "$TUI_MODE" = "none" ] || [ -n "$ASSUME_YES" ]; then
+			ui_info "비대화 모드에서는 인증서를 물어보지 않는다 — 파일을 두고 다시 실행한다."
+			return 1
+		fi
+
+		tui_select "서버 인증서를 어떻게 할까?" 0 \
+			"지금 경로를 지정한다 — deploy/tls/ 로 복사한다" \
+			"직접 파일을 두고 오겠다 — 두고 나서 Enter" \
+			"HTTP로 계속한다"
+		case "$TUI_INDEX" in
+			0) copy_tls_from_paths || true ;;
+			1)
+				ui_info "다른 터미널에서 아래 두 파일을 만들어 두고 돌아온다:"
+				ui_info "  $TLS_CRT   (리프 인증서 + 중간 CA 를 이 순서로 이어붙인 PEM)"
+				ui_info "  $TLS_KEY   (개인키 PEM · 암호 없이 · 권한 600)"
+				tui_input "두었으면 Enter" ""
+				;;
+			*) return 1 ;;
+		esac
+	done
+}
+
+tls_pfx_hint() {
+	have openssl || return 0
+	ui_info ".pfx / .p12 만 있으면 두 줄로 꺼낸다(이 스크립트는 변환하지 않는다):"
+	ui_info "  openssl pkcs12 -in <파일>.pfx -clcerts -nokeys -out server.crt"
+	ui_info "  openssl pkcs12 -in <파일>.pfx -nocerts -nodes  -out server.key"
+}
+
+# 인증서·개인키를 지정 경로에서 deploy/tls/ 로 복사한다.
+copy_tls_from_paths() {
+	local crt key
+	pick_existing_file "서버 인증서 파일(PEM)" "$PWD" '*.crt *.pem *.cer' || return 1
+	crt=$PICKED_PATH
+	[ -f "$crt" ] || { ui_err "그런 파일이 없다: $crt"; return 1; }
+	pick_existing_file "개인키 파일(PEM · 암호 없이)" "$(dirname -- "$crt")" '*.key *.pem' || return 1
+	key=$PICKED_PATH
+	[ -f "$key" ] || { ui_err "그런 파일이 없다: $key"; return 1; }
+
+	validate_tls_pair "$crt" "$key" || return 1
+
+	mkdir -p "$TLS_DIR" || { ui_err "deploy/tls 를 만들지 못했다."; return 1; }
+	cp "$crt" "$TLS_CRT" || { ui_err "인증서 복사에 실패했다."; return 1; }
+	cp "$key" "$TLS_KEY" || { ui_err "개인키 복사에 실패했다."; return 1; }
+	chmod 644 "$TLS_CRT" 2>/dev/null || true
+	chmod 600 "$TLS_KEY" 2>/dev/null || true
+	ui_ok "인증서를 deploy/tls/ 에 복사했다 (개인키 권한 600)"
+	return 0
+}
+
+PICKED_PATH=""
+
+# pick_existing_file 안내문구 시작디렉터리 패턴 → PICKED_PATH
+# 탐색기는 lib/tui.sh의 tui_browse 계약을 쓴다(START_DIR PATTERN → TUI_PATH / 0=선택 1=취소).
+pick_existing_file() {
+	local prompt=$1 start=$2 pattern=$3
+	PICKED_PATH=""
+	if [ "$TUI_MODE" = "none" ] || [ -n "$ASSUME_YES" ]; then return 1; fi
+
+	if command -v tui_browse >/dev/null 2>&1; then
+		tui_select "$prompt" 0 "경로를 직접 입력한다" "파일 목록에서 찾는다"
+		if [ "$TUI_INDEX" -eq 1 ]; then
+			if tui_browse "$start" "$pattern"; then
+				PICKED_PATH=${TUI_PATH:-}
+				[ -n "$PICKED_PATH" ] || return 1
+				return 0
+			fi
+			ui_note "탐색을 취소했다."
+			return 1
+		fi
+	fi
+
+	tui_input "${prompt} 경로" ""
+	PICKED_PATH=$TUI_ANSWER
+	[ -n "$PICKED_PATH" ] || return 1
+	return 0
+}
+
+# 인증서·개인키 검증. **내용은 어디에도 출력하지 않는다** — 만료일과 판정 결과만 알린다.
+validate_tls_pair() {
+	local crt=$1 key=$2 pub_crt pub_key ends
+	[ -s "$crt" ] || { ui_err "인증서 파일이 비어 있다: $crt"; return 1; }
+	[ -s "$key" ] || { ui_err "개인키 파일이 비어 있다: $key"; return 1; }
+
+	# 암호가 걸린 키는 nginx가 기동 중 암호를 물으며 멈춘다 — 컨테이너가 뜨지 않는다.
+	if grep -q 'ENCRYPTED' "$key" 2>/dev/null; then
+		ui_err "개인키에 암호가 걸려 있다 — nginx가 기동 중 멈춘다."
+		ui_info "암호를 푼 사본을 만든다:  openssl rsa -in <키> -out server.key"
+		return 1
+	fi
+
+	if ! have openssl; then
+		ui_warn "openssl 이 없어 인증서 형식·짝 검증을 건너뛴다 — 기동 후 443 응답으로 확인한다."
+		return 0
+	fi
+
+	if ! openssl x509 -in "$crt" -noout >/dev/null 2>&1; then
+		ui_err "인증서가 PEM x509로 읽히지 않는다: $(basename -- "$crt")"
+		ui_info "DER(.cer/.der)이면 변환한다:  openssl x509 -inform der -in <파일> -out server.crt"
+		return 1
+	fi
+
+	ends=$(openssl x509 -in "$crt" -noout -enddate 2>/dev/null | sed 's/^notAfter=//')
+	if ! openssl x509 -in "$crt" -noout -checkend 0 >/dev/null 2>&1; then
+		ui_warn "인증서가 이미 만료됐다 (만료: ${ends:-?}) — 브라우저가 경고를 띄운다."
+	elif ! openssl x509 -in "$crt" -noout -checkend 2592000 >/dev/null 2>&1; then
+		ui_warn "인증서가 30일 안에 만료된다 (만료: ${ends:-?})."
+	else
+		ui_ok "인증서 유효 (만료: ${ends:-?})"
+	fi
+
+	# 짝 검증 — 공개키가 다르면 nginx가 SSL_CTX_use_PrivateKey 에서 기동에 실패한다.
+	pub_crt=$(openssl x509 -in "$crt" -noout -pubkey 2>/dev/null || true)
+	pub_key=$(openssl pkey -in "$key" -pubout 2>/dev/null || true)
+	if [ -z "$pub_crt" ] || [ -z "$pub_key" ]; then
+		ui_warn "인증서와 개인키의 짝을 확인하지 못했다(openssl이 키를 읽지 못했다) — 기동 후 443 응답으로 확인한다."
+		return 0
+	fi
+	if [ "$pub_crt" != "$pub_key" ]; then
+		ui_err "인증서와 개인키가 서로 맞지 않는다(공개키 불일치)."
+		ui_info "같은 CSR로 발급받은 짝인지 확인한다."
+		return 1
+	fi
+	ui_ok "인증서와 개인키가 짝이 맞는다"
+	return 0
+}
+
+# HTTPS 접속 FQDN. 인증서 SAN의 첫 DNS 이름을 기본값으로 제시한다.
+ask_public_host() {
+	local def
+	def=$CFG_PUBLIC_HOST
+	[ -n "$def" ] || def=$(tls_default_host "$TLS_CRT")
+	[ -n "$def" ] || def=$PRIMARY_IP
+
+	if [ "$TUI_MODE" = "none" ] || [ -n "$ASSUME_YES" ]; then
+		CFG_PUBLIC_HOST=$def
+		ui_note "콘솔 접속 주소: ${def} (기본값)"
+		return 0
+	fi
+	tui_input "브라우저로 접속할 주소(FQDN — 서버 인증서와 같은 이름이어야 경고가 없다)" "$def"
+	CFG_PUBLIC_HOST=${TUI_ANSWER:-$def}
+	ui_ok "콘솔 접속 주소: $CFG_PUBLIC_HOST"
+}
+
+# 인증서에서 이름 하나를 뽑는다(SAN의 첫 DNS → 없으면 CN). 그 외 내용은 읽지 않는다.
+tls_default_host() {
+	local crt=$1 name=""
+	have openssl || return 0
+	[ -s "$crt" ] || return 0
+	name=$(openssl x509 -in "$crt" -noout -ext subjectAltName 2>/dev/null |
+		tr ',' '\n' | sed -n 's/^[[:space:]]*DNS:[[:space:]]*//p' | head -1)
+	if [ -z "$name" ]; then
+		name=$(openssl x509 -in "$crt" -noout -subject -nameopt multiline 2>/dev/null |
+			sed -n 's/^[[:space:]]*commonName[[:space:]]*=[[:space:]]*//p' | head -1)
+	fi
+	printf '%s' "$name"
+}
+
+# 기동 후 443이 실제로 응답하는지 본다. 이게 없으면 nginx가 인증서 문제로 죽어도
+# 백엔드·프론트만 확인하고 "완료"가 나온다.
+check_https_endpoint() {
+	scheme_is_https || return 0
+	local port waited=0 limit=45
+	port=$(env_get HTTPS_PORT); port=${port:-443}
+
+	if ! have curl && ! have openssl; then
+		ui_warn "curl·openssl 이 없어 HTTPS(${port}) 확인을 건너뛴다 — 브라우저로 직접 확인한다."
+		return 0
+	fi
+
+	ui_step "HTTPS 응답 확인 (포트 ${port}, 최대 ${limit}초)"
+	while [ "$waited" -lt "$limit" ]; do
+		if https_probe "$port"; then
+			ui_ok "HTTPS 응답 확인 (${waited}초)"
+			return 0
+		fi
+		sleep 3
+		waited=$((waited + 3))
+	done
+
+	ui_err "HTTPS(${port}) 가 응답하지 않는다 — 프록시가 인증서를 읽지 못했을 가능성이 크다."
+	ui_info "로그 확인: docker compose logs proxy --tail=50"
+	ui_info "개인키에 암호가 걸려 있으면 nginx는 기동 중 멈춘다(암호 없는 키가 필요하다)."
+	ui_info "포트 ${port} 를 다른 프로세스가 이미 쓰고 있는지도 확인한다."
+	return 1
+}
+
+https_probe() {
+	local port=$1
+	if have curl; then
+		curl -k -fsS -o /dev/null --max-time 5 "https://127.0.0.1:${port}/" >/dev/null 2>&1
+		return $?
+	fi
+	# 인증서 본문이 화면에 나오지 않도록 출력을 전부 버린다.
+	printf 'Q\n' | openssl s_client -connect "127.0.0.1:${port}" >/dev/null 2>&1
+}
+
+# --- 모드 --------------------------------------------------------------------
+
+mode_install() {
+	ui_title "서버 설치"
+	ensure_source_tree
+	ensure_images
+
+	env_open
+	persist_project_name
+	ask_scheme
+	collect_our_ports
+	ask_ports
+	ask_sensor
+	inject_trusted_proxies
+	ensure_scan_suggestions
 	ensure_postgres_password
+	persist_scheme
 	ensure_notify_base_url
 	env_commit
 
 	compose_up
-	if wait_health; then
-		print_done
-		ui_note "HSTS는 고객사의 신뢰된 인증서가 설치된 뒤에 켠다 — 자체 서명 상태에서 켜면 콘솔이 잠긴다."
+	fix_trusted_proxies_after_up
+	if ! wait_health; then exit 1; fi
+	if ! check_https_endpoint; then exit 1; fi
+	print_done
+}
+
+mode_reconfigure() {
+	ui_title "설정 변경·재기동"
+	ensure_source_tree
+	ensure_images
+	env_open
+	persist_project_name
+	ask_scheme
+	collect_our_ports
+	ask_ports
+	ask_sensor
+	inject_trusted_proxies
+	ensure_postgres_password
+	persist_scheme
+	ensure_notify_base_url
+	env_commit
+
+	compose_up
+	fix_trusted_proxies_after_up
+	if ! wait_health; then exit 1; fi
+	if ! check_https_endpoint; then exit 1; fi
+	ui_ok "재기동 완료"
+	print_done
+}
+
+# --mode https 는 "설정 변경·재기동 + HTTPS 선택"의 별칭이다.
+# 인쇄된 매뉴얼과 패키지 MANIFEST에 이미 나가 있는 인자라 계속 받는다.
+mode_https() {
+	ui_warn "--mode https 는 이제 '설정 변경·재기동'의 별칭이다 (같은 뜻: --mode reconfigure --scheme https)."
+	REQUESTED_SCHEME=https
+	mode_reconfigure
+}
+
+# --- 패치(업그레이드) 모드 ----------------------------------------------------
+#
+# 신버전 패키지를 **새 디렉터리**에 풀고 이 스크립트를 돌리는 것이 정규 절차다.
+# 위험은 하나뿐이고 그것만 막으면 된다 — compose 프로젝트명이 바뀌어 신버전이
+# 새 pgdata 볼륨을 만들고 **빈 DB로 뜨는 것**이다(구 데이터는 그대로 남아 있어서
+# 데이터 소실과 구분되지 않는다). 그래서 프로젝트명은 신버전 디렉터리에서
+# 파생시키지 않고 구버전에서만 승계하며, 기동 뒤 setup/status로 사후 검증한다.
+
+OLD_DIR=""
+OLD_ENV=""
+OLD_PROJECT=""
+OLD_CONFIG_FILES=""
+OLD_VERSION=""
+OLD_SCHEME="http"
+OLD_HAS_TLS=0
+BACKUP_PATH=""
+
+PATCH_CAND_DIR=()
+PATCH_CAND_PROJ=()
+PATCH_CAND_LABEL=()
+
+volume_exists() {
+	have docker || return 1
+	docker volume ls -q 2>/dev/null | grep -qx "$1"
+}
+
+# 이 프로젝트로 떴던 컨테이너의 compose 라벨 하나를 꺼낸다(정지된 것도 본다).
+docker_project_label() {
+	local p=$1 label=$2
+	[ -n "$p" ] || return 1
+	have docker || return 1
+	docker info >/dev/null 2>&1 || return 1
+	docker ps -a --filter "label=com.docker.compose.project=$p" \
+		--format "{{.Label \"$label\"}}" 2>/dev/null | grep -v '^$' | head -1
+}
+
+# 이 서버에 있을 법한 우리 프로젝트 이름들. pgdata 볼륨과 컨테이너 두 갈래로 모은다.
+list_autocert_projects() {
+	have docker || return 0
+	docker info >/dev/null 2>&1 || return 0
+	{
+		docker volume ls -q 2>/dev/null | sed -n 's/_pgdata$//p'
+		docker ps -a --format '{{.Label "com.docker.compose.project"}}|{{.Image}}' 2>/dev/null |
+			grep -i 'autocert' | cut -d'|' -f1
+	} | grep -v '^$' | sort -u
+}
+
+# 파일시스템 후보 — 형제 디렉터리 · 현재 위치의 상위 · /opt · $HOME (깊이 2).
+# .env·docker-compose.yml·VERSION 이 **함께** 있는 곳만 후보다.
+list_fs_candidates() {
+	local base d f
+	for base in \
+		"$(dirname -- "$ROOT_DIR")" \
+		"$(CDPATH='' cd -- "$PWD/.." 2>/dev/null && pwd)" \
+		/opt "${HOME:-}"; do
+		[ -n "$base" ] && [ -d "$base" ] || continue
+		while IFS= read -r f; do
+			[ -n "$f" ] || continue
+			d=$(dirname -- "$f")
+			[ -f "$d/.env" ] && [ -f "$d/VERSION" ] || continue
+			printf '%s\n' "$d"
+		done <<EOF
+$(find "$base" -maxdepth 2 -name docker-compose.yml -type f 2>/dev/null)
+EOF
+	done
+}
+
+candidate_label() {
+	local d=$1 p=${2:-} v mt
+	v=$(tr -d ' \t\r\n' < "$d/VERSION" 2>/dev/null || printf '')
+	mt=$(date -r "$d/docker-compose.yml" '+%Y-%m-%d' 2>/dev/null || printf '')
+	printf '%s  (VERSION %s%s%s)' "$d" "${v:-?}" \
+		"${mt:+ · 수정 $mt}" "${p:+ · 프로젝트 $p}"
+}
+
+patch_add_candidate() {
+	local d=$1 p=${2:-} i abs
+	[ -n "$d" ] && [ -d "$d" ] || return 0
+	abs=$(CDPATH='' cd -- "$d" 2>/dev/null && pwd) || return 0
+	[ -n "$abs" ] || return 0
+	[ "$abs" != "$ROOT_DIR" ] || return 0
+	[ -f "$abs/docker-compose.yml" ] || return 0
+	for i in ${PATCH_CAND_DIR[@]+"${!PATCH_CAND_DIR[@]}"}; do
+		if [ "${PATCH_CAND_DIR[$i]}" = "$abs" ]; then
+			if [ -z "${PATCH_CAND_PROJ[$i]}" ] && [ -n "$p" ]; then
+				PATCH_CAND_PROJ[i]=$p
+				PATCH_CAND_LABEL[i]=$(candidate_label "$abs" "$p")
+			fi
+			return 0
+		fi
+	done
+	PATCH_CAND_DIR+=("$abs")
+	PATCH_CAND_PROJ+=("$p")
+	PATCH_CAND_LABEL+=("$(candidate_label "$abs" "$p")")
+}
+
+# P1 — 구버전 위치를 찾는다. 도커 라벨이 가장 믿을 만하다(실제로 뜬 기록이므로).
+patch_collect_candidates() {
+	PATCH_CAND_DIR=(); PATCH_CAND_PROJ=(); PATCH_CAND_LABEL=()
+	local p wd d
+	while IFS= read -r p; do
+		[ -n "$p" ] || continue
+		wd=$(docker_project_label "$p" "com.docker.compose.project.working_dir" || true)
+		[ -n "$wd" ] || continue
+		patch_add_candidate "$wd" "$p"
+	done <<EOF
+$(list_autocert_projects)
+EOF
+	while IFS= read -r d; do
+		[ -n "$d" ] || continue
+		patch_add_candidate "$d" ""
+	done <<EOF
+$(list_fs_candidates)
+EOF
+}
+
+patch_locate_old() {
+	local d n
+
+	if [ -n "$PATCH_FROM" ]; then
+		d=$PATCH_FROM
+		if [ -f "$d" ]; then d=$(dirname -- "$d"); fi
+		[ -d "$d" ] || die "--from 경로가 없다: $PATCH_FROM"
+		OLD_DIR=$(CDPATH='' cd -- "$d" && pwd)
+		OLD_PROJECT=""
+		ui_ok "구버전 위치(지정): $OLD_DIR"
+		return 0
+	fi
+
+	ui_step "기존 설치를 찾는다"
+	patch_collect_candidates
+	n=${#PATCH_CAND_DIR[@]}
+
+	if [ "$n" -eq 1 ]; then
+		ui_ok "찾았다: ${PATCH_CAND_LABEL[0]}"
+		if [ "$TUI_MODE" = "none" ] || [ -n "$ASSUME_YES" ]; then
+			OLD_DIR=${PATCH_CAND_DIR[0]}; OLD_PROJECT=${PATCH_CAND_PROJ[0]}
+			return 0
+		fi
+		if tui_confirm "이 디렉터리를 구버전으로 본다. 맞나?" yes; then
+			OLD_DIR=${PATCH_CAND_DIR[0]}; OLD_PROJECT=${PATCH_CAND_PROJ[0]}
+			return 0
+		fi
+		patch_ask_path || die "구버전 위치를 확정하지 못했다."
+		return 0
+	fi
+
+	if [ "$n" -gt 1 ]; then
+		if [ "$TUI_MODE" = "none" ] || [ -n "$ASSUME_YES" ]; then
+			ui_err "기존 설치 후보가 ${n}개다 — 비대화 모드에서는 고를 수 없다."
+			local i
+			for i in "${!PATCH_CAND_LABEL[@]}"; do ui_info "- ${PATCH_CAND_LABEL[$i]}"; done
+			die "--from <구버전 디렉터리> 로 하나를 지정한다."
+		fi
+		local items=("${PATCH_CAND_LABEL[@]}" "다른 위치를 직접 지정한다…")
+		tui_select "어느 설치를 올릴까?" 0 "${items[@]}"
+		if [ "$TUI_INDEX" -lt "$n" ]; then
+			OLD_DIR=${PATCH_CAND_DIR[$TUI_INDEX]}; OLD_PROJECT=${PATCH_CAND_PROJ[$TUI_INDEX]}
+			return 0
+		fi
+		patch_ask_path || die "구버전 위치를 확정하지 못했다."
+		return 0
+	fi
+
+	ui_warn "기존 설치를 자동으로 찾지 못했다."
+	if [ "$TUI_MODE" = "none" ] || [ -n "$ASSUME_YES" ]; then
+		die "구버전 위치를 찾지 못했다 — --from <구버전 디렉터리> 로 지정한다."
+	fi
+	patch_ask_path || die "구버전 위치를 확정하지 못했다."
+}
+
+patch_ask_path() {
+	local d
+	pick_existing_file "구버전의 docker-compose.yml" "$(dirname -- "$ROOT_DIR")" 'docker-compose.yml' || return 1
+	d=$PICKED_PATH
+	if [ ! -d "$d" ]; then d=$(dirname -- "$d"); fi
+	[ -d "$d" ] || { ui_err "그런 디렉터리가 없다: $d"; return 1; }
+	[ -f "$d/docker-compose.yml" ] || { ui_err "docker-compose.yml 이 없다: $d"; return 1; }
+	OLD_DIR=$(CDPATH='' cd -- "$d" && pwd)
+	OLD_PROJECT=""
+	return 0
+}
+
+# P2 — 구버전 메타 수집.
+patch_collect_meta() {
+	[ "$OLD_DIR" != "$ROOT_DIR" ] || die "구버전과 신버전 디렉터리가 같다 — 패치가 아니라 재기동이다(설정 변경·재기동을 쓴다)."
+	OLD_ENV="$OLD_DIR/.env"
+	[ -f "$OLD_ENV" ] || die "구버전 .env 가 없다: $OLD_ENV — 올릴 대상이 맞는지 확인한다."
+
+	OLD_VERSION=$(tr -d ' \t\r\n' < "$OLD_DIR/VERSION" 2>/dev/null || printf '')
+	[ -n "$OLD_VERSION" ] || OLD_VERSION="unknown"
+	patch_resolve_project
+	OLD_CONFIG_FILES=$(docker_project_label "$OLD_PROJECT" "com.docker.compose.project.config_files" || true)
+	patch_detect_old_scheme
+
+	OLD_HAS_TLS=0
+	if [ -s "$OLD_DIR/deploy/tls/server.crt" ] && [ -s "$OLD_DIR/deploy/tls/server.key" ]; then OLD_HAS_TLS=1; fi
+
+	ui_blank
+	ui_row info "구버전 위치" "$OLD_DIR"
+	ui_row info "구버전 VERSION" "$OLD_VERSION"
+	ui_row info "compose 프로젝트" "${OLD_PROJECT:-확정 못 함}"
+	ui_row info "접속 방식" "$OLD_SCHEME"
+	if [ "$OLD_HAS_TLS" -eq 1 ]; then
+		ui_row info "TLS 자산" "deploy/tls 있음 — 신버전으로 승계한다"
+	elif [ "$OLD_SCHEME" = "https" ]; then
+		ui_row warn "TLS 자산" "구버전에도 deploy/tls 가 없다 — HTTPS를 유지하려면 인증서를 다시 둬야 한다"
+	fi
+
+	# 고객사가 compose 파일을 직접 손봤으면 이번 업그레이드로 사라진다.
+	if ! cmp -s "$OLD_DIR/docker-compose.yml" "$COMPOSE_FILE"; then
+		ui_warn "구버전 docker-compose.yml 이 신버전 배포본과 다르다 — 직접 고친 내용이 있다면 이번 업그레이드로 사라진다."
+		ui_info "차이 확인:  diff '$OLD_DIR/docker-compose.yml' '$COMPOSE_FILE'"
+	fi
+}
+
+patch_resolve_project() {
+	local from_env derived vol_proj
+	from_env=$(file_env_get "$OLD_ENV" COMPOSE_PROJECT_NAME)
+
+	if [ -n "$OLD_PROJECT" ]; then
+		if [ -n "$from_env" ] && [ "$from_env" != "$OLD_PROJECT" ]; then
+			ui_warn "구버전 .env의 COMPOSE_PROJECT_NAME($from_env)과 실제로 떴던 프로젝트명($OLD_PROJECT)이 다르다 — 데이터가 있는 쪽($OLD_PROJECT)을 쓴다."
+		fi
+		return 0
+	fi
+	if [ -n "$from_env" ]; then OLD_PROJECT=$from_env; return 0; fi
+
+	# 컨테이너가 없으면 볼륨 라벨로 회수한다.
+	derived=$(compose_default_project_name "$OLD_DIR")
+	if [ -n "$derived" ] && volume_exists "${derived}_pgdata"; then
+		vol_proj=$(docker volume inspect "${derived}_pgdata" -f '{{index .Labels "com.docker.compose.project"}}' 2>/dev/null | head -1)
+		OLD_PROJECT=${vol_proj:-$derived}
+		ui_note "구버전 프로젝트명을 볼륨에서 회수했다: $OLD_PROJECT"
+		return 0
+	fi
+	if volume_exists "${DEFAULT_PROJECT_NAME}_pgdata"; then
+		OLD_PROJECT=$DEFAULT_PROJECT_NAME
+		ui_note "구버전 프로젝트명을 기본값으로 본다: $OLD_PROJECT (${OLD_PROJECT}_pgdata 볼륨 확인됨)"
+		return 0
+	fi
+	ui_warn "구버전 compose 프로젝트명을 확정하지 못했다${derived:+ (디렉터리명 파생 후보: $derived)} — 기동 후 빈 DB 검증에서 다시 확인한다."
+}
+
+# 구버전의 접속 방식: AUTOCERT_SCHEME > config_files 라벨 > 레거시 흔적.
+patch_detect_old_scheme() {
+	local recorded
+	recorded=$(file_env_get "$OLD_ENV" AUTOCERT_SCHEME)
+	case "$recorded" in
+		https) OLD_SCHEME="https"; return 0 ;;
+		http)  OLD_SCHEME="http";  return 0 ;;
+	esac
+	case "$OLD_CONFIG_FILES" in
+		*docker-compose.https.yml*) OLD_SCHEME="https"; return 0 ;;
+	esac
+	OLD_SCHEME="http"
+	local secure
+	secure=$(file_env_get "$OLD_ENV" SESSION_COOKIE_SECURE)
+	case "$secure" in
+		[Tt][Rr][Uu][Ee] | 1) OLD_SCHEME="https" ;;
+	esac
+	if [ -n "$(file_env_get "$OLD_ENV" HTTPS_PORT)" ]; then OLD_SCHEME="https"; fi
+}
+
+# P3 — 버전 비교.
+patch_compare_versions() {
+	local new
+	new=$(tr -d ' \t\r\n' < "$VERSION_FILE" 2>/dev/null || printf '')
+	[ -n "$new" ] || new="unknown"
+
+	if [ "$OLD_VERSION" = "$new" ]; then
+		ui_warn "구버전과 신버전이 같은 버전이다($new) — 업그레이드가 아니라 재설치가 된다."
+		tui_confirm "그래도 진행할까?" yes || die "중단했다."
+		return 0
+	fi
+	if ver_ge "$OLD_VERSION" "$new"; then
+		ui_warn "신버전($new)이 구버전($OLD_VERSION)보다 낮다 — 다운그레이드다."
+		ui_info "마이그레이션은 역적용하지 않는다. 구버전에서 이미 올라간 스키마는 되돌아가지 않으므로 기동에 실패할 수 있다."
+		tui_confirm "그래도 진행할까?" no || die "중단했다."
+		return 0
+	fi
+	ui_ok "업그레이드: $OLD_VERSION → $new"
+}
+
+# 구버전 스택을 그때의 compose 파일 조합 그대로 다룬다.
+# **-v 는 이 함수에도, 호출부에도 없다** — 볼륨을 지우면 그것이 곧 데이터 소실이다.
+old_dc() {
+	local fargs=() pargs=() f files=()
+	# 프로젝트명을 못 찾았으면 -p 를 붙이지 않는다 — compose가 그때와 같은 규칙
+	# (구버전 디렉터리명)으로 다시 파생시키는 편이 빈 이름으로 실패하는 것보다 낫다.
+	if [ -n "$OLD_PROJECT" ]; then pargs=(-p "$OLD_PROJECT"); fi
+	if [ -n "$OLD_CONFIG_FILES" ]; then
+		local IFS=','
+		# shellcheck disable=SC2206 # 콤마 분리가 목적이라 의도적인 분할이다
+		files=($OLD_CONFIG_FILES)
+		unset IFS
+	fi
+	for f in ${files[@]+"${files[@]}"}; do
+		[ -f "$f" ] || continue
+		fargs+=(-f "$f")
+	done
+	if [ ${#fargs[@]} -eq 0 ]; then
+		fargs=(-f "$OLD_DIR/docker-compose.yml")
+		if [ "$OLD_SCHEME" = "https" ] && [ -f "$OLD_DIR/docker-compose.https.yml" ]; then
+			fargs+=(-f "$OLD_DIR/docker-compose.https.yml")
+		fi
+	fi
+	docker compose ${pargs[@]+"${pargs[@]}"} --project-directory "$OLD_DIR" "${fargs[@]}" "$@"
+}
+
+# P4 — DB 백업. 기본 ON이고 실패하면 여기서 멈춘다.
+patch_backup_db() {
+	if [ -n "$SKIP_BACKUP" ]; then
+		ui_warn "--skip-backup 이 지정되어 DB 백업을 건너뛴다 — 되돌릴 수단이 사라진다."
+		return 0
+	fi
+	local dir user db out size free need
+
+	dir=${BACKUP_DIR:-$ROOT_DIR/backups}
+	mkdir -p "$dir" || die "백업 디렉터리를 만들지 못했다: $dir"
+	chmod 700 "$dir" 2>/dev/null || true
+
+	user=$(file_env_get "$OLD_ENV" POSTGRES_USER); user=${user:-autocert}
+	db=$(file_env_get "$OLD_ENV" POSTGRES_DB); db=${db:-autocert}
+
+	patch_start_old_db "$user" || die "구버전 DB 컨테이너를 띄우지 못해 백업할 수 없다 (건너뛰려면 --skip-backup)."
+
+	size=$(old_dc exec -T db psql -U "$user" -d "$db" -tAc "select pg_database_size('$db')" 2>/dev/null | tr -d ' \r\n')
+	case "$size" in "" | *[!0-9]*) size="" ;; esac
+	free=$(df -Pk "$dir" 2>/dev/null | awk 'NR==2 {printf "%d", $4}')
+	if [ -n "$size" ] && [ -n "$free" ]; then
+		# 여유는 KiB 단위로 비교한다. DB 크기(byte)의 1.5배 + 200MB.
+		need=$(( size * 3 / 2048 + 204800 ))
+		if [ "$free" -lt "$need" ]; then
+			die "백업 공간이 부족하다 (필요 약 $((need / 1024))MB / 여유 $((free / 1024))MB): $dir"
+		fi
+		ui_ok "백업 공간 확인 (DB 약 $((size / 1048576))MB / 여유 $((free / 1024))MB)"
+	fi
+
+	out="$dir/autocert-${OLD_VERSION}-$(date +%Y%m%d-%H%M%S).dump"
+	ui_step "구버전 DB를 백업한다 (pg_dump -Fc) — 실패하면 여기서 멈춘다"
+	if ! old_dc exec -T db pg_dump -Fc -U "$user" "$db" > "$out" 2>/dev/null; then
+		rm -f "$out"
+		die "DB 백업에 실패했다. 구버전 스택과 DB가 정상인지 확인한다 (건너뛰려면 --skip-backup)."
+	fi
+	if [ ! -s "$out" ]; then
+		rm -f "$out"
+		die "DB 백업 결과가 비어 있다 — 백업 없이 진행하지 않는다."
+	fi
+	chmod 600 "$out"
+	BACKUP_PATH=$out
+	ui_ok "DB 백업 완료: $out"
+}
+
+patch_start_old_db() {
+	local user=$1 cid waited=0
+	cid=$(old_dc ps -q db 2>/dev/null | head -1)
+	if [ -n "$cid" ] && [ "$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null)" = "true" ]; then
+		return 0
+	fi
+	ui_step "백업을 위해 구버전 DB 컨테이너를 띄운다"
+	old_dc up -d db >&3 2>&3 || return 1
+	while [ "$waited" -lt 60 ]; do
+		if old_dc exec -T db pg_isready -U "$user" >/dev/null 2>&1; then return 0; fi
+		sleep 3
+		waited=$((waited + 3))
+	done
+	return 1
+}
+
+# P5 — .env 승계. 프로젝트명이 여기서 갈리면 그게 곧 "빈 DB" 사고다.
+patch_inherit_env() {
+	env_open "$OLD_ENV"
+	env_normalize_crlf
+
+	local inherited
+	inherited=$(env_get AUTOCERT_VERSION)
+	if [ -n "$inherited" ]; then
+		ui_note "승계한 .env의 AUTOCERT_VERSION($inherited) 행을 지웠다 — 남겨 두면 신버전 이미지 태그가 구버전으로 고정된다."
+	fi
+	env_unset AUTOCERT_VERSION
+
+	COMPOSE_PROJECT=$OLD_PROJECT
+	[ -n "$COMPOSE_PROJECT" ] || COMPOSE_PROJECT=$(env_get COMPOSE_PROJECT_NAME)
+	if [ -z "$COMPOSE_PROJECT" ]; then
+		local derived
+		derived=$(compose_default_project_name "$OLD_DIR")
+		if [ -n "$derived" ] && volume_exists "${derived}_pgdata"; then
+			COMPOSE_PROJECT=$derived
+		elif volume_exists "${DEFAULT_PROJECT_NAME}_pgdata"; then
+			COMPOSE_PROJECT=$DEFAULT_PROJECT_NAME
+		fi
+	fi
+	[ -n "$COMPOSE_PROJECT" ] || die "compose 프로젝트명을 확정하지 못했다 — 이대로 기동하면 빈 DB로 뜬다. 구버전 .env의 COMPOSE_PROJECT_NAME을 확인한다."
+
+	env_set COMPOSE_PROJECT_NAME "$COMPOSE_PROJECT"
+	ui_ok "compose 프로젝트명 승계: $COMPOSE_PROJECT (DB 볼륨 ${COMPOSE_PROJECT}_pgdata)"
+	if ! volume_exists "${COMPOSE_PROJECT}_pgdata"; then
+		ui_warn "${COMPOSE_PROJECT}_pgdata 볼륨이 보이지 않는다 — 신버전이 빈 DB로 뜰 수 있다(기동 후 다시 검증한다)."
+	fi
+}
+
+# P6 — HTTPS 자산 승계. deploy/tls 는 어떤 패키지에도 없는 고객사 파일이다.
+patch_inherit_tls() {
+	if [ "$OLD_HAS_TLS" -eq 1 ]; then
+		mkdir -p "$TLS_DIR" 2>/dev/null || true
+		if [ ! -s "$TLS_CRT" ]; then
+			cp "$OLD_DIR/deploy/tls/server.crt" "$TLS_CRT" && chmod 644 "$TLS_CRT" 2>/dev/null || true
+		fi
+		if [ ! -s "$TLS_KEY" ]; then
+			cp "$OLD_DIR/deploy/tls/server.key" "$TLS_KEY" && chmod 600 "$TLS_KEY" 2>/dev/null || true
+		fi
+		ui_ok "구버전의 서버 인증서를 승계했다: deploy/tls/ (개인키 권한 600)"
+	fi
+	set_scheme "$OLD_SCHEME"
+	CFG_PUBLIC_HOST=$(file_env_get "$OLD_ENV" AUTOCERT_PUBLIC_HOST)
+}
+
+# P7 — 구버전 정지. 포트와 리스너를 비워야 신버전이 뜬다.
+patch_stop_old() {
+	ui_step "구버전 스택을 정지한다 (docker compose down — 볼륨은 그대로 둔다)"
+	if ! old_dc down >&3 2>&3; then
+		ui_warn "구버전 정지 명령이 실패했다."
+	fi
+	local left
+	if [ -z "$OLD_PROJECT" ]; then
+		ui_warn "구버전 프로젝트명을 몰라 정지 결과를 확인하지 못했다 — docker compose ps 로 직접 본다."
+		return 0
+	fi
+	left=$(docker ps -q --filter "label=com.docker.compose.project=$OLD_PROJECT" 2>/dev/null | grep -c . || true)
+	if [ "${left:-0}" -gt 0 ]; then
+		ui_warn "구버전 컨테이너 ${left}개가 아직 떠 있다 — 포트가 겹치면 신버전 기동이 실패한다."
+		tui_confirm "그래도 진행할까?" no || die "중단했다. 구버전을 정지한 뒤 다시 실행한다."
+		return 0
+	fi
+	ui_ok "구버전 스택 정지 확인"
+}
+
+# P9 — 최소 문답. 승계값을 기본으로 "그대로 / 변경" 2지선다다.
+patch_ask_minimal() {
+	local fp bp key sp
+
+	ask_scheme
+
+	collect_our_ports
+	fp=$(value_for FRONTEND_PORT "$DEFAULT_FRONTEND_PORT")
+	bp=$(value_for BACKEND_PORT "$DEFAULT_BACKEND_PORT")
+	tui_select "포트를 그대로 승계할까? (웹 ${fp} / API ${bp})" 0 "그대로 쓴다" "변경한다"
+	if [ "$TUI_INDEX" -eq 1 ]; then
+		ask_ports
 	else
+		env_set FRONTEND_PORT "$fp"
+		env_set BACKEND_PORT "$bp"
+		CFG_FRONTEND_PORT=$fp
+		CFG_BACKEND_PORT=$bp
+	fi
+
+	key=$(env_get SENSOR_CA_ENC_KEY)
+	sp=$(value_for SENSOR_GATEWAY_PORT "$DEFAULT_SENSOR_PORT")
+	if [ -n "$key" ]; then
+		CFG_SENSOR_ENABLED=1
+		CFG_SENSOR_PORT=$sp
+		tui_select "센서 게이트웨이 설정을 그대로 승계할까? (포트 ${sp})" 0 "그대로 쓴다" "변경한다"
+		if [ "$TUI_INDEX" -eq 1 ]; then ask_sensor; fi
+	else
+		tui_select "센서 게이트웨이는 꺼져 있다. 이번에 켤까?" 1 "켠다" "그대로 둔다"
+		if [ "$TUI_INDEX" -eq 0 ]; then ask_sensor; else CFG_SENSOR_ENABLED=0; fi
+	fi
+
+	inject_trusted_proxies
+}
+
+# P11 — 빈 DB 사후 검증. 초기 설정 화면이 뜬다는 건 볼륨이 갈렸다는 뜻이다.
+patch_verify_not_fresh() {
+	local body
+	body=$(http_body "http://127.0.0.1:${CFG_BACKEND_PORT}/api/v1/setup/status" || true)
+	if [ -z "$body" ]; then
+		ui_warn "setup/status 를 읽지 못해 데이터 승계 여부를 확인하지 못했다 — 콘솔 첫 화면이 로그인인지 직접 본다."
+		return 0
+	fi
+	case "$body" in
+		*'"setup_required":true'* | *'"setup_required": true'*)
+			ui_blank
+			ui_err "초기 설정이 필요한 상태다 — 신버전이 **빈 DB**로 떴다는 뜻이다(볼륨이 갈렸다)."
+			ui_info "지금 쓰는 볼륨: ${COMPOSE_PROJECT}_pgdata"
+			ui_info "이 서버의 pgdata 볼륨 목록:"
+			docker volume ls --format '{{.Name}}' 2>/dev/null | grep '_pgdata$' | sed 's/^/           /' >&3 || true
+			ui_info "화면에서 계정을 만들지 말고(만들면 그 빈 DB가 정본이 된다) 아래로 되돌린다."
+			return 1
+			;;
+	esac
+	ui_ok "기존 데이터 승계 확인 (초기 설정 화면이 아니다)"
+	return 0
+}
+
+patch_print_rollback() {
+	ui_info "1. 신버전 정지:  cd '$ROOT_DIR' && docker compose -p $COMPOSE_PROJECT down"
+	ui_info "2. 구버전 기동:  cd '$OLD_DIR' && docker compose -p $COMPOSE_PROJECT up -d"
+	if [ -n "$BACKUP_PATH" ]; then
+		ui_info "3. 스키마가 이미 올라갔으면 백업을 복원한다:  $BACKUP_PATH"
+		ui_info "   (구버전 db 컨테이너 안에서 pg_restore -c -U <사용자> -d <DB> < 백업파일)"
+	else
+		ui_info "3. DB 백업을 건너뛰었으므로 스키마가 바뀐 경우 되돌릴 수 없다."
+	fi
+	ui_note "마이그레이션을 역적용하지 않는다 — 되돌리기는 백업 복원으로만 한다."
+}
+
+mode_patch() {
+	ui_title "패치 — 기존 설치 업그레이드"
+
+	patch_locate_old          # P1 위치 확정
+	patch_collect_meta        # P2 메타 수집
+	patch_compare_versions    # P3 버전 비교
+	patch_backup_db           # P4 DB 백업 (실패 시 중단)
+	patch_inherit_env         # P5 .env 승계
+	patch_inherit_tls         # P6 HTTPS 자산 승계
+	patch_stop_old            # P7 구버전 정지
+
+	ensure_source_tree        # P8 신버전 준비 — AUTOCERT_VERSION 제거 뒤여야 태그가 맞다
+	ensure_images
+
+	patch_ask_minimal         # P9 최소 문답
+	ensure_scan_suggestions
+	ensure_postgres_password
+	persist_scheme
+	ensure_notify_base_url
+	env_commit
+
+	compose_up                # P10 기동·확인
+	fix_trusted_proxies_after_up
+	if ! wait_health; then
+		ui_blank
+		ui_step "되돌리기"
+		patch_print_rollback
 		exit 1
 	fi
+	if ! check_https_endpoint; then
+		ui_blank
+		ui_step "되돌리기"
+		patch_print_rollback
+		exit 1
+	fi
+
+	if ! patch_verify_not_fresh; then   # P11 빈 DB 사후 검증
+		ui_blank
+		ui_step "되돌리기"
+		patch_print_rollback
+		exit 1
+	fi
+
+	print_done                # P12 완료·롤백 안내
+	ui_blank
+	ui_step "업그레이드 기록"
+	ui_info "- 구버전 디렉터리: $OLD_DIR  (문제가 없으면 얼마간 그대로 둔다)"
+	if [ -n "$BACKUP_PATH" ]; then
+		ui_info "- DB 백업: $BACKUP_PATH"
+	else
+		ui_info "- DB 백업: 건너뜀(--skip-backup)"
+	fi
+	ui_blank
+	ui_step "되돌리기 (문제가 있을 때만)"
+	patch_print_rollback
 }
 
 ensure_postgres_password() {
@@ -1284,29 +2299,93 @@ ensure_postgres_password() {
 }
 
 # 알림 본문 딥링크 기준 URL. 비어 있으면 링크만 빠지므로 자동으로 채워 준다.
+# 스킴이 바뀐 경우(HTTP→HTTPS 등)에는 기존 값을 그대로 두면 메일 속 링크가 전부
+# 죽은 주소가 되므로 다시 만든다.
 ensure_notify_base_url() {
-	local cur port scheme
+	local cur want
+	want=$(console_base_url)
 	cur=$(value_for NOTIFY_BASE_URL "")
 	if [ -n "$cur" ]; then
-		env_set NOTIFY_BASE_URL "$cur"
+		case "$cur" in
+			"${CFG_SCHEME}://"*)
+				env_set NOTIFY_BASE_URL "$cur"
+				return 0
+				;;
+		esac
+		ui_warn "알림 링크 기준 URL의 접속 방식이 현재 구성과 다르다 — ${want} 로 바꾼다."
+	fi
+	env_set NOTIFY_BASE_URL "$want"
+}
+
+# 콘솔의 대외 접속 URL. 안내 문구와 NOTIFY_BASE_URL이 같은 값을 쓰게 한다.
+console_base_url() {
+	local host port
+	host=${CFG_PUBLIC_HOST:-$PRIMARY_IP}
+	if scheme_is_https; then
+		port=$(env_get HTTPS_PORT); port=${port:-443}
+		if [ "$port" = "443" ]; then printf 'https://%s' "$host"; return 0; fi
+		printf 'https://%s:%s' "$host" "$port"
 		return 0
 	fi
-	if [ "$CFG_HTTPS" -eq 1 ]; then
-		scheme=https
-		port=$(env_get HTTPS_PORT); port=${port:-443}
-		if [ "$port" = "443" ]; then
-			env_set NOTIFY_BASE_URL "https://${PRIMARY_IP}"
-			return 0
-		fi
-	else
-		scheme=http
-		port=${CFG_FRONTEND_PORT:-$DEFAULT_FRONTEND_PORT}
-		if [ "$port" = "80" ]; then
-			env_set NOTIFY_BASE_URL "http://${PRIMARY_IP}"
-			return 0
-		fi
+	port=${CFG_FRONTEND_PORT:-$DEFAULT_FRONTEND_PORT}
+	if [ "$port" = "80" ]; then printf 'http://%s' "$host"; return 0; fi
+	printf 'http://%s:%s' "$host" "$port"
+}
+
+# --- 기존 설치 감지 (사고 방지) ------------------------------------------------
+
+EXISTING_HINT_PROJECT=""
+EXISTING_HINT_DIR=""
+
+# 배너·가드용으로는 **강한 신호**만 본다 — 우리 이미지로 떴던 컨테이너, 또는
+# 이름에 autocert가 든 pgdata 볼륨. 남의 *_pgdata 하나 때문에 신규 설치를 막지 않는다.
+strong_existing_projects() {
+	have docker || return 0
+	docker info >/dev/null 2>&1 || return 0
+	{
+		docker ps -a --format '{{.Label "com.docker.compose.project"}}|{{.Image}}' 2>/dev/null |
+			grep -i 'autocert' | cut -d'|' -f1
+		docker volume ls -q 2>/dev/null | grep -i 'autocert' | sed -n 's/_pgdata$//p'
+	} | grep -v '^$' | sort -u
+}
+
+# 이 디렉터리에는 .env가 없는데 서버에는 우리 흔적이 있다 = 신규 설치가 아니다.
+detect_existing_install() {
+	EXISTING_HINT_PROJECT=""
+	EXISTING_HINT_DIR=""
+	[ ! -f "$ENV_FILE" ] || return 1
+	local p wd
+	while IFS= read -r p; do
+		[ -n "$p" ] || continue
+		wd=$(docker_project_label "$p" "com.docker.compose.project.working_dir" || true)
+		if [ -n "$wd" ] && [ "$wd" = "$ROOT_DIR" ]; then continue; fi
+		EXISTING_HINT_PROJECT=$p
+		EXISTING_HINT_DIR=$wd
+		if [ -n "$EXISTING_HINT_DIR" ]; then break; fi
+	done <<EOF
+$(strong_existing_projects)
+EOF
+	[ -n "$EXISTING_HINT_PROJECT" ] || return 1
+	return 0
+}
+
+# 기존 설치가 있는 서버에서 [신규 설치]를 고르면 새 DB 비밀번호가 생성되어
+# 기존 DB에 붙지 못한다. 0을 반환하면 호출부가 모드를 patch로 바꾼다.
+guard_install_over_existing() {
+	[ -z "$FORCE_NEW" ] || return 1
+	[ -n "$EXISTING_HINT_PROJECT" ] || return 1
+
+	ui_blank
+	ui_err "기존 설치가 있는 서버에서 [신규 설치]를 고르면 새 DB 비밀번호가 만들어져 **기존 DB에 붙지 못한다**."
+	ui_info "감지된 기존 설치: 프로젝트 ${EXISTING_HINT_PROJECT}${EXISTING_HINT_DIR:+ · ${EXISTING_HINT_DIR}}"
+	if [ "$TUI_MODE" = "none" ] || [ -n "$ASSUME_YES" ]; then
+		die "비대화 모드에서는 그대로 진행하지 않는다 — --mode patch 를 쓰거나, 정말 새로 깔 거면 --force-new 를 준다."
 	fi
-	env_set NOTIFY_BASE_URL "${scheme}://${PRIMARY_IP}:${port}"
+	if tui_confirm "그래도 신규 설치로 진행할까? (기존 데이터는 남지만 이 설치에서는 보이지 않는다)" no; then
+		return 1
+	fi
+	ui_ok "패치 모드로 바꾼다."
+	return 0
 }
 
 # --- 진입점 ------------------------------------------------------------------
@@ -1336,6 +2415,16 @@ main() {
 		exit 0
 	fi
 
+	# 접속 방식(http|https)은 dc()의 오버레이 목록을 지배하므로 여기서 먼저 정한다.
+	# COMPOSE_HTTPS_OK를 보므로 preflight 뒤여야 한다.
+	resolve_scheme
+
+	# 신규 설치로 착각해 기존 DB를 못 붙는 사고를 메뉴 **앞에서** 막는다.
+	if detect_existing_install; then
+		ui_blank
+		ui_warn "이 서버에 기존 설치가 감지됐다 (프로젝트 ${EXISTING_HINT_PROJECT}${EXISTING_HINT_DIR:+ · 디렉터리 ${EXISTING_HINT_DIR}}) — 신규가 아니라 [패치]를 고른다."
+	fi
+
 	local mode=$REQUESTED_MODE
 	if [ -z "$mode" ]; then
 		if stack_running; then
@@ -1344,27 +2433,27 @@ main() {
 			dc ps --format 'table {{.Service}}\t{{.Status}}' >&3 2>&3 || dc ps >&3 2>&3 || true
 			tui_select "무엇을 할까?" 0 \
 				"설정 변경·재기동" \
+				"패치 — 기존 설치 업그레이드" \
 				"상태 확인" \
-				"HTTPS 적용" \
 				"서버 설치(신규) — 설정을 다시 만든다" \
 				"종료"
 			case "$TUI_INDEX" in
 				0) mode=reconfigure ;;
-				1) mode=status ;;
-				2) mode=https ;;
+				1) mode="patch" ;;
+				2) mode=status ;;
 				3) mode=install ;;
 				*) mode=quit ;;
 			esac
 		else
 			tui_select "무엇을 할까?" 0 \
 				"서버 설치(신규)" \
-				"HTTPS 적용" \
+				"패치 — 기존 설치 업그레이드" \
 				"설정 변경·재기동" \
 				"상태 확인" \
 				"종료"
 			case "$TUI_INDEX" in
 				0) mode=install ;;
-				1) mode=https ;;
+				1) mode="patch" ;;
 				2) mode=reconfigure ;;
 				3) mode=status ;;
 				*) mode=quit ;;
@@ -1372,13 +2461,18 @@ main() {
 		fi
 	fi
 
+	if [ "$mode" = "install" ] && guard_install_over_existing; then
+		mode="patch"
+	fi
+
 	case "$mode" in
 		install) mode_install ;;
+		patch) mode_patch ;;
 		reconfigure) mode_reconfigure ;;
 		https) mode_https ;;
 		status) print_status ;;
 		quit) ui_info "종료한다." ;;
-		*) die "알 수 없는 모드: $mode (install|https|reconfigure|status)" ;;
+		*) die "알 수 없는 모드: $mode (install|patch|reconfigure|status|https)" ;;
 	esac
 }
 
