@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/certrisk"
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/discovery"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/domain"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/store"
 )
@@ -169,6 +170,16 @@ func parseListParams(r *http.Request) (store.ListCertificatesInput, *paramError)
 				"risk_code는 GET /api/v1/certificates/risks가 반환하는 판정 항목 코드여야 합니다."}
 		}
 		in.RiskCodes = append(in.RiskCodes, r.Code)
+	}
+	// tls_version은 "살아 있는 위치 중 하나가 그 버전으로 관측됐다" 필터다.
+	// 표기 정본은 스캐너(discovery.TLSVersionNames)이며 여기서 화이트리스트로 막는다 —
+	// 자유 문자열을 그대로 넘기면 오타가 조용히 0건으로 나온다.
+	for _, v := range splitMulti(q["tls_version"]) {
+		if !discovery.IsTLSVersionName(v) {
+			return in, &paramError{"invalid_tls_version",
+				"tls_version은 TLS 1.0/TLS 1.1/TLS 1.2/TLS 1.3 중 하나여야 합니다."}
+		}
+		in.TLSVersions = append(in.TLSVersions, v)
 	}
 	if v := q.Get("expires_within_days"); v != "" {
 		n, err := strconv.Atoi(v)

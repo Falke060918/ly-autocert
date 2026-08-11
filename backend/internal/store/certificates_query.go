@@ -72,10 +72,16 @@ type ListCertificatesInput struct {
 	RiskSeverities []certrisk.Severity
 	// RiskCodes는 판정 항목 코드 필터다(해당 항목이 잡힌 인증서). 여러 개면 OR.
 	RiskCodes []certrisk.Code
-	SortField string // listSortColumns 키. 빈 값이면 not_after
-	SortDesc  bool
-	Page      int // 1부터
-	PageSize  int // 1..maxPageSize
+	// TLSVersions는 "이 인증서의 살아 있는 위치 중 하나가 그 버전으로 관측됐다"
+	// 필터다(여러 개면 OR). 값은 discovery.TLSVersionNames의 표기다.
+	// **SQL EXISTS 술어**로 구현한다 — Go에서 걸러 내면 total·page가 필터를
+	// 반영하지 못한다(위험 판정 필터를 SQL로 옮긴 것과 같은 이유).
+	// 위치 범위는 목록 열(TLSVersions)·위험 판정 술어와 같은 "removed 아닌 위치"다.
+	TLSVersions []string
+	SortField   string // listSortColumns 키. 빈 값이면 not_after
+	SortDesc    bool
+	Page        int // 1부터
+	PageSize    int // 1..maxPageSize
 }
 
 // CertificateListItem은 목록 1행이다 — 인증서 + 목록 전용 파생 열.
@@ -90,6 +96,12 @@ type CertificateListItem struct {
 	// 확인되지 않았으면 nil이다. **정렬 화이트리스트에는 넣지 않는다** —
 	// 집계 파생값이라 ORDER BY 컬럼으로 안전하게 끼워 넣을 수 없다(설계 06 11.3).
 	LastSeenAt *time.Time `json:"last_seen_at"`
+	// TLSVersions는 이 인증서의 removed 아닌 위치들이 관측한 협상 TLS 버전 집합이다
+	// (중복 제거·오름차순). 위험 판정 입력으로 이미 계산하던 값을 그대로 노출하는
+	// 것이라 쿼리 비용이 늘지 않는다. 관측이 없으면 빈 배열이다 — 스캔한 적 없는
+	// 인증서(파일 업로드)와 "TLS를 안 쓴다"를 이 값만으로 구분하지 못한다.
+	// **정렬 화이트리스트에는 넣지 않는다**(LastSeenAt과 같은 이유 — 집계 파생값).
+	TLSVersions []string `json:"tls_versions"`
 	// Risk는 조회 시점에 계산한 위험 판정이다 — **저장하지 않는다**(certrisk 패키지
 	// 주석). 목록 경로에서는 위치 축 입력으로 "removed가 아닌 위치가 관측한 TLS 버전"만
 	// 싣는다(위치 배열 전체는 상세 응답 소관).
@@ -133,9 +145,17 @@ type LocationWithTarget struct {
 	// 체인의 사실이다 (0018). 인벤토리의 다른 인증서로 보완하지 않은 값이므로
 	// chain_complete=false는 곧 중간 CA 누락(풀체인 미배포)이다.
 	// 0018 이전 관측·파일 업로드 위치는 둘 다 nil(미상)이다 — 재스캔으로만 채워진다.
-	PresentedChainLen *int      `json:"presented_chain_len"`
-	ChainComplete     *bool     `json:"chain_complete"`
-	Target            TargetRef `json:"target"`
+	PresentedChainLen *int  `json:"presented_chain_len"`
+	ChainComplete     *bool `json:"chain_complete"`
+	// CipherSuite는 마지막 관측에서 협상된 암호 스위트 이름이다 (0020).
+	// nil은 "없음"이 아니라 미상이다 — 0020 이전 관측·파일 업로드 위치가 그렇다.
+	CipherSuite *string `json:"cipher_suite"`
+	// SupportedTLSVersions는 서버가 지원한다고 확인된 버전 목록이다 (0020, 오름차순).
+	// **옵트인 수집**이라(SCAN_TLS_PROBE_VERSIONS 기본 off) 보통 nil이고, nil을
+	// "그 버전을 지원하지 않는다"로 읽으면 안 된다. 두 값 모두 인증서 원문에서
+	// 계산할 수 없어 **소급 불가**이며 재스캔으로만 채워진다.
+	SupportedTLSVersions []string  `json:"supported_tls_versions"`
+	Target               TargetRef `json:"target"`
 }
 
 // OwnerRef는 인증서 소유자 표시용 요약이다. 화면이 owner_id(UUID)를 그대로
@@ -343,6 +363,17 @@ func buildListWhere(in ListCertificatesInput) (conds []string, args []any) {
 			         AND (certificates.authority_key_id IS NULL OR ic.subject_key_id IS NULL))
 			   ))`, ph))
 	}
+	if len(in.TLSVersions) > 0 {
+		// EXISTS 술어여야 total·page가 필터를 반영한다(설계 06 11.3과 같은 이유).
+		// 위치 범위는 목록 열·위험 판정 술어와 같은 "removed 아닌 위치"다 —
+		// 갈라지면 화면에 보이는 배지와 필터 결과가 어긋난다.
+		ph := arg(strings.Join(in.TLSVersions, sansSep))
+		conds = append(conds, fmt.Sprintf(`EXISTS (
+			SELECT 1 FROM certificate_locations l
+			 WHERE l.certificate_id = certificates.id
+			   AND l.deployment_status <> 'removed'
+			   AND l.tls_version = ANY(string_to_array(%s, chr(31))))`, ph))
+	}
 	// 위험 판정 필터는 바인드 파라미터를 쓰지 않는다 — 값이 아니라 코드·심각도로만
 	// 받고 술어는 certificates_risk.go의 고정 문자열이다(사용자 입력이 SQL 조각으로
 	// 들어가지 않는다. 정렬 화이트리스트와 같은 규약).
@@ -429,6 +460,12 @@ func (s *Store) ListCertificates(ctx context.Context, in ListCertificatesInput) 
 			return nil, fmt.Errorf("store: scan certificate: %w", err)
 		}
 		item.Certificate = c
+		// 같은 집계를 목록 열과 위험 판정 입력이 나눠 쓴다(추가 쿼리 없음).
+		// array_agg(DISTINCT …)이 이미 정렬된 값을 돌려주므로 오름차순이다.
+		item.TLSVersions = []string{}
+		if tlsVersions.Valid {
+			item.TLSVersions = splitNonEmpty(tlsVersions.String, sansSep)
+		}
 		item.Risk = certrisk.Evaluate(certrisk.Input{
 			Certificate: c,
 			Locations:   listRiskLocations(tlsVersions, chainIncomplete),
@@ -470,6 +507,7 @@ func (s *Store) GetCertificateDetail(ctx context.Context, id string) (*Certifica
 			l.store_name, l.service_name, l.port, l.last_verified_at, l.deployment_status,
 			l.tls_version, m.current_fingerprint, mc.id,
 			l.presented_chain_len, l.chain_complete,
+			l.cipher_suite, array_to_string(l.supported_tls_versions, chr(31)),
 			t.id, t.name, t.target_type, t.hostname, host(t.ip_address)
 		FROM certificate_locations l
 		JOIN targets t ON t.id = l.target_id
@@ -487,14 +525,21 @@ func (s *Store) GetCertificateDetail(ctx context.Context, id string) (*Certifica
 	for rows.Next() {
 		var l LocationWithTarget
 		var locType, depStatus string
+		// array_to_string은 NULL 배열에 NULL을 돌려주므로 "미상"과 "빈 배열"이
+		// 포인터로 구분된다 — nil 그대로 두어야 API가 null(미상)로 나간다.
+		var supportedVersions *string
 		if err := rows.Scan(
 			&l.ID, &l.CertificateID, &l.TargetID, &locType, &l.FilePath,
 			&l.StoreName, &l.ServiceName, &l.Port, &l.LastVerifiedAt, &depStatus,
 			&l.TLSVersion, &l.CurrentFingerprint, &l.CurrentCertificateID,
 			&l.PresentedChainLen, &l.ChainComplete,
+			&l.CipherSuite, &supportedVersions,
 			&l.Target.ID, &l.Target.Name, &l.Target.TargetType, &l.Target.Hostname, &l.Target.IPAddress,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan location: %w", err)
+		}
+		if supportedVersions != nil {
+			l.SupportedTLSVersions = splitNonEmpty(*supportedVersions, sansSep)
 		}
 		l.LocationType = domain.LocationType(locType)
 		l.DeploymentStatus = domain.DeploymentStatus(depStatus)

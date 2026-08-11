@@ -218,12 +218,14 @@ func (g *Gateway) handleObservations(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		obs = append(obs, store.EndpointObservation{
-			IP:         o.IP,
-			Port:       o.Port,
-			Reachable:  o.Reachable,
-			TLSVersion: o.TLSVersion,
-			Hostname:   o.Hostname,
-			Chain:      chain,
+			IP:                   o.IP,
+			Port:                 o.Port,
+			Reachable:            o.Reachable,
+			TLSVersion:           o.TLSVersion,
+			CipherSuite:          o.CipherSuite,
+			SupportedTLSVersions: o.SupportedTLSVersions,
+			Hostname:             o.Hostname,
+			Chain:                chain,
 		})
 	}
 

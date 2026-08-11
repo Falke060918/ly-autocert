@@ -423,13 +423,17 @@ func notifyTestMessage(recipient string) notify.Message {
 	}
 }
 
-// sweepDefaults는 config.SweepConfig에서 API가 쓰는 스윕 기본값만 추린다.
+// sweepDefaults는 config에서 API가 쓰는 스윕 기본값만 추린다.
 // 주입하지 않으면 스윕 생성이 store 상수로 폴백해 SCAN_SWEEP_* 설정이 무시된다.
-func sweepDefaults(c config.SweepConfig) api.SweepDefaults {
+// TLSProbeVersions만 SweepConfig 밖(SCAN_TLS_PROBE_VERSIONS)에서 온다 —
+// 스윕 전용 설정이 아니라 스캔 전반의 엔드포인트당 프로브 수를 정하는 값이라
+// 단발 스캔의 ETA에도 똑같이 곱해진다.
+func sweepDefaults(c config.SweepConfig, tlsProbeVersions bool) api.SweepDefaults {
 	return api.SweepDefaults{
-		RatePPS:        c.RatePPS,
-		ChunkEndpoints: c.ChunkEndpoints,
-		MaxDays:        c.MaxDays,
+		RatePPS:          c.RatePPS,
+		ChunkEndpoints:   c.ChunkEndpoints,
+		MaxDays:          c.MaxDays,
+		TLSProbeVersions: tlsProbeVersions,
 	}
 }
 
@@ -453,6 +457,7 @@ func sweepOptions(c config.SweepConfig) discovery.SweepOptions {
 func startSweepScheduler(ctx context.Context, logger *slog.Logger, cfg config.Config, st *store.Store) (stop func()) {
 	stop = discovery.NewManager(st).
 		UseSweepOptions(sweepOptions(cfg.Sweep)).
+		UseTLSVersionProbe(cfg.ScanTLSProbeVersions).
 		StartSweepScheduler(ctx)
 	if cfg.Sweep.Enabled {
 		logger.Info("discovery: sweep scheduler started",
@@ -494,7 +499,8 @@ func rescanOptions(c config.RescanConfig) discovery.RescanOptions {
 func startRescanScheduler(
 	ctx context.Context, logger *slog.Logger, cfg config.Config, st *store.Store,
 ) (stop func(), controller api.RescanController, mgr *discovery.Manager) {
-	mgr = discovery.NewManager(st).UseRescanOptions(rescanOptions(cfg.Rescan))
+	mgr = discovery.NewManager(st).UseRescanOptions(rescanOptions(cfg.Rescan)).
+		UseTLSVersionProbe(cfg.ScanTLSProbeVersions)
 	stop = mgr.StartRescanScheduler(ctx)
 	if cfg.Rescan.Enabled {
 		logger.Info("discovery: rescan scheduler started",

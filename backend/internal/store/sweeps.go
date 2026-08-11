@@ -107,6 +107,12 @@ type SweepInput struct {
 	RatePPS        int      // 0이면 DefaultSweepRatePPS
 	ChunkEndpoints int      // 0이면 DefaultSweepChunkEndpoints
 	MaxDays        int      // 0이면 DefaultSweepMaxDays
+	// ProbesPerEndpoint는 엔드포인트 1개가 회선에 내보내는 dial 수 상한이다
+	// (0이면 1). rate_pps는 곧 초당 dial 수이므로 ETA·MaxDays 판정은 엔드포인트
+	// 수가 아니라 **프로브 수**로 해야 맞는다 — 지원 TLS 버전 목록 탐지를 켜면
+	// 이 값이 4가 되고, 빠뜨리면 30일 상한이 실제 120일짜리 스윕을 통과시킨다.
+	// DB 컬럼은 없다: 파생 결과인 estimated_finish_at에만 반영된다.
+	ProbesPerEndpoint int
 	// ScheduleID는 이 스윕을 발주한 정기 스캔 스케줄이다(0019). 사람이 낸 발주는 nil이며
 	// 정기/수동 구분은 이 컬럼으로 한다 — scan_jobs.origin CHECK은 건드리지 않는다.
 	ScheduleID *string
@@ -301,10 +307,17 @@ func (s *Store) CreateSweep(ctx context.Context, in SweepInput) (*Sweep, error) 
 		return nil, fmt.Errorf("store: sweep executor_scope is required")
 	}
 
+	probes := in.ProbesPerEndpoint
+	if probes < 1 {
+		probes = 1
+	}
+
 	// 전수 스캔은 대상×포트가 수천만이라 int로는 부족하다 — bigint로 센다.
 	totalEndpoints := int64(in.IPCount) * int64(in.PortCount)
 	totalChunks := SweepChunkCount(in.IPCount, in.PortCount, chunkEndpoints)
-	etaSeconds := float64(totalEndpoints) / float64(ratePPS)
+	// rate_pps는 초당 dial 수다. 엔드포인트당 dial이 1회가 아니면(지원 TLS 버전
+	// 목록 탐지) 소요도 그 배수만큼 늘어난다 — 상한 판정도 같은 식으로 한다.
+	etaSeconds := float64(totalEndpoints) * float64(probes) / float64(ratePPS)
 	if days := etaSeconds / 86400; days > float64(maxDays) {
 		return nil, &SweepTooLongError{EstimatedDays: days, MaxDays: maxDays}
 	}

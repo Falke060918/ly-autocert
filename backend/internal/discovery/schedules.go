@@ -381,7 +381,10 @@ func (s *scheduleRunner) createSweep(ctx context.Context, d scheduleDispatch) (s
 		RatePPS:        rate,
 		ChunkEndpoints: s.m.sweep.normalized().ChunkEndpoints,
 		MaxDays:        s.opts.MaxDays,
-		ScheduleID:     &d.scheduleID,
+		// 정기 스캔도 사람이 낸 발주와 같은 배수를 써야 한다 — 같은 대역이
+		// 발주 경로에 따라 다른 ETA·다른 상한 판정을 받으면 안 된다.
+		ProbesPerEndpoint: s.m.ProbesPerEndpoint(),
+		ScheduleID:        &d.scheduleID,
 	})
 	if err != nil {
 		return "", err

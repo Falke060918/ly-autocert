@@ -73,6 +73,14 @@ type Config struct {
 	// (SCAN_SUGGESTED_NETWORKS, 콤마 구분 IP/CIDR). 정규화된 CIDR 문자열로
 	// 보관하며, 형식 오류 항목은 그 항목만 버리고 경고한다 (ADMIN_IP_*와 같은 처리).
 	ScanSuggestedNetworks []string
+	// ScanTLSProbeVersions는 서버가 지원하는 TLS 버전 **목록** 탐지 여부다
+	// (SCAN_TLS_PROBE_VERSIONS, 기본 false). 협상 버전 1개와 암호 스위트는 이 값과
+	// 무관하게 항상 수집한다 — 그쪽은 추가 프로브가 없기 때문이다.
+	// 켜면 엔드포인트당 핸드셰이크가 최대 4회가 되어 같은 대역의 스윕 소요가
+	// 최대 4배가 되고, SCAN_SWEEP_MAX_DAYS 상한에 걸려 기존에 통과하던 요청이
+	// 거부될 수 있다. 그래서 기본값은 off이며 이 사실이 곧 옵트인의 이유다
+	// (판단 근거 전문은 discovery.ScanOptions 주석).
+	ScanTLSProbeVersions bool
 	// AdminIP는 관리 콘솔 접근 IP 제한 설정이다 (ADMIN_IP_*).
 	AdminIP AdminIPConfig
 	// Rescan은 주기 재스캔·교체 감지 설정이다 (RESCAN_*).
@@ -279,6 +287,8 @@ func Load() (Config, error) {
 	cfg.Notify = l.notify()
 	cfg.Sweep = l.sweep()
 	cfg.ScanSuggestedNetworks = l.cidrStrings("SCAN_SUGGESTED_NETWORKS")
+	// 오값이어도 기동을 막지 않는다 — 폴백은 false(추가 프로브 없음)다.
+	cfg.ScanTLSProbeVersions = l.boolVal("SCAN_TLS_PROBE_VERSIONS", false)
 	cfg.AdminIP = l.adminIP()
 	cfg.Rescan = l.rescan()
 	cfg.NotifyChannelErrors = l.channelErrors

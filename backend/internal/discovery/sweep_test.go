@@ -28,7 +28,7 @@ import (
 func stubScan(t *testing.T, fn func(Endpoint) Observation) {
 	t.Helper()
 	prev := scanEndpoint
-	scanEndpoint = func(_ context.Context, ep Endpoint, _ time.Duration) Observation { return fn(ep) }
+	scanEndpoint = func(_ context.Context, ep Endpoint, _ time.Duration, _ ScanOptions) Observation { return fn(ep) }
 	t.Cleanup(func() { scanEndpoint = prev })
 }
 
@@ -209,7 +209,7 @@ func TestScanAllPacesDials(t *testing.T) {
 	want := time.Duration(len(eps)-rateBurst) * time.Second / pps
 
 	start := time.Now()
-	scanAll(context.Background(), eps, 4, time.Second, NewRateLimiter(pps), func(Observation) {})
+	scanAll(context.Background(), eps, 4, time.Second, NewRateLimiter(pps), ScanOptions{}, func(Observation) {})
 	elapsed := time.Since(start)
 
 	// 하한만 엄격히 본다 — 스캔은 요청 속도보다 빨라질 수 없다.
@@ -222,7 +222,7 @@ func TestScanAllPacesDials(t *testing.T) {
 
 	// 무제한(nil) 리미터는 같은 경로를 지연 없이 통과한다.
 	start = time.Now()
-	scanAll(context.Background(), eps, 4, time.Second, nil, func(Observation) {})
+	scanAll(context.Background(), eps, 4, time.Second, nil, ScanOptions{}, func(Observation) {})
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Errorf("무제한 리미터가 %v 지연시켰다, want ~0", elapsed)
 	}
@@ -246,7 +246,7 @@ func TestScanAllInterleavesHosts(t *testing.T) {
 		t.Fatalf("Expand: %v", err)
 	}
 	// 동시성 1이라 기록 순서가 곧 프로브 순서다.
-	scanAll(context.Background(), eps, 1, time.Second, nil, func(Observation) {})
+	scanAll(context.Background(), eps, 1, time.Second, nil, ScanOptions{}, func(Observation) {})
 
 	if len(order) != len(eps) {
 		t.Fatalf("스캔 %d건, want %d", len(order), len(eps))
@@ -276,7 +276,7 @@ func TestScanAllStopsOnCanceledContext(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	scanAll(ctx, eps, 2, time.Second, NewRateLimiter(MaxRatePPS), func(Observation) {})
+	scanAll(ctx, eps, 2, time.Second, NewRateLimiter(MaxRatePPS), ScanOptions{}, func(Observation) {})
 
 	if probes != 0 {
 		t.Errorf("취소된 ctx에서 프로브 %d건이 나갔다, want 0", probes)

@@ -242,6 +242,11 @@ type scanPlan struct {
 	// TotalChunks·MaxDays는 승격 경로에서만 의미가 있다(스윕 청크 격자·ETA 상한).
 	TotalChunks int
 	MaxDays     int
+	// ProbesPerEndpoint는 엔드포인트 1개가 내보내는 dial 수 상한이다(보통 1).
+	// rate_pps는 초당 dial 수라 ETA는 엔드포인트 수가 아니라 이 배수를 곱한
+	// 프로브 수로 계산해야 한다 — 미리보기와 실제 발주가 같은 식을 써야 하므로
+	// store.CreateSweep에도 같은 값을 넘긴다.
+	ProbesPerEndpoint int
 }
 
 // planScan은 요청을 파싱해 승격 여부까지 판정한다. 입력 오류는
@@ -261,13 +266,14 @@ func (s *Server) planScan(req createScanRequest) (*scanPlan, error) {
 	}
 
 	p := &scanPlan{
-		Targets:        req.Targets,
-		IPs:            ips,
-		Ports:          ports,
-		PortSpec:       effectivePortSpec(req.PortSpec, req.Ports),
-		TotalEndpoints: int64(len(ips)) * int64(len(ports)),
-		Threshold:      orDefaultInt(s.sweepDefaults.ChunkEndpoints, store.DefaultSweepChunkEndpoints),
-		MaxDays:        orDefaultInt(s.sweepDefaults.MaxDays, store.DefaultSweepMaxDays),
+		Targets:           req.Targets,
+		IPs:               ips,
+		Ports:             ports,
+		PortSpec:          effectivePortSpec(req.PortSpec, req.Ports),
+		TotalEndpoints:    int64(len(ips)) * int64(len(ports)),
+		Threshold:         orDefaultInt(s.sweepDefaults.ChunkEndpoints, store.DefaultSweepChunkEndpoints),
+		MaxDays:           orDefaultInt(s.sweepDefaults.MaxDays, store.DefaultSweepMaxDays),
+		ProbesPerEndpoint: discovery.ProbesPerEndpoint(s.sweepDefaults.TLSProbeVersions),
 	}
 	p.Promoted = p.TotalEndpoints > int64(p.Threshold)
 
@@ -276,7 +282,7 @@ func (s *Server) planScan(req createScanRequest) (*scanPlan, error) {
 		p.RatePPS = orDefaultInt(s.sweepDefaults.RatePPS, store.DefaultSweepRatePPS)
 		p.TotalChunks = store.SweepChunkCount(len(ips), len(ports), p.Threshold)
 	}
-	p.ETASeconds = float64(p.TotalEndpoints) / float64(p.RatePPS)
+	p.ETASeconds = float64(p.TotalEndpoints) * float64(p.ProbesPerEndpoint) / float64(p.RatePPS)
 	return p, nil
 }
 
@@ -292,18 +298,19 @@ func (s *Server) createPromotedSweep(w http.ResponseWriter, r *http.Request,
 	}
 
 	sweep, err := s.store.CreateSweep(r.Context(), store.SweepInput{
-		Targets:        plan.Targets,
-		IPCount:        len(plan.IPs),
-		PortSpec:       plan.PortSpec,
-		PortCount:      len(plan.Ports),
-		ExecutorScope:  scope,
-		RatePPS:        s.sweepDefaults.RatePPS,
-		ChunkEndpoints: s.sweepDefaults.ChunkEndpoints,
-		MaxDays:        s.sweepDefaults.MaxDays,
-		Promoted:       true,
-		ActorID:        actorID,
-		RequestID:      requestIDFrom(r.Context()),
-		SourceIP:       clientIP(r),
+		Targets:           plan.Targets,
+		IPCount:           len(plan.IPs),
+		PortSpec:          plan.PortSpec,
+		PortCount:         len(plan.Ports),
+		ExecutorScope:     scope,
+		RatePPS:           s.sweepDefaults.RatePPS,
+		ChunkEndpoints:    s.sweepDefaults.ChunkEndpoints,
+		MaxDays:           s.sweepDefaults.MaxDays,
+		ProbesPerEndpoint: plan.ProbesPerEndpoint,
+		Promoted:          true,
+		ActorID:           actorID,
+		RequestID:         requestIDFrom(r.Context()),
+		SourceIP:          clientIP(r),
 	})
 	var tooLong *store.SweepTooLongError
 	if errors.As(err, &tooLong) {
@@ -685,6 +692,11 @@ type SweepDefaults struct {
 	RatePPS        int // SCAN_SWEEP_RATE_PPS
 	ChunkEndpoints int // SCAN_SWEEP_CHUNK_ENDPOINTS
 	MaxDays        int // SCAN_SWEEP_MAX_DAYS — ETA가 넘으면 생성 거부(422)
+	// TLSProbeVersions는 서버 지원 TLS 버전 목록 탐지 여부다
+	// (SCAN_TLS_PROBE_VERSIONS, 기본 false). 여기 실리는 이유는 하나다 —
+	// 켜면 엔드포인트당 dial이 최대 4회가 되어 ETA와 MaxDays 판정의 배수가
+	// 바뀌기 때문이다. 스캔 동작 자체는 discovery.Manager가 따로 받는다.
+	TLSProbeVersions bool
 }
 
 type createSweepRequest struct {
@@ -777,9 +789,12 @@ func (s *Server) handleCreateSweep(w http.ResponseWriter, r *http.Request) {
 		RatePPS:        orDefaultInt(req.RatePPS, s.sweepDefaults.RatePPS),
 		ChunkEndpoints: orDefaultInt(req.ChunkEndpoints, s.sweepDefaults.ChunkEndpoints),
 		MaxDays:        s.sweepDefaults.MaxDays,
-		ActorID:        &actor.ID,
-		RequestID:      requestIDFrom(r.Context()),
-		SourceIP:       clientIP(r),
+		// 승격 경로(createPromotedSweep)와 같은 배수여야 한다 — 같은 요청이
+		// 들어온 문(스윕 직접 생성 vs 자동 승격)에 따라 ETA가 달라지면 안 된다.
+		ProbesPerEndpoint: discovery.ProbesPerEndpoint(s.sweepDefaults.TLSProbeVersions),
+		ActorID:           &actor.ID,
+		RequestID:         requestIDFrom(r.Context()),
+		SourceIP:          clientIP(r),
 	})
 	var tooLong *store.SweepTooLongError
 	if errors.As(err, &tooLong) {

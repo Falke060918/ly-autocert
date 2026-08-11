@@ -365,8 +365,13 @@ func toWireObservation(o discovery.Observation) sensorwire.Observation {
 		Port:       o.Port,
 		Reachable:  o.Reachable,
 		TLSVersion: o.TLSVersion,
-		Hostname:   o.Hostname,
-		ObservedAt: time.Now().UTC(),
+		// 암호 스위트는 추가 프로브 없이 얻으므로 센서도 그대로 싣는다.
+		// 지원 버전 목록은 센서가 아직 탐지하지 않아 항상 비어 있다 —
+		// 리스 응답에 옵션을 실어 보내는 프로토콜 변경이 선행돼야 한다.
+		CipherSuite:          o.CipherSuite,
+		SupportedTLSVersions: o.SupportedTLSVersions,
+		Hostname:             o.Hostname,
+		ObservedAt:           time.Now().UTC(),
 	}
 	for _, c := range o.Chain {
 		w.ChainDER = append(w.ChainDER, base64.StdEncoding.EncodeToString(c.Raw))

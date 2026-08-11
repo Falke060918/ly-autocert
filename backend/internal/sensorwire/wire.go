@@ -103,13 +103,21 @@ func (r HeartbeatRequest) Validate() error {
 // Observation은 엔드포인트 1개의 스캔 관측이다.
 // ChainDER는 서버 제시 순서(리프 우선)의 인증서 DER를 base64 표준 인코딩한 배열이다.
 type Observation struct {
-	IP         string    `json:"ip"`
-	Port       int       `json:"port"`
-	Reachable  bool      `json:"reachable"`
-	TLSVersion string    `json:"tls_version,omitempty"` // 협상된 프로토콜 버전. 도달 실패 시 빈 값
-	Hostname   string    `json:"hostname,omitempty"`    // 역방향 DNS 또는 리프 CN 폴백. 없으면 빈 값
-	ChainDER   []string  `json:"chain_der,omitempty"`   // base64(DER) 배열. 도달 실패 시 비어 있음
-	ObservedAt time.Time `json:"observed_at"`
+	IP         string `json:"ip"`
+	Port       int    `json:"port"`
+	Reachable  bool   `json:"reachable"`
+	TLSVersion string `json:"tls_version,omitempty"` // 협상된 프로토콜 버전. 도달 실패 시 빈 값
+	// CipherSuite는 협상된 암호 스위트 이름이다. 도달 실패 시 빈 값.
+	// 추가 핸드셰이크 없이 얻으므로 센서도 항상 싣는다.
+	CipherSuite string `json:"cipher_suite,omitempty"`
+	// SupportedTLSVersions는 서버가 지원한다고 확인된 버전 목록이다(오름차순).
+	// 엔드포인트당 핸드셰이크가 여러 번 필요한 옵트인 수집이라 보통 비어 있다 —
+	// 현재 센서는 이 탐지를 하지 않으므로 항상 빈 배열이고, 필드는 프로토콜을
+	// 나중에 다시 바꾸지 않으려고 미리 둔다(빈 값 = 미상, 지원 안 함이 아니다).
+	SupportedTLSVersions []string  `json:"supported_tls_versions,omitempty"`
+	Hostname             string    `json:"hostname,omitempty"`  // 역방향 DNS 또는 리프 CN 폴백. 없으면 빈 값
+	ChainDER             []string  `json:"chain_der,omitempty"` // base64(DER) 배열. 도달 실패 시 비어 있음
+	ObservedAt           time.Time `json:"observed_at"`
 }
 
 // Validate는 형식 검사만 한다. DER 파싱·체인 검증은 서버 몫이다.
@@ -123,6 +131,10 @@ func (o Observation) Validate() error {
 	}
 	if !o.Reachable && len(o.ChainDER) > 0 {
 		return errors.New("sensorwire: observation: unreachable endpoint must not carry a chain")
+	}
+	// 핸드셰이크가 없었으면 협상 결과도 없다 — 도달 실패에 실려 오면 관측이 아니다.
+	if !o.Reachable && (o.CipherSuite != "" || len(o.SupportedTLSVersions) > 0) {
+		return errors.New("sensorwire: observation: unreachable endpoint must not carry TLS negotiation details")
 	}
 	if o.ObservedAt.IsZero() {
 		return errors.New("sensorwire: observation: observed_at is required")
