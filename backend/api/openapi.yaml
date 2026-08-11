@@ -184,6 +184,16 @@ paths:
                    weak_signature, no_san, wildcard, wildcard_broad,
                    wildcard_multi_label, long_validity, expired_ca, self_signed,
                    chain_anomaly, legacy_tls, incomplete_chain]
+        - name: tls_version
+          in: query
+          description: >
+            "removed가 아닌 설치 위치 중 하나가 이 버전으로 관측됐다" 필터.
+            반복 지정 또는 쉼표 구분 다중 값 허용이며 여러 개면 OR다.
+            응답의 tls_versions와 같은 값 집합을 보므로 화면의 열과 필터가 일치한다.
+            **정렬 대상은 아니다** — 위치 집계 파생값이라 정렬 화이트리스트에 없다.
+          schema:
+            type: string
+            enum: ["TLS 1.0", "TLS 1.1", "TLS 1.2", "TLS 1.3"]
         - name: sort
           in: query
           description: 정렬 필드 (기본 not_after)
@@ -371,6 +381,14 @@ paths:
                    weak_signature, no_san, wildcard, wildcard_broad,
                    wildcard_multi_label, long_validity, expired_ca, self_signed,
                    chain_anomaly, legacy_tls, incomplete_chain]
+        - name: tls_version
+          in: query
+          description: >
+            관측 TLS 버전 필터 (목록과 같은 의미). 행 수를 바꾸지만 CSV 열에는
+            실리지 않는다 — CSV는 인증서 열만 담고 TLS 버전은 설치 위치 축이다.
+          schema:
+            type: string
+            enum: ["TLS 1.0", "TLS 1.1", "TLS 1.2", "TLS 1.3"]
         - name: sort
           in: query
           description: 정렬 필드 (기본 not_after)
@@ -2553,7 +2571,7 @@ components:
       allOf:
         - $ref: "#/components/schemas/Certificate"
         - type: object
-          required: [risk]
+          required: [tls_versions, risk]
           properties:
             last_seen_at:
               type: string
@@ -2564,6 +2582,16 @@ components:
                 (max(certificate_locations.last_verified_at)). 위치가 없거나 한 번도
                 확인되지 않았으면 null이다. **정렬(sort) 대상이 아니다** — 집계
                 파생값이라 정렬 화이트리스트에 넣지 않는다.
+            tls_versions:
+              type: array
+              description: >
+                이 인증서의 removed 아닌 설치 위치들이 관측한 협상 TLS 버전 집합
+                (중복 제거·오름차순). 스캔 이력이 없으면 빈 배열이며, 빈 배열만으로는
+                "스캔한 적 없음"과 "TLS를 쓰지 않음"을 구분할 수 없다.
+                tls_version= 필터가 보는 값이 이것이고, last_seen_at과 같은 이유로
+                **정렬(sort) 대상이 아니다**. 서버가 함께 열어 둔 다른 버전까지는
+                담지 않는다 — 그쪽은 설치 위치의 supported_tls_versions다.
+              items: { type: string, enum: ["TLS 1.0", "TLS 1.1", "TLS 1.2", "TLS 1.3"] }
             risk:
               allOf: [{ $ref: "#/components/schemas/RiskAssessment" }]
               description: >
@@ -2739,6 +2767,26 @@ components:
           type: string
           nullable: true
           description: 네트워크 스캔이 관측한 협상 TLS 버전 (예 TLS 1.2). 스캔 이력이 없으면 null
+        cipher_suite:
+          type: string
+          nullable: true
+          description: >
+            마지막 관측에서 협상된 암호 스위트 이름 (0020, 예 TLS_AES_128_GCM_SHA256).
+            표기는 Go 표준 라이브러리 tls.CipherSuiteName을 따르며 미등록 ID는
+            "0x____" 형태다. **소급 불가** — 인증서 원문에서 계산할 수 없는
+            핸드셰이크 결과라 0020 이전 관측·파일 업로드 위치는 null(미상)이고
+            재스캔으로만 채워진다.
+        supported_tls_versions:
+          type: array
+          nullable: true
+          description: >
+            서버가 지원한다고 확인된 프로토콜 버전 목록 (0020, 오름차순).
+            **옵트인 수집이며 기본은 꺼져 있다**(SCAN_TLS_PROBE_VERSIONS) —
+            엔드포인트당 핸드셰이크가 최대 4회 필요해 스캔 레이트·스윕 ETA에
+            그대로 4배 비용이 붙기 때문이다. 따라서 null이 정상이며 null은
+            "그 버전을 지원하지 않는다"가 아니라 "탐지하지 않았다"는 뜻이다.
+            cipher_suite와 같은 이유로 **소급 불가**이고 재스캔으로만 채워진다.
+          items: { type: string, enum: ["TLS 1.0", "TLS 1.1", "TLS 1.2", "TLS 1.3"] }
         current_fingerprint:
           type: string
           nullable: true

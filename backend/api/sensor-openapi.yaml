@@ -343,6 +343,20 @@ components:
         tls_version:
           type: string
           description: 협상된 프로토콜 버전. 도달 실패 시 생략
+        cipher_suite:
+          type: string
+          description: >
+            협상된 암호 스위트 이름. 추가 핸드셰이크 없이 얻으므로 센서도 항상 싣는다.
+            도달 실패 시 생략이며, 도달 실패 관측에 실려 오면 400이다.
+        supported_tls_versions:
+          type: array
+          items:
+            type: string
+          description: >
+            서버가 지원한다고 확인된 프로토콜 버전 목록(오름차순). 엔드포인트당
+            핸드셰이크가 여러 번 필요한 옵트인 수집이라 **현재 센서는 탐지하지 않고
+            항상 생략**한다 — 필드는 나중에 프로토콜을 다시 바꾸지 않으려고 미리 둔다.
+            생략은 "지원 안 함"이 아니라 미상이다.
         hostname:
           type: string
           description: 역방향 DNS 또는 리프 CN 폴백. 없으면 생략

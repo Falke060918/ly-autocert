@@ -237,7 +237,7 @@ var notifySweepEnv = []string{
 	"SYSLOG_ADDR", "SYSLOG_NETWORK", "SYSLOG_FACILITY", "SYSLOG_APP_NAME",
 	"SCAN_SWEEP_ENABLED", "SCAN_SWEEP_RATE_PPS", "SCAN_SWEEP_CONCURRENCY",
 	"SCAN_SWEEP_CHUNK_ENDPOINTS", "SCAN_SWEEP_CHUNK_GAP", "SCAN_SWEEP_MAX_DAYS",
-	"SCAN_SWEEP_STALL_AFTER",
+	"SCAN_SWEEP_STALL_AFTER", "SCAN_TLS_PROBE_VERSIONS",
 	"RESCAN_ENABLED", "RESCAN_INTERVAL", "RESCAN_RATE_PPS", "RESCAN_BATCH_IPS",
 	"RESCAN_REPLACE_CONFIRM", "RESCAN_RETIRE_MISSES",
 }
@@ -313,6 +313,11 @@ func TestLoadSweepDefaults(t *testing.T) {
 	}
 	if cfg.Sweep != want {
 		t.Errorf("Sweep = %+v, want %+v", cfg.Sweep, want)
+	}
+	// 지원 TLS 버전 목록 탐지는 **기본 off**이다 — 켜면 엔드포인트당 dial이
+	// 최대 4회가 되어 같은 대역의 스윕 소요와 SCAN_SWEEP_MAX_DAYS 판정이 함께 4배가 된다.
+	if cfg.ScanTLSProbeVersions {
+		t.Error("ScanTLSProbeVersions = true, want false (옵트인이라 기본값은 off다)")
 	}
 }
 

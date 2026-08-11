@@ -41,6 +41,7 @@ import {
   listCertificates,
   type CertificateListResponse,
   type ImportResult,
+  type TlsVersion,
 } from "@/lib/api";
 import {
   applyIssuerFilter,
@@ -61,6 +62,13 @@ import {
   RISK_SEVERITY_ORDER,
   type CertificateRisksResponse,
 } from "@/lib/risks";
+import {
+  applyTlsVersionFilter,
+  formatTlsVersions,
+  TLS_VERSION_PARAM,
+  TLS_VERSIONS,
+  tlsVersionsFromSearch,
+} from "@/lib/tls";
 import { dnCommonName, dnOrganization, formatDate, isSelfSigned } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { findCANode, IssuersView } from "./issuers-view";
@@ -200,6 +208,9 @@ function CertificatesBody() {
       severity: isRiskSeverity(sev) ? sev : null,
       code: isRiskCode(code) ? code : null,
     });
+    // 관측 TLS 버전도 같은 이유로 카탈로그 밖 값을 버리고 넘긴다 — 서버는 네 값만
+    // 받고 그 밖은 400 invalid_tls_version이다.
+    applyTlsVersionFilter(out, tlsVersionsFromSearch(searchParams));
     return out;
   }, [searchParams]);
 
@@ -247,6 +258,7 @@ function CertificatesBody() {
     [
       "q", "status", "type", "expired", "expires_within_days", "self_signed", "unowned",
       "include_replaced", ISSUED_BY_PARAM, RISK_PARAM, RISK_CODE_PARAM,
+      TLS_VERSION_PARAM,
     ].some((k) => searchParams.get(k));
 
   const includeReplaced = searchParams.get("include_replaced") === "true";
@@ -262,6 +274,8 @@ function CertificatesBody() {
   const issuedById = searchParams.get(ISSUED_BY_PARAM);
   const riskSeverity = searchParams.get(RISK_PARAM);
   const riskCode = searchParams.get(RISK_CODE_PARAM);
+  // 관측 TLS 버전 필터 — 다중값(OR)을 URL에 그대로 두므로 Select 값도 배열에서 만든다.
+  const tlsVersions = tlsVersionsFromSearch(searchParams);
   // 발급 CA 칩 라벨 — 집계 트리에서 이름을 찾고, 못 찾으면 일반 문구로 남긴다.
   const issuedByNode = findCANode(issuerAgg, issuedById);
 
@@ -495,6 +509,38 @@ function CertificatesBody() {
           </Select>
         )}
         {/*
+          관측 TLS 버전 필터 — 옵션이 고정 카탈로그(lib/tls.ts)라 어떤 집계 API에도
+          기대지 않는다. 위험·발급기관 필터는 집계가 실패하면 Select째로 사라져
+          URL에 남은 필터를 풀 수단이 "초기화"뿐이 되는데, 이 필터에는 그 경로가 없다.
+        */}
+        <Select
+          value={
+            tlsVersions.length === 0 ? "all" : tlsVersions.join(",")
+          }
+          onValueChange={(v) =>
+            setQuery({ [TLS_VERSION_PARAM]: v === "all" ? null : v })
+          }
+        >
+          <SelectTrigger className="w-[160px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">TLS: 전체</SelectItem>
+            {TLS_VERSIONS.map((v) => (
+              <SelectItem key={v} value={v}>{v}</SelectItem>
+            ))}
+            {/*
+              서버가 다중값을 OR로 받으므로 주소에 여러 개가 실려 올 수 있다 —
+              한 항목으로 살려 두지 않으면 트리거가 비어 필터를 푸는 법이 사라진다.
+            */}
+            {tlsVersions.length > 1 && (
+              <SelectItem value={tlsVersions.join(",")}>
+                {formatTlsVersions(tlsVersions)}
+              </SelectItem>
+            )}
+          </SelectContent>
+        </Select>
+        {/*
           교체된 인증서는 기본으로 숨긴다 — 갱신이 끝나 죽은 인증서가 목록·만료
           집계에 섞이면 이미 처리한 건에 대한 알림처럼 신뢰를 깎는다. 다만 이력
           추적은 필요하므로 토글로 되돌릴 수 있게 두고 상태는 URL에 남긴다.
@@ -588,6 +634,8 @@ function CertificatesBody() {
                   <TableHead>유형</TableHead>
                   {/* 정렬 불가 — 위치 집계 파생값이라 서버 정렬 화이트리스트에 없다. */}
                   <TableHead>최근 확인</TableHead>
+                  {/* 최근 확인과 같은 위치 집계 파생값이라 역시 정렬 대상이 아니다. */}
+                  <TableHead>TLS</TableHead>
                   <SortHead field="created_at" sort={sort} order={order} setQuery={setQuery} />
                 </TableRow>
               </TableHeader>
@@ -641,6 +689,12 @@ function CertificatesBody() {
                     <TableCell className="whitespace-nowrap">
                       <FreshnessText iso={c.last_seen_at} now={now} />
                     </TableCell>
+                    <TableCell className="whitespace-nowrap">
+                      <TlsVersionsCell
+                        versions={c.tls_versions}
+                        scanned={c.last_seen_at != null}
+                      />
+                    </TableCell>
                     <TableCell className="font-mono text-xs tabular-nums">
                       {formatDate(c.created_at)}
                     </TableCell>
@@ -691,6 +745,42 @@ function SearchField({
         }}
       />
     </div>
+  );
+}
+
+/**
+ * 관측 TLS 버전 셀 — removed 아닌 설치 위치들이 실제로 협상한 버전의 합집합이다.
+ * 서버가 함께 열어 둔 다른 버전까지는 아니다(그쪽은 설치 위치 상세의 지원 버전 목록).
+ *
+ * 빈 배열은 "TLS를 안 쓴다"가 아니라 **관측이 없다**는 뜻이라 '확인 안 됨'으로 적는다 —
+ * 모르는 것을 안전으로 세면 레거시 TLS가 남은 서버를 정리 끝난 것으로 보게 된다.
+ * 빈 배열만으로는 이유를 못 가리므로 최근 확인 여부(last_seen_at)로 설명을 나눈다.
+ */
+function TlsVersionsCell({
+  versions,
+  scanned,
+}: {
+  versions: TlsVersion[];
+  scanned: boolean;
+}) {
+  if (versions.length === 0) {
+    return (
+      <span
+        className="text-xs text-muted-foreground/70"
+        title={
+          scanned
+            ? "설치 위치는 확인됐지만 TLS 핸드셰이크로 관측된 버전이 없습니다. 파일·스토어처럼 네트워크 위치가 아니거나, 스캔이 협상까지 가지 못한 자리입니다."
+            : "네트워크 스캔으로 한 번도 확인되지 않았습니다. Discovery 스캔을 돌리면 채워집니다."
+        }
+      >
+        확인 안 됨
+      </span>
+    );
+  }
+  return (
+    <span className="font-mono text-xs tabular-nums">
+      {formatTlsVersions(versions)}
+    </span>
   );
 }
 
