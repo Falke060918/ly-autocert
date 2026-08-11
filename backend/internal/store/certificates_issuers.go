@@ -22,8 +22,32 @@ type IssuerOrgCount struct {
 	Count        int     `json:"count"`
 }
 
-// CATreeNode는 CA 트리 1노드다. 루트(자체 서명 CA) 아래에 그 계보의 중간 CA가
-// 평탄화되어 붙는 2계층 구조다 — 중간의 중간도 루트 바로 아래로 붙는다.
+// maxCATreeDepth는 트리 중첩 상한이다. 실제 계층은 있는 만큼 다 내려가며
+// (평탄화하지 않는다), 이 값은 교차 서명·손상 데이터로 만들어진 병적으로 긴
+// 사슬에서 재귀가 폭주하지 않게 막는 안전 상한일 뿐이다. 순환 자체는 상한이
+// 아니라 부모 사슬 검사로 끊는다(buildCATree). 체인 조회(maxChainDepth=8)의
+// 두 배를 둔 것은, 체인은 "루트까지 몇 단계"고 여기는 "인벤토리 전체 계보"라
+// 같은 값을 쓰면 정상 데이터가 잘릴 여지가 더 크기 때문이다.
+const maxCATreeDepth = 2 * maxChainDepth
+
+// caLeafPreviewLimit는 노드 1개에 싣는 리프 미리보기 최대 건수다.
+// 전체 리프는 목록 API(GET /certificates?issued_by=<노드 id>)가 페이지네이션과
+// 함께 내려준다 — 트리 응답에 인벤토리 전체를 실으면 노드 수 × 리프 수가 된다.
+const caLeafPreviewLimit = 5
+
+// CALeafPreview는 CA 노드가 직접 발급한 리프 1건의 미리보기다.
+// 트리를 펼쳤을 때 "무엇이 달려 있나"를 즉시 보여주기 위한 최소 필드만 담는다.
+type CALeafPreview struct {
+	ID         string    `json:"id"`
+	CommonName string    `json:"common_name"`
+	SubjectDN  string    `json:"subject_dn"`
+	NotAfter   time.Time `json:"not_after"`
+	Status     string    `json:"status"`
+}
+
+// CATreeNode는 CA 트리 1노드다. 루트(자체 서명 CA) 아래로 **실제 계층 그대로**
+// 중간 CA가 중첩된다 — 중간의 중간도 제 부모 밑에 붙는다(깊이 제한 없음,
+// maxCATreeDepth는 병적 데이터용 안전 상한).
 // 인벤토리에 없는 상위(중간 CA만 보유한 경우의 루트)는 Stored=false·ID nil로,
 // 하위가 아는 issuer_dn만 담는다 (certificates_chain.go ChainItem과 같은 규약).
 type CATreeNode struct {
@@ -34,13 +58,20 @@ type CATreeNode struct {
 	NotAfter   *time.Time `json:"not_after"`
 	Status     *string    `json:"status"`
 	SelfSigned bool       `json:"self_signed"`
+	// Depth는 이 노드가 놓인 계층이다(루트 0). 중첩 구조에서 파생 가능하지만,
+	// 응답만 보고 계층이 실제로 살아 있는지 확인할 수 있게 명시한다.
+	Depth int `json:"depth"`
 	// LeafCount는 이 CA가 직접 발급한 비-CA 인증서 수다(replaced 제외).
 	// 매칭은 findIssuer의 역방향: SKI=AKI 우선, 키 식별자 부재 시 DN 폴백.
 	LeafCount int `json:"leaf_count"`
-	// SubtreeLeafCount는 이 노드와 하위(Children) CA의 LeafCount 합산이다.
-	// 루트의 "하위 포함" 표기용 — 중간 CA는 손자가 없어(2계층 평탄화) LeafCount와 같다.
+	// SubtreeLeafCount는 이 노드와 **모든** 하위 CA의 LeafCount 합산이다
+	// (손자·증손자 포함). 화면의 "하위 포함 N건" 표기용.
 	SubtreeLeafCount int `json:"subtree_leaf_count"`
-	// Children은 이 루트 계보의 중간 CA들이다(루트 노드에서만 비어 있지 않다).
+	// LeafPreview는 이 노드가 직접 발급한 리프 중 만료가 가장 임박한
+	// 최대 caLeafPreviewLimit건이다. LeafCount가 이 길이보다 크면 나머지는
+	// GET /certificates?issued_by=<id>로 이어서 조회한다.
+	LeafPreview []CALeafPreview `json:"leaf_preview"`
+	// Children은 이 노드가 직접 발급한 하위 CA들이다.
 	Children []CATreeNode `json:"children"`
 }
 
@@ -99,12 +130,16 @@ func (s *Store) CertificateIssuers(ctx context.Context) (*CertificateIssuers, er
 		return nil, fmt.Errorf("store: iterate issuer organizations: %w", err)
 	}
 
-	// ② CA 인증서 전체 + 각자의 직접 발급 리프 수 (단일 쿼리).
+	// ② CA 인증서 전체 + 각자의 직접 발급 리프 수 (단일 쿼리) + 노드별 리프 미리보기.
 	cas, err := s.listCAIssuers(ctx)
 	if err != nil {
 		return nil, err
 	}
-	res.CATree = buildCATree(cas)
+	previews, err := s.listCALeafPreviews(ctx)
+	if err != nil {
+		return nil, err
+	}
+	res.CATree = buildCATree(cas, previews)
 
 	// ③ 어떤 보유 CA와도 매칭되지 않는 리프 수.
 	err = s.db.QueryRowContext(ctx, `
@@ -154,97 +189,209 @@ func (s *Store) listCAIssuers(ctx context.Context) ([]caIssuerRow, error) {
 	return cas, nil
 }
 
-// buildCATree는 CA 목록을 루트→중간 2계층 트리로 만든다. 상위 탐색은 메모리에서
-// findIssuer와 같은 우선순위(SKI 정확 일치 → 유효(미만료) → not_after 최신)로
-// 고르고, maxChainDepth·방문 집합으로 순환을 끊는다 (certificates_chain.go 규약).
-func buildCATree(cas []caIssuerRow) []CATreeNode {
-	roots := []CATreeNode{}
-	rootIdx := map[string]int{}      // 보유 루트: CA id → roots 인덱스
-	orphanIdx := map[string]int{}    // 미보유 루트 placeholder: issuer_dn → roots 인덱스
-	addStoredRoot := func(c caIssuerRow) int {
-		if i, ok := rootIdx[c.id]; ok {
-			return i
-		}
-		roots = append(roots, toCATreeNode(c))
-		rootIdx[c.id] = len(roots) - 1
-		return len(roots) - 1
+// listCALeafPreviews는 CA 노드별 리프 미리보기(노드당 최대 caLeafPreviewLimit건)를
+// 한 쿼리로 모은다. 노드마다 따로 조회하면 CA 수만큼 왕복이 되고, 상한 없이 전부
+// 실으면 응답이 인벤토리 전체가 된다. 순서는 **만료 임박순**이다 — 미리보기의
+// 용도가 "이 CA 밑에서 먼저 손봐야 할 게 뭔가"이기 때문이다.
+func (s *Store) listCALeafPreviews(ctx context.Context) (map[string][]CALeafPreview, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		WITH ranked AS (
+			SELECT ca.id AS ca_id, child.id AS leaf_id, child.common_name,
+			       child.subject_dn, child.not_after, child.status,
+			       row_number() OVER (PARTITION BY ca.id
+			                          ORDER BY child.not_after ASC, child.id ASC) AS rn
+			  FROM certificates ca
+			  JOIN certificates child
+			    ON child.certificate_type <> 'ca' AND child.status <> 'replaced'
+			   AND child.id <> ca.id AND `+issuedByMatchSQL+`
+			 WHERE ca.certificate_type = 'ca'
+		)
+		SELECT ca_id, leaf_id, common_name, subject_dn, not_after, status
+		  FROM ranked
+		 WHERE rn <= $1::int
+		 ORDER BY ca_id, rn`, caLeafPreviewLimit)
+	if err != nil {
+		return nil, fmt.Errorf("store: list ca leaf previews: %w", err)
 	}
+	defer rows.Close() //nolint:errcheck
 
-	// 루트를 먼저 세운다 — 자식 없는 루트도 노드로 나와야 한다.
-	for _, c := range cas {
-		if c.selfSigned() {
-			addStoredRoot(c)
+	previews := map[string][]CALeafPreview{}
+	for rows.Next() {
+		var caID string
+		var p CALeafPreview
+		if err := rows.Scan(&caID, &p.ID, &p.CommonName, &p.SubjectDN, &p.NotAfter, &p.Status); err != nil {
+			return nil, fmt.Errorf("store: scan ca leaf preview: %w", err)
 		}
+		previews[caID] = append(previews[caID], p)
 	}
-	// 중간 CA는 계보의 루트를 찾아 그 아래에 평탄화해 붙인다.
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate ca leaf previews: %w", err)
+	}
+	return previews, nil
+}
+
+// buildCATree는 CA 목록을 **실제 계층 그대로의 N계층 트리**로 만든다.
+// 상위 탐색은 메모리에서 findIssuer와 같은 우선순위(SKI 정확 일치 → 유효(미만료)
+// → not_after 최신)로 한 단계씩만 고른다 — 예전처럼 루트까지 올라가 평탄화하지
+// 않는다. 순환은 부모 사슬을 훑어 닫는 엣지를 끊고(breakParentCycles),
+// maxCATreeDepth를 넘는 사슬은 상한 지점에서 잘라 그 노드를 최상위로 올린다
+// (버리지 않는다 — 노드 유실이 평탄화보다 나쁘다).
+func buildCATree(cas []caIssuerRow, previews map[string][]CALeafPreview) []CATreeNode {
+	// ① 각 CA의 직속 부모를 한 단계만 찾는다.
+	parentOf := make(map[string]string, len(cas))
 	for _, c := range cas {
 		if c.selfSigned() {
 			continue
 		}
-		top, found := climbToRoot(c, cas)
-		var i int
-		if found {
-			i = addStoredRoot(top)
-		} else {
-			// 보유하지 않은 루트 — 마지막으로 아는 상위의 issuer_dn placeholder.
-			dn := top.issuerDN
-			var ok bool
-			if i, ok = orphanIdx[dn]; !ok {
-				roots = append(roots, CATreeNode{SubjectDN: dn, Children: []CATreeNode{}})
-				i = len(roots) - 1
-				orphanIdx[dn] = i
-			}
+		if p, ok := findIssuerInMemory(c, cas, map[string]bool{c.id: true}); ok {
+			parentOf[c.id] = p.id
 		}
-		roots[i].Children = append(roots[i].Children, toCATreeNode(c))
+	}
+	breakParentCycles(cas, parentOf)
+	capParentDepth(cas, parentOf)
+
+	// ② 부모별 자식 목록. cas의 정렬 순서를 그대로 이어받아 결정론적이다.
+	childrenOf := map[string][]caIssuerRow{}
+	for _, c := range cas {
+		if p, ok := parentOf[c.id]; ok {
+			childrenOf[p] = append(childrenOf[p], c)
+		}
 	}
 
-	// 하위 포함 합산 확정 + 정렬: 계보 리프 합 내림차순 → subject_dn.
-	// 자식은 리프 수 내림차순 → subject_dn.
-	for i := range roots {
-		roots[i].SubtreeLeafCount = treeLeafTotal(roots[i])
-		sort.SliceStable(roots[i].Children, func(a, b int) bool {
-			ca, cb := roots[i].Children[a], roots[i].Children[b]
-			if ca.LeafCount != cb.LeafCount {
-				return ca.LeafCount > cb.LeafCount
-			}
-			return ca.SubjectDN < cb.SubjectDN
-		})
-	}
-	sort.SliceStable(roots, func(a, b int) bool {
-		ta, tb := roots[a].SubtreeLeafCount, roots[b].SubtreeLeafCount
-		if ta != tb {
-			return ta > tb
+	// ③ 최상위: 자체 서명 루트 + 상위를 보유하지 않은 CA(미보유 루트 placeholder 아래).
+	roots := []CATreeNode{}
+	orphanIdx := map[string]int{} // issuer_dn → roots 인덱스
+	for _, c := range cas {
+		if _, hasParent := parentOf[c.id]; hasParent {
+			continue
 		}
-		return roots[a].SubjectDN < roots[b].SubjectDN
-	})
+		node := buildCASubtree(c, childrenOf, previews, 0, map[string]bool{})
+		if c.selfSigned() {
+			roots = append(roots, node)
+			continue
+		}
+		// 보유하지 않은 상위 — 하위가 아는 issuer_dn 자리 노드 아래로 묶는다.
+		i, ok := orphanIdx[c.issuerDN]
+		if !ok {
+			roots = append(roots, CATreeNode{
+				SubjectDN: c.issuerDN, LeafPreview: []CALeafPreview{}, Children: []CATreeNode{}})
+			i = len(roots) - 1
+			orphanIdx[c.issuerDN] = i
+		}
+		reparent(&node, 1)
+		roots[i].Children = append(roots[i].Children, node)
+	}
+
+	// ④ placeholder 루트의 하위 합산 확정 + 전체 정렬.
+	for i := range roots {
+		if !roots[i].Stored {
+			roots[i].SubtreeLeafCount = subtreeLeafTotal(roots[i])
+		}
+		sortCAChildren(&roots[i])
+	}
+	sortCANodes(roots)
 	return roots
 }
 
-func treeLeafTotal(n CATreeNode) int {
+// buildCASubtree는 c를 뿌리로 하위 CA를 재귀적으로 붙인다. visited는 순환을
+// 이미 끊은 뒤의 방어선이고, depth는 maxCATreeDepth 안전 상한이다.
+func buildCASubtree(c caIssuerRow, childrenOf map[string][]caIssuerRow,
+	previews map[string][]CALeafPreview, depth int, visited map[string]bool) CATreeNode {
+	node := toCATreeNode(c)
+	node.Depth = depth
+	node.LeafPreview = previews[c.id]
+	if node.LeafPreview == nil {
+		node.LeafPreview = []CALeafPreview{}
+	}
+	if visited[c.id] || depth >= maxCATreeDepth {
+		return node
+	}
+	visited[c.id] = true
+	for _, child := range childrenOf[c.id] {
+		sub := buildCASubtree(child, childrenOf, previews, depth+1, visited)
+		node.SubtreeLeafCount += sub.SubtreeLeafCount
+		node.Children = append(node.Children, sub)
+	}
+	delete(visited, c.id)
+	return node
+}
+
+// reparent는 placeholder 아래로 옮긴 서브트리의 Depth를 다시 매긴다.
+func reparent(n *CATreeNode, depth int) {
+	n.Depth = depth
+	for i := range n.Children {
+		reparent(&n.Children[i], depth+1)
+	}
+}
+
+func subtreeLeafTotal(n CATreeNode) int {
 	total := n.LeafCount
 	for _, c := range n.Children {
-		total += c.LeafCount
+		total += subtreeLeafTotal(c)
 	}
 	return total
 }
 
-// climbToRoot는 중간 CA에서 루트 방향으로 올라간다. 보유 루트에 닿으면
-// (그 루트, true), 상위가 끊기면 (마지막으로 아는 CA, false)를 반환한다.
-func climbToRoot(c caIssuerRow, cas []caIssuerRow) (caIssuerRow, bool) {
-	cur := c
-	visited := map[string]bool{cur.id: true}
-	for depth := 0; depth < maxChainDepth; depth++ {
-		parent, ok := findIssuerInMemory(cur, cas, visited)
-		if !ok {
-			return cur, false
-		}
-		if parent.selfSigned() {
-			return parent, true
-		}
-		visited[parent.id] = true
-		cur = parent
+// sortCAChildren은 하위 정렬을 재귀 적용한다: 하위 포함 리프 수 내림차순 →
+// subject_dn 오름차순. 최상위와 같은 기준이라 계층이 깊어져도 규칙이 하나다.
+func sortCAChildren(n *CATreeNode) {
+	sortCANodes(n.Children)
+	for i := range n.Children {
+		sortCAChildren(&n.Children[i])
 	}
-	return cur, false
+}
+
+func sortCANodes(nodes []CATreeNode) {
+	sort.SliceStable(nodes, func(a, b int) bool {
+		if nodes[a].SubtreeLeafCount != nodes[b].SubtreeLeafCount {
+			return nodes[a].SubtreeLeafCount > nodes[b].SubtreeLeafCount
+		}
+		return nodes[a].SubjectDN < nodes[b].SubjectDN
+	})
+}
+
+// breakParentCycles는 부모 사슬을 따라가다 이미 지나온 노드로 돌아오면 그
+// 엣지를 버린다(교차 서명 데이터에서 A→B→A가 나올 수 있다). 엣지를 잃은
+// 노드는 최상위로 올라오므로 노드 자체는 유실되지 않는다.
+func breakParentCycles(cas []caIssuerRow, parentOf map[string]string) {
+	for _, c := range cas {
+		seen := map[string]bool{c.id: true}
+		cur := c.id
+		for {
+			p, ok := parentOf[cur]
+			if !ok {
+				break
+			}
+			if seen[p] {
+				delete(parentOf, cur)
+				break
+			}
+			seen[p] = true
+			cur = p
+		}
+	}
+}
+
+// capParentDepth는 maxCATreeDepth를 넘는 사슬의 엣지를 끊어 그 아래를 최상위로
+// 올린다. 정상 데이터(체인 2~4단)는 걸리지 않으며, 손상 데이터에서 재귀가
+// 폭주하는 것만 막는다.
+func capParentDepth(cas []caIssuerRow, parentOf map[string]string) {
+	for _, c := range cas {
+		depth := 0
+		cur := c.id
+		for {
+			p, ok := parentOf[cur]
+			if !ok {
+				break
+			}
+			depth++
+			if depth > maxCATreeDepth {
+				delete(parentOf, cur)
+				break
+			}
+			cur = p
+		}
+	}
 }
 
 // findIssuerInMemory는 findIssuer(SQL)와 같은 술어·우선순위의 메모리 구현이다.
@@ -287,8 +434,9 @@ func toCATreeNode(c caIssuerRow) CATreeNode {
 		Status:     item.Status,
 		SelfSigned: item.SelfSigned,
 		LeafCount:  c.leafCount,
-		// 하위 합산은 buildCATree가 자식을 붙인 뒤 확정한다(중간 CA는 이 값 그대로).
+		// 하위 합산은 buildCASubtree가 자식을 붙이면서 더한다(잎 노드는 이 값 그대로).
 		SubtreeLeafCount: c.leafCount,
+		LeafPreview:      []CALeafPreview{},
 		Children:         []CATreeNode{},
 	}
 }
