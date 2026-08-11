@@ -13,6 +13,7 @@
 import * as React from "react";
 import { Plus, RefreshCw, Send, Trash2 } from "lucide-react";
 
+import { RequiredMark } from "@/components/required-mark";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -669,7 +670,7 @@ function PolicyForm({
 
       <div className="space-y-2">
         <Label htmlFor="policy-name">
-          이름 <span className="text-red-600">*</span>
+          이름 <RequiredMark />
         </Label>
         <Input
           id="policy-name"

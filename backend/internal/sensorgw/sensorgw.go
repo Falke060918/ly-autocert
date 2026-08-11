@@ -1,13 +1,13 @@
 // Package sensorgw는 센서(원격 수집기) 전용 mTLS 게이트웨이다 (docs/00-spec.md 7.8, Phase 3a).
 // 관리자용 8080 API와 분리된 8443 리스너에 붙어 /sensor/v1/* 경로만 제공한다.
 //
-// - enroll을 제외한 모든 경로는 센서 CA가 발급한 클라이언트 인증서를 요구하고,
-//   요청마다 fingerprint를 store와 대조해 신원을 확인한다 (보안 하드 규칙 6).
-// - TLS ClientAuth는 VerifyClientCertIfGiven — enroll(최초 등록)은 인증서 없이
-//   들어오고, 그 외 경로는 requireSensor 미들웨어가 인증서 부재를 401로 거른다.
-// - 인증서·개인키·등록 토큰 바이트는 로그·에러 어디에도 넣지 않는다 (보안 하드 규칙 3).
-// - 실제 리스너 기동 배선은 cmd/server 몫이다 — 이 패키지는 생성자·핸들러·
-//   http.Server 구성 함수까지만 제공한다.
+//   - enroll을 제외한 모든 경로는 센서 CA가 발급한 클라이언트 인증서를 요구하고,
+//     요청마다 fingerprint를 store와 대조해 신원을 확인한다 (보안 하드 규칙 6).
+//   - TLS ClientAuth는 VerifyClientCertIfGiven — enroll(최초 등록)은 인증서 없이
+//     들어오고, 그 외 경로는 requireSensor 미들웨어가 인증서 부재를 401로 거른다.
+//   - 인증서·개인키·등록 토큰 바이트는 로그·에러 어디에도 넣지 않는다 (보안 하드 규칙 3).
+//   - 실제 리스너 기동 배선은 cmd/server 몫이다 — 이 패키지는 생성자·핸들러·
+//     http.Server 구성 함수까지만 제공한다.
 package sensorgw
 
 import (

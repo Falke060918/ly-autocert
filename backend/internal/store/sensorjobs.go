@@ -195,7 +195,7 @@ func (s *Store) ReapExpiredSensorLeases(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("store: reap expired leases: %w", err)
 	}
 	type reaped struct {
-		id                                        string
+		id                                         string
 		scanned, reachable, found, newCerts, total int
 	}
 	var jobs []reaped

@@ -5,6 +5,7 @@ import { Suspense } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { KeyRound, Search, UserPlus } from "lucide-react";
 
+import { RequiredMark } from "@/components/required-mark";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -603,7 +604,7 @@ function CreateUserDialog({
           </DialogHeader>
           <div className="space-y-2">
             <Label htmlFor="new-username">
-              사용자 이름 <span className="text-red-600">*</span>
+              사용자 이름 <RequiredMark />
             </Label>
             <Input
               id="new-username"
@@ -648,7 +649,7 @@ function CreateUserDialog({
           </div>
           <div className="space-y-2">
             <Label htmlFor="new-password">
-              초기 비밀번호 <span className="text-red-600">*</span>
+              초기 비밀번호 <RequiredMark />
             </Label>
             <Input
               id="new-password"
@@ -982,7 +983,7 @@ function ResetPasswordDialog({
             </DialogHeader>
             <div className="space-y-2">
               <Label htmlFor="reset-password">
-                새 비밀번호 <span className="text-red-600">*</span>
+                새 비밀번호 <RequiredMark />
               </Label>
               <Input
                 id="reset-password"

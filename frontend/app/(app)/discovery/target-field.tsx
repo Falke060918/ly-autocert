@@ -11,6 +11,7 @@
 
 import * as React from "react";
 
+import { RequiredMark } from "@/components/required-mark";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -97,7 +98,7 @@ export function TargetField({
   return (
     <div className="space-y-2">
       <Label htmlFor={id}>
-        IP / CIDR 대역 <span className="text-red-600">*</span>
+        IP / CIDR 대역 <RequiredMark />
       </Label>
       <Textarea
         id={id}
