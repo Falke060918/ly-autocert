@@ -36,6 +36,14 @@ Fix: isolate any parallel work that could touch the same files in its own git wo
 Cause: `go`/`gofmt` are not guaranteed to exist on a dev machine (this one has none); the db package runs up/down/up against TEST_DATABASE_URL so package parallelism drops tables mid-run; and migration 0012's seeded `기본 만료 알림` policy plus a bootstrap admin left by an earlier package join notification assertions — running a single package hides all three.
 Fix: run in `golang:1.25-alpine` mounted at `backend/` with a disposable per-run postgres, always `go test -p 1 -count=1 ./...` as a whole; in store tests disable every enabled policy at setup and restore it afterwards. (last recurrence: 2026-08)
 
+**`gofmt -w ./internal` in a container rewrites the whole tree to LF, and `gofmt -l` lists every file**
+Cause: the working tree is CRLF while the container writes LF, so a wide `-w` run reformats files outside the change set and `git status` shows 100+ modified; `gofmt -l` flags everything for the same reason, hiding the real differences. main also carries 7 pre-existing unformatted files, so "it was already dirty" is not a safe assumption either way.
+Fix: never run `gofmt -w` beyond the files you touched; to compare, `tr -d '\r' < f > a.go && gofmt a.go | cmp -s - a.go`. (last recurrence: 2026-08)
+
+**Chain completeness judged "up to the root" marks every correct server as danger**
+Cause: well-behaved TLS servers deliberately omit the root CA from the presented chain, so "does it reach a self-signed root" turns the entire estate red; the `incomplete_chain` signal actually worth raising is a *missing intermediate*.
+Fix: judge whether the presented chain links unbroken from the leaf up to a CA (same rule as SSL Labs), not whether it terminates at a root. (last recurrence: 2026-08)
+
 **A blocked host listener does not block DB tests — put both containers on one docker network**
 Cause: "cannot bind a host port" was read as "cannot run postgres", so DB-backed Go tests were skipped for whole sessions; a container published with no `-p` never touches a host listener and is still reachable by service name from another container on the same user-defined network.
 Fix: `docker network create` → `docker run -d --network … postgres:16-alpine` (no `-p`) → run the golang container on the same network with `TEST_DATABASE_URL=postgres://…@<container-name>:5432/…`; remove the container and network afterwards. (last recurrence: 2026-08)
@@ -66,19 +74,15 @@ Fix: keep `DisallowUnknownFields` on the single decoder (`decodeUserRequest`), u
 Cause: `scripts/bundle-offline.sh` asserts `VERSION` against the compose tag defaults, `frontend/package.json`+`package-lock.json` (3 spots: lock top level and `packages[""]`) and a `## v<version> (` grep — a heading like `## 1.1.0 - date` fails checks 4/6; and MANIFEST freezes the source commit, so amending the release commit leaves shipped packages pointing at a dangling hash. v1.0.0 shipped with the frontend still at 0.1.0 because check 7 did not exist yet.
 Fix: bump all 4 places together, keep the heading exactly `## v<version> (<date>)`, and if you amend the release commit re-run the bundler with `--skip-build` to realign MANIFEST with HEAD. (last recurrence: 2026-08)
 
-**Upgrading an HTTPS install with a bare `install.sh` breaks login only — everything else looks fine**
-Cause: `dc()` adds `docker-compose.https.yml` only when `CFG_HTTPS=1`, so install/reconfigure recreates the stack without the proxy while the inherited `.env` keeps `SESSION_COOKIE_SECURE=true` — the API answers 200 and the browser silently drops the cookie. Since 1.1.0 `detect_https_deployment` covers this, but it is an AND gate: trace (`HTTPS_PORT` / `SESSION_COOKIE_SECURE=true` / a `proxy` container) **and** `deploy/tls/server.crt`+`.key` present **and** the overlay file **and** compose ≥ 2.24.4 — and `deploy/tls/*` is a customer file that ships in no package, so a fresh version directory has none of it.
-Fix: on upgrade copy `deploy/tls/` into the new directory and run `bash install.sh --mode https` explicitly; `--mode https` skips detection entirely. (last recurrence: 2026-08)
-
 ## Frontend & deployment
 
 **Compose derives the project name from the directory, so an upgrade comes up with an empty database**
 Cause: volumes are named `<project>_pgdata` and the project defaults to the install directory name — installing a new version into a new directory creates a fresh volume while the old data sits there invisible, indistinguishable from data loss.
-Fix: pin `COMPOSE_PROJECT_NAME` (default `autocert`) in `.env`, inherit the directory-derived name when adopting an existing install, and verify with `docker compose config`. (last recurrence: 2026-08)
+Fix: pin `COMPOSE_PROJECT_NAME` (default `autocert`) in `.env`, inherit the directory-derived name when adopting an existing install, verify with `docker compose config` — and when the value is empty drop the `-p` flag entirely, because `docker compose -p ""` dies with "project name must not be empty" instead of falling back. (last recurrence: 2026-08)
 
-**Install scripts run from two layouts, so `$SCRIPT_DIR/..` is not the install root**
-Cause: `scripts/install.sh` executes both from the git checkout (in `scripts/`) and from the extracted package (at the root); a copy of `load-offline.sh` lives in the repo's `scripts/` too, so its presence cannot tell the two layouts apart.
-Fix: locate the root by walking up for `docker-compose.yml` and branch on that marker only. (last recurrence: 2026-08)
+**Making `main` the scroll container freezes route-change scroll restore, and every check stays green**
+Cause: pinning the app shell by giving `<main>` `overflow-y-auto` moves scrolling off the document, so Next's scroll-to-top on navigation, `scrollIntoView` and anchor jumps all address a window that never scrolls — tsc, lint and `next build` cannot see any of it.
+Fix: keep the document as the scroll container, pin the sidebar/topbar with `position: sticky`, and offset anchors with `html { scroll-padding-top }`. (last recurrence: 2026-08)
 
 **TLS flags lock you out: `SESSION_COOKIE_SECURE` over plain HTTP, HSTS before a trusted cert**
 Cause: with Secure set on HTTP the API returns 200 with Set-Cookie and only the browser drops it, so the screen bounces back to /login while every server log says success; HSTS removes the "proceed anyway" escape hatch for a self-signed cert and the pin outlives the config change (max-age).
@@ -91,7 +95,3 @@ Fix: keep bulk reads at ≤200 or loop pages with a hard page ceiling (dashboard
 **A fresh worktree typechecks against a fake `tsc`, and `frontend/AGENTS.md` is not in the repo**
 Cause: with no `node_modules`, `npx tsc` fetches an unrelated package instead of the project's TypeScript; even after `npm install`, Next's generated global types (`LayoutProps` and friends) exist only once `npx next typegen` has run; and `frontend/AGENTS.md` is gitignored with generation off (`agentRules: false`), so a delegation prompt that points at it sends the agent to a file a fresh checkout does not have.
 Fix: `npm install` → `npx next typegen` → `npx tsc --noEmit`, and treat `next build` as the authoritative typecheck. (last recurrence: 2026-08)
-
-**Next.js bakes `/api/*` rewrites at build time, and `next dev` poisons a production build tree**
-Cause: with `output: "standalone"`, `next start` freezes the rewrite target from the build-time `BACKEND_INTERNAL_URL`; and `next dev` in a tree holding a production build serves `_next/static/chunks/*` as 403, killing hydration.
-Fix: rebuild after changing `BACKEND_INTERNAL_URL`, and never mix `next dev` into a tree used for a production build. (last recurrence: 2026-08)
