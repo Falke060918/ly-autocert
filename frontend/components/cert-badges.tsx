@@ -1,6 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { dday } from "@/lib/format";
+import { dday, formatDate } from "@/lib/format";
 import type { CertificateStatus } from "@/lib/api";
 
 /**
@@ -41,6 +41,39 @@ export function CertStatusBadge({
     default:
       return <Badge variant="secondary">미확인</Badge>;
   }
+}
+
+/**
+ * 남은 일수(D-day) 배지 — 상태 라벨 대신 잔여 일수 자체를 보여준다.
+ * 임계 구간은 위 상태 배지·DdayText와 같은 `dday` 하나에서 나온다(만료/D-7/D-30) —
+ * 화면마다 기준이 갈리면 같은 인증서가 어디서는 임박, 어디서는 평범해 보인다.
+ *
+ * 색은 테마 토큰(danger/warn)만 쓴다. 만료일을 모르거나(미보유 상위 CA)
+ * 파싱할 수 없으면 아무것도 그리지 않는다 — "모른다"를 정상으로 칠하지 않는다.
+ */
+export function ExpiryDdayBadge({
+  notAfter,
+  className,
+}: {
+  notAfter: string | null;
+  className?: string;
+}) {
+  if (!notAfter || Number.isNaN(new Date(notAfter).getTime())) return null;
+  const d = dday(notAfter);
+  const variant = d.tone === "urgent" ? "danger" : d.tone === "soon" ? "warn" : "outline";
+  return (
+    <Badge
+      variant={variant}
+      className={cn(
+        "font-mono tabular-nums",
+        d.tone === "plain" && "text-muted-foreground",
+        className,
+      )}
+      title={`만료 ${formatDate(notAfter)}`}
+    >
+      {d.label}
+    </Badge>
+  );
 }
 
 /** D-day 표기 — 칩이 아니라 텍스트, 긴급도만 색으로 (목업 .dday). */

@@ -115,11 +115,15 @@ type NotificationRecipient struct {
 // NotificationPolicy는 정책 1건이다.
 // 필터가 비어 있으면(nil) 전체 인증서에 매칭된다.
 type NotificationPolicy struct {
-	ID                  string                  `json:"id"`
-	Name                string                  `json:"name"`
-	Enabled             bool                    `json:"enabled"`
-	EventTypes          []string                `json:"event_types"`
-	Thresholds          []int                   `json:"thresholds"`
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
+	Enabled    bool     `json:"enabled"`
+	EventTypes []string `json:"event_types"`
+	Thresholds []int    `json:"thresholds"`
+	// CAThresholds는 발급 기관(CA) 인증서에만 쓰는 임계값이다 (마이그레이션 0020).
+	// nil = 미설정(CA도 Thresholds를 쓴다) / 빈 배열 = CA는 알리지 않는다.
+	// 두 상태가 구분되어야 하므로 nil을 빈 배열로 정규화하지 않는다.
+	CAThresholds        []int                   `json:"ca_thresholds"`
 	Channels            []string                `json:"channels"`
 	Recipients          []NotificationRecipient `json:"recipients"`
 	FilterEnvironments  []string                `json:"filter_environments"`
@@ -135,6 +139,7 @@ const notificationPolicyColumns = `
 	id, name, enabled,
 	array_to_string(event_types, chr(31)),
 	array_to_string(thresholds, ','),
+	array_to_string(ca_thresholds, ','),
 	array_to_string(channels, chr(31)),
 	recipients::text,
 	array_to_string(filter_environments, chr(31)),
@@ -143,20 +148,27 @@ const notificationPolicyColumns = `
 
 func scanNotificationPolicy(row rowScanner) (*NotificationPolicy, error) {
 	var (
-		p          NotificationPolicy
-		eventTypes string
-		thresholds string
-		channels   string
-		recipients string
-		envs       sql.NullString
-		depts      sql.NullString
+		p            NotificationPolicy
+		eventTypes   string
+		thresholds   string
+		caThresholds sql.NullString
+		channels     string
+		recipients   string
+		envs         sql.NullString
+		depts        sql.NullString
 	)
-	if err := row.Scan(&p.ID, &p.Name, &p.Enabled, &eventTypes, &thresholds, &channels,
-		&recipients, &envs, &depts, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt); err != nil {
+	if err := row.Scan(&p.ID, &p.Name, &p.Enabled, &eventTypes, &thresholds, &caThresholds,
+		&channels, &recipients, &envs, &depts, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt); err != nil {
 		return nil, err
 	}
 	p.EventTypes = splitNonEmpty(eventTypes, sansSep)
 	p.Thresholds = parseInts(splitNonEmpty(thresholds, portSep))
+	// NULL(미설정)과 '{}'(CA 알림 끔)은 다른 뜻이다 — array_to_string은 빈 배열에도
+	// 빈 문자열을 주므로 NULL 여부(Valid)로만 갈라야 한다.
+	// parseInts는 빈 입력에도 non-nil 빈 슬라이스를 준다 — '{}'가 nil로 접히지 않는다.
+	if caThresholds.Valid {
+		p.CAThresholds = parseInts(splitNonEmpty(caThresholds.String, portSep))
+	}
 	p.Channels = splitNonEmpty(channels, sansSep)
 	p.Recipients = []NotificationRecipient{}
 	if recipients != "" {
@@ -176,10 +188,12 @@ func scanNotificationPolicy(row rowScanner) (*NotificationPolicy, error) {
 // NotificationPolicyInput은 정책 생성 요청이다.
 // 빈 필터는 NULL로 정규화한다 — NULL과 빈 배열 모두 "전체 매칭"이라 구분할 의미가 없다.
 type NotificationPolicyInput struct {
-	Name                string
-	Enabled             bool
-	EventTypes          []string
-	Thresholds          []int
+	Name       string
+	Enabled    bool
+	EventTypes []string
+	Thresholds []int
+	// CAThresholds는 nil이면 NULL(미설정)로, 빈 배열이면 '{}'(CA 알림 끔)로 저장된다.
+	CAThresholds        []int
 	Channels            []string
 	Recipients          []NotificationRecipient
 	FilterEnvironments  []string
@@ -191,10 +205,13 @@ type NotificationPolicyInput struct {
 
 // NotificationPolicyPatch는 부분 수정 요청이다. nil 필드는 건드리지 않는다.
 type NotificationPolicyPatch struct {
-	Name                *string
-	Enabled             *bool
-	EventTypes          *[]string
-	Thresholds          *[]int
+	Name       *string
+	Enabled    *bool
+	EventTypes *[]string
+	Thresholds *[]int
+	// CAThresholds는 3상태다: nil = 안 건드림 / 가리키는 값이 nil = NULL로 되돌림
+	// (CA도 Thresholds를 쓴다) / 가리키는 값이 슬라이스 = 그 값으로 설정.
+	CAThresholds        *[]int
 	Channels            *[]string
 	Recipients          *[]NotificationRecipient
 	FilterEnvironments  *[]string
@@ -210,6 +227,17 @@ func nullableJoin(vs []string, sep string) *string {
 		return nil
 	}
 	s := strings.Join(vs, sep)
+	return &s
+}
+
+// nullableInts는 nil 슬라이스만 NULL로 바꾼다 — 빈 배열은 빈 문자열로 남겨
+// SQL 쪽 CASE가 '{}'로 저장하게 한다. ca_thresholds의 NULL('미설정')과
+// '{}'('CA는 알리지 않음')는 뜻이 다르므로 여기서 접으면 안 된다.
+func nullableInts(vs []int) *string {
+	if vs == nil {
+		return nil
+	}
+	s := joinInts(vs)
 	return &s
 }
 
@@ -261,7 +289,7 @@ func validateDepartmentIDs(ids []string) error {
 	return nil
 }
 
-func validatePolicyCore(name string, eventTypes, channels []string, thresholds []int,
+func validatePolicyCore(name string, eventTypes, channels []string, thresholds, caThresholds []int,
 	recipients []NotificationRecipient, deptIDs []string) error {
 	if strings.TrimSpace(name) == "" {
 		return errors.New("store: notification policy name required")
@@ -272,6 +300,11 @@ func validatePolicyCore(name string, eventTypes, channels []string, thresholds [
 	for _, d := range thresholds {
 		if d <= 0 {
 			return fmt.Errorf("store: threshold days must be positive, got %d", d)
+		}
+	}
+	for _, d := range caThresholds {
+		if d <= 0 {
+			return fmt.Errorf("store: ca threshold days must be positive, got %d", d)
 		}
 	}
 	if err := validateChannels(channels); err != nil {
@@ -307,6 +340,7 @@ func policyAuditValue(p *NotificationPolicy) map[string]any {
 		"enabled":               p.Enabled,
 		"event_types":           p.EventTypes,
 		"thresholds":            p.Thresholds,
+		"ca_thresholds":         p.CAThresholds,
 		"channels":              p.Channels,
 		"recipients":            auditRecipients(p.Recipients),
 		"filter_environments":   p.FilterEnvironments,
@@ -357,7 +391,7 @@ func (s *Store) GetNotificationPolicy(ctx context.Context, id string) (*Notifica
 // 트랜잭션으로 남긴다. 이름이 겹치면 ErrNotificationPolicyNameTaken.
 func (s *Store) CreateNotificationPolicy(ctx context.Context, in NotificationPolicyInput) (*NotificationPolicy, error) {
 	if err := validatePolicyCore(in.Name, in.EventTypes, in.Channels, in.Thresholds,
-		in.Recipients, in.FilterDepartmentIDs); err != nil {
+		in.CAThresholds, in.Recipients, in.FilterDepartmentIDs); err != nil {
 		return nil, err
 	}
 	recipients, err := json.Marshal(recipientsOrEmpty(in.Recipients))
@@ -373,20 +407,23 @@ func (s *Store) CreateNotificationPolicy(ctx context.Context, in NotificationPol
 
 	p, err := scanNotificationPolicy(tx.QueryRowContext(ctx, `
 		INSERT INTO notification_policies (
-			name, enabled, event_types, thresholds, channels, recipients,
+			name, enabled, event_types, thresholds, ca_thresholds, channels, recipients,
 			filter_environments, filter_department_ids, created_by)
 		VALUES (
 			$1, $2,
 			coalesce(string_to_array(nullif($3, ''), chr(31)), '{}'),
 			coalesce(string_to_array(nullif($4, ''), ','), '{}')::int[],
-			coalesce(string_to_array(nullif($5, ''), chr(31)), '{}'),
-			$6::jsonb,
-			string_to_array($7::text, chr(31)),
-			string_to_array($8::text, ',')::uuid[],
-			$9::uuid)
+			-- NULL(미설정) / '{}'(CA 알림 끔) / 값 3상태를 그대로 보존한다.
+			CASE WHEN $5::text IS NULL THEN NULL
+			     ELSE coalesce(string_to_array(nullif($5::text, ''), ','), '{}')::int[] END,
+			coalesce(string_to_array(nullif($6, ''), chr(31)), '{}'),
+			$7::jsonb,
+			string_to_array($8::text, chr(31)),
+			string_to_array($9::text, ',')::uuid[],
+			$10::uuid)
 		RETURNING `+notificationPolicyColumns,
 		strings.TrimSpace(in.Name), in.Enabled,
-		strings.Join(in.EventTypes, sansSep), joinInts(in.Thresholds),
+		strings.Join(in.EventTypes, sansSep), joinInts(in.Thresholds), nullableInts(in.CAThresholds),
 		strings.Join(in.Channels, sansSep), string(recipients),
 		nullableJoin(in.FilterEnvironments, sansSep), nullableJoin(in.FilterDepartmentIDs, portSep),
 		in.ActorID))
@@ -442,6 +479,10 @@ func (s *Store) UpdateNotificationPolicy(ctx context.Context, id string, in Noti
 	if in.Thresholds != nil {
 		next.Thresholds = *in.Thresholds
 	}
+	// 가리키는 값이 nil이면 NULL(미설정)로 되돌린다 — 빈 배열('{}')과 구분된다.
+	if in.CAThresholds != nil {
+		next.CAThresholds = *in.CAThresholds
+	}
 	if in.Channels != nil {
 		next.Channels = *in.Channels
 	}
@@ -455,7 +496,7 @@ func (s *Store) UpdateNotificationPolicy(ctx context.Context, id string, in Noti
 		next.FilterDepartmentIDs = *in.FilterDepartmentIDs
 	}
 	if err := validatePolicyCore(next.Name, next.EventTypes, next.Channels, next.Thresholds,
-		next.Recipients, next.FilterDepartmentIDs); err != nil {
+		next.CAThresholds, next.Recipients, next.FilterDepartmentIDs); err != nil {
 		return nil, err
 	}
 	recipients, err := json.Marshal(recipientsOrEmpty(next.Recipients))
@@ -476,15 +517,18 @@ func (s *Store) UpdateNotificationPolicy(ctx context.Context, id string, in Noti
 			enabled               = $3,
 			event_types           = coalesce(string_to_array(nullif($4, ''), chr(31)), '{}'),
 			thresholds            = coalesce(string_to_array(nullif($5, ''), ','), '{}')::int[],
-			channels              = coalesce(string_to_array(nullif($6, ''), chr(31)), '{}'),
-			recipients            = $7::jsonb,
-			filter_environments   = string_to_array($8::text, chr(31)),
-			filter_department_ids = string_to_array($9::text, ',')::uuid[],
+			ca_thresholds         = CASE WHEN $6::text IS NULL THEN NULL
+			                             ELSE coalesce(string_to_array(nullif($6::text, ''), ','), '{}')::int[] END,
+			channels              = coalesce(string_to_array(nullif($7, ''), chr(31)), '{}'),
+			recipients            = $8::jsonb,
+			filter_environments   = string_to_array($9::text, chr(31)),
+			filter_department_ids = string_to_array($10::text, ',')::uuid[],
 			updated_at            = now()
 		 WHERE id = $1::uuid
 		RETURNING `+notificationPolicyColumns,
 		cur.ID, next.Name, next.Enabled,
 		strings.Join(next.EventTypes, sansSep), joinInts(next.Thresholds),
+		nullableInts(next.CAThresholds),
 		strings.Join(next.Channels, sansSep), string(recipients),
 		nullableJoin(next.FilterEnvironments, sansSep), nullableJoin(next.FilterDepartmentIDs, portSep)))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -596,6 +640,10 @@ type NotificationPayload struct {
 	Environment   string    `json:"environment"`
 	OwnerDisplay  string    `json:"owner"`
 	LocationCount int       `json:"location_count"`
+	// IsCA는 발급 기관 인증서 여부다. 만료의 파급 범위가 다르므로(하위 인증서
+	// 전체가 함께 신뢰를 잃는다) 알림 제목·본문이 이 사실을 밝힌다.
+	// 0018 이전 행은 is_ca가 NULL이라 판정 기준은 certificate_type='ca'다.
+	IsCA bool `json:"is_ca"`
 }
 
 // DetectedEvent는 이번 탐지로 새로 생긴 이벤트 1건이다.
@@ -618,6 +666,11 @@ type DetectedEvent struct {
 // 판정 기준은 저장된 status가 아니라 not_after다 — status를 만료로 갱신하는 주체가
 // 없어 stale이기 때문이다. status는 revoked/replaced 제외 필터로만 쓴다 (설계 7.4).
 // CA 인증서도 포함한다(CA 만료는 리프 전체를 무너뜨린다).
+//
+// CA 임계값(0020): 정책에 ca_thresholds가 있으면 certificate_type='ca'인 인증서만
+// 그 목록으로 판정한다. 사건 종류·채널·수신자는 리프와 그대로 공유하므로 기존
+// 정책·알림함·웹훅 수신 측이 CA를 놓치지 않는다. ca_thresholds가 NULL이면
+// 0020 이전과 같이 thresholds를 쓰고, 빈 배열이면 unnest가 0행이라 CA는 발화하지 않는다.
 //
 // dedup_key에 정책 id를 넣지 않는다 — 두 정책이 겹쳐도 이벤트는 1건이고 수신자만
 // 합집합이 된다 (설계 4.1). policy_id는 "최초로 이 이벤트를 만든 정책" 참고값이라
@@ -662,7 +715,8 @@ FROM (
 	           'environment',    coalesce(c.environment, ''),
 	           'owner',          coalesce(u.display_name, u.username, ''),
 	           'location_count', (SELECT count(*) FROM certificate_locations cl
-	                               WHERE cl.certificate_id = c.id))     AS payload
+	                               WHERE cl.certificate_id = c.id),
+	           'is_ca',          c.certificate_type = 'ca')             AS payload
 	  FROM notification_policies p
 	  CROSS JOIN certificates c
 	  LEFT JOIN users u ON u.id = c.owner_id
@@ -670,7 +724,8 @@ FROM (
 	      SELECT floor(extract(epoch FROM (c.not_after - now())) / 86400)::int AS days_remaining) dr
 	  CROSS JOIN LATERAL (
 	      SELECT min(th.days) AS days
-	        FROM unnest(p.thresholds) AS th(days)
+	        FROM unnest(CASE WHEN c.certificate_type = 'ca' AND p.ca_thresholds IS NOT NULL
+	                         THEN p.ca_thresholds ELSE p.thresholds END) AS th(days)
 	       WHERE th.days > 0 AND th.days >= dr.days_remaining) t
 	 WHERE p.enabled
 	   AND 'certificate.expiring' = ANY(p.event_types)
@@ -697,7 +752,8 @@ FROM (
 	           'environment',    coalesce(c.environment, ''),
 	           'owner',          coalesce(u.display_name, u.username, ''),
 	           'location_count', (SELECT count(*) FROM certificate_locations cl
-	                               WHERE cl.certificate_id = c.id))
+	                               WHERE cl.certificate_id = c.id),
+	           'is_ca',          c.certificate_type = 'ca')
 	  FROM notification_policies p
 	  CROSS JOIN certificates c
 	  LEFT JOIN users u ON u.id = c.owner_id

@@ -14,6 +14,7 @@ package api
 // 호스트·계정·비밀번호·웹훅 URL을 절대 싣지 않는다 (설계 9.3).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -79,10 +80,13 @@ var notifyChannelOrder = []string{
 
 // notificationPolicyRequest는 정책 생성 본문이다.
 type notificationPolicyRequest struct {
-	Name                string                        `json:"name"`
-	Enabled             *bool                         `json:"enabled"`
-	EventTypes          []string                      `json:"event_types"`
-	Thresholds          []int                         `json:"thresholds"`
+	Name       string   `json:"name"`
+	Enabled    *bool    `json:"enabled"`
+	EventTypes []string `json:"event_types"`
+	Thresholds []int    `json:"thresholds"`
+	// CAThresholds는 발급 기관(CA) 인증서 전용 임계값이다(0020).
+	// 키가 없거나 null이면 CA도 Thresholds를 쓰고, 빈 배열이면 CA는 알리지 않는다.
+	CAThresholds        []int                         `json:"ca_thresholds"`
 	Channels            []string                      `json:"channels"`
 	Recipients          []store.NotificationRecipient `json:"recipients"`
 	FilterEnvironments  []string                      `json:"filter_environments"`
@@ -92,10 +96,13 @@ type notificationPolicyRequest struct {
 // notificationPolicyPatchRequest는 부분 수정 본문이다.
 // 키가 없으면 nil이라 그 필드는 바뀌지 않는다.
 type notificationPolicyPatchRequest struct {
-	Name                *string                        `json:"name"`
-	Enabled             *bool                          `json:"enabled"`
-	EventTypes          *[]string                      `json:"event_types"`
-	Thresholds          *[]int                         `json:"thresholds"`
+	Name       *string   `json:"name"`
+	Enabled    *bool     `json:"enabled"`
+	EventTypes *[]string `json:"event_types"`
+	Thresholds *[]int    `json:"thresholds"`
+	// CAThresholds만 포인터가 아니라 RawMessage다 — *[]int는 "키 없음"과 명시적
+	// null을 둘 다 nil로 받아 "CA 전용 임계값 해제"를 표현할 수 없다 (docs/GOTCHAS.md).
+	CAThresholds        json.RawMessage                `json:"ca_thresholds"`
 	Channels            *[]string                      `json:"channels"`
 	Recipients          *[]store.NotificationRecipient `json:"recipients"`
 	FilterEnvironments  *[]string                      `json:"filter_environments"`
@@ -136,14 +143,25 @@ func validateEventTypes(types []string) *paramError {
 }
 
 func validateThresholds(days []int) *paramError {
+	return validateThresholdList("thresholds", days)
+}
+
+// validateCAThresholds는 CA 전용 임계값을 검사한다. 상한·범위는 thresholds와 같고
+// 오류 코드만 다르다 — 화면이 어느 입력이 틀렸는지 가려낼 수 있어야 한다.
+func validateCAThresholds(days []int) *paramError {
+	return validateThresholdList("ca_thresholds", days)
+}
+
+func validateThresholdList(field string, days []int) *paramError {
+	code := "invalid_" + field
 	if len(days) > maxPolicyThresholds {
-		return &paramError{"invalid_thresholds",
-			fmt.Sprintf("thresholds는 %d개 이하여야 합니다.", maxPolicyThresholds)}
+		return &paramError{code,
+			fmt.Sprintf("%s는 %d개 이하여야 합니다.", field, maxPolicyThresholds)}
 	}
 	for _, d := range days {
 		if d < 1 || d > maxThresholdDays {
-			return &paramError{"invalid_thresholds",
-				fmt.Sprintf("thresholds의 각 값은 1~%d 사이 정수여야 합니다.", maxThresholdDays)}
+			return &paramError{code,
+				fmt.Sprintf("%s의 각 값은 1~%d 사이 정수여야 합니다.", field, maxThresholdDays)}
 		}
 	}
 	return nil
@@ -242,6 +260,7 @@ func (s *Server) handleCreateNotificationPolicy(w http.ResponseWriter, r *http.R
 		validateName(req.Name),
 		validateEventTypes(req.EventTypes),
 		validateThresholds(req.Thresholds),
+		validateCAThresholds(req.CAThresholds),
 		validateNotifyChannels(req.Channels),
 		validateRecipients(req.Recipients),
 		validateDepartmentIDs(req.FilterDepartmentIDs),
@@ -262,6 +281,7 @@ func (s *Server) handleCreateNotificationPolicy(w http.ResponseWriter, r *http.R
 		Enabled:             enabled,
 		EventTypes:          req.EventTypes,
 		Thresholds:          req.Thresholds,
+		CAThresholds:        req.CAThresholds,
 		Channels:            req.Channels,
 		Recipients:          req.Recipients,
 		FilterEnvironments:  req.FilterEnvironments,
@@ -306,6 +326,20 @@ func (s *Server) handleUpdateNotificationPolicy(w http.ResponseWriter, r *http.R
 	if req.Thresholds != nil {
 		checks = append(checks, validateThresholds(*req.Thresholds))
 		patch.Thresholds = req.Thresholds
+	}
+	// ca_thresholds는 3상태다: 키 없음(안 건드림) / null(해제 — CA도 thresholds를
+	// 쓴다) / 배열(설정, 빈 배열이면 CA 알림 끔).
+	if len(bytes.TrimSpace(req.CAThresholds)) > 0 {
+		var days []int
+		if !bytes.Equal(bytes.TrimSpace(req.CAThresholds), []byte("null")) {
+			if err := json.Unmarshal(req.CAThresholds, &days); err != nil {
+				writeError(w, r, http.StatusBadRequest, "invalid_ca_thresholds",
+					"ca_thresholds는 정수 배열이거나 null이어야 합니다.")
+				return
+			}
+			checks = append(checks, validateCAThresholds(days))
+		}
+		patch.CAThresholds = &days
 	}
 	if req.Channels != nil {
 		checks = append(checks, validateNotifyChannels(*req.Channels))

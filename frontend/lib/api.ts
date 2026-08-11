@@ -448,6 +448,12 @@ export interface NotificationPolicy {
   enabled: boolean;
   event_types: NotificationEventType[];
   thresholds: number[];
+  /**
+   * 발급 기관(CA) 인증서 전용 임계값. 3상태다 —
+   * null = 미설정(CA도 thresholds를 쓴다) / 빈 배열 = CA는 알리지 않는다 / 값 = CA 전용.
+   * 구버전 백엔드 응답에는 키가 없어 undefined일 수 있다(미설정과 같이 다룬다).
+   */
+  ca_thresholds?: number[] | null;
   channels: NotificationChannel[];
   recipients: NotificationRecipient[];
   filter_environments: string[] | null;
@@ -468,6 +474,11 @@ export interface NotificationPolicyRequest {
   enabled?: boolean;
   event_types: NotificationEventType[];
   thresholds: number[];
+  /**
+   * CA 전용 임계값. PATCH에서 **키를 빼면 기존 값 유지, null을 명시하면 해제**다
+   * (서버가 둘을 구분한다). 빈 배열은 "CA는 알리지 않음"이다.
+   */
+  ca_thresholds?: number[] | null;
   channels: NotificationChannel[];
   recipients: NotificationRecipient[];
   filter_environments?: string[];

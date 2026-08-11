@@ -80,6 +80,7 @@ ALTER TABLE users ADD CONSTRAINT users_email_shape
 | `enabled` | bool | |
 | `event_types` | text[] | 확장점(1.2) |
 | `thresholds` | int[] | default `{90,60,30,7,1}` |
+| `ca_thresholds` | int[] **nullable** | 0020. 발급 기관(CA) 전용 임계값. NULL = 미설정(CA도 `thresholds`) / `'{}'` = CA는 알리지 않음 / 값 = CA 전용. 7.3.2 |
 | `channels` | text[] | CHECK: 원소가 `{email,webhook,inbox,syslog}` 부분집합 |
 | `recipients` | jsonb | 5.1 참조 |
 | `filter_environments` | text[] | 비면 전체 |
@@ -149,11 +150,12 @@ CREATE INDEX ... ON notification_inbox (user_id)
 기본 정책 1건을 심는다.
 
 ```
-name        = '기본 만료 알림'
-enabled     = true
-thresholds  = {90,60,30,7,1}
-channels    = {inbox}
-recipients  = [{"kind":"role","role":"system_administrator"}]
+name          = '기본 만료 알림'
+enabled       = true
+thresholds    = {90,60,30,7,1}
+ca_thresholds = {365,180,90,30,7}   -- 0020. CA는 교체가 오래 걸려 더 이르게 (7.3.2)
+channels      = {inbox}
+recipients    = [{"kind":"role","role":"system_administrator"}]
 ```
 
 **inbox 단독**이 핵심이다. 설치 직후 SMTP·웹훅 설정이 하나도 없어도 동작하고, 외부로 아무것도 새지 않는다. zero-config 안전 기본값.
@@ -339,6 +341,18 @@ RETURNING id;
 - **비교 기준은 `not_after <= now() + t.days`가 아니라 `days_remaining`이다.** 알림 제목·payload가 쓰는 D-day와 같은 값이라야 "D-7 알림인데 제목은 D-6"이 안 난다.
 - **아직 어떤 임계값에도 도달하지 않은 인증서는 이벤트가 없다**(D-120 + 최대 임계값 90 → 0건).
 - 정책이 여럿이면 정책마다 최솟값을 고르므로, 서로 다른 임계값을 가진 두 정책은 서로 다른 이벤트를 만들 수 있다. 이는 4.1의 "정책이 겹쳐도 1건"과 모순되지 않는다 — 같은 임계값을 고른 경우에만 겹치고, 그때는 `dedup_key`가 합쳐 준다.
+
+### 7.3.2 발급 기관(CA) 전용 임계값 (0020)
+
+CA 만료는 **그 CA가 발급한 인증서 전부가 함께 신뢰를 잃는** 사건이고, 대응이 "재발급 후 배포"가 아니라 "새 CA 구축 + 하위 전건 재발급 + 신뢰 저장소 갱신"이다. 리프와 같은 D-90에 처음 알리면 이미 늦는다.
+
+`unnest`의 입력만 갈라 해결한다 — `certificate_type = 'ca'`이고 정책에 `ca_thresholds`가 있으면 그 목록으로, 아니면 `thresholds`로 판정한다. 7.3.1의 "도달한 것 중 최솟값 1개" 규칙은 그대로다.
+
+- **새 사건 종류를 만들지 않는다.** `certificate.ca_expiring` 같은 종류를 나누면 기존 정책·알림함·웹훅 수신 측이 그 종류를 모르는 채 CA 만료를 통째로 놓친다. 채널·수신자·필터도 그대로 공유한다. 구분은 `payload.is_ca`(웹훅 `data.is_ca`)와 제목의 "발급 기관(CA)" 표기로만 한다.
+- **판정은 `certificate_type = 'ca'`다.** 0018의 `is_ca`(BasicConstraints 원본)는 그 이전 행이 NULL이라 소급 판정에 쓸 수 없다.
+- **3상태를 구분한다.** NULL(미설정 — 0020 이전과 동일) / `'{}'`(CA는 만료 임박 알림 없음 — CA를 별도 절차로 관리하는 조직) / 값. DEFAULT를 배열로 두면 앞의 둘이 같은 값이 되어 되돌릴 수 없으므로 컬럼 기본값은 NULL이다. API PATCH도 같은 이유로 "키 없음(유지)"과 "명시적 `null`(해제)"을 구분한다.
+- **만료 후 알림(`certificate.expired`)은 임계값을 쓰지 않으므로 CA도 리프와 똑같이 나간다.** `ca_thresholds = '{}'`가 끄는 것은 만료 **임박** 알림뿐이다.
+- 업그레이드 시 백필은 0012 시드 정책 1행(`기본 만료 알림`, `created_by IS NULL`)에만 `{365,180,90,30,7}`을 넣는다. 사용자가 만든 정책까지 건드리면 아무도 요청하지 않은 알림이 나간다. 백필된 시드 정책에서도 CA당 이벤트는 **1건**이다(도달한 임계값 중 최솟값 하나).
 
 ### 7.4 대상 조건
 

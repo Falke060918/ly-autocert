@@ -101,6 +101,13 @@ const EVENT_LABELS: Record<string, string> = {
 /** 0012 마이그레이션의 thresholds 기본값과 같은 값이다. */
 const DEFAULT_THRESHOLDS = [90, 60, 30, 7, 1];
 
+/**
+ * 0020 마이그레이션이 시드 정책에 넣는 CA 전용 임계값과 같은 값이다.
+ * 리프보다 훨씬 이르다 — CA 교체는 재발급·재배포가 아니라 신뢰 저장소 갱신까지
+ * 따라오는 작업이라 D-90에 처음 알면 늦는다.
+ */
+const DEFAULT_CA_THRESHOLDS = [365, 180, 90, 30, 7];
+
 const RECIPIENT_KINDS: { value: NotificationRecipientKind; label: string }[] = [
   { value: "owner", label: "인증서 소유자" },
   { value: "role", label: "역할" },
@@ -374,7 +381,16 @@ function PolicySection() {
                   {p.event_types.map((t) => EVENT_LABELS[t] ?? t).join(", ")}
                 </TableCell>
                 <TableCell className="font-mono text-xs tabular-nums">
-                  {[...p.thresholds].sort((a, b) => b - a).join(" · ")}
+                  <div>{[...p.thresholds].sort((a, b) => b - a).join(" · ")}</div>
+                  {/* CA 전용 임계값은 미설정(리프와 동일)일 때 줄을 만들지 않는다. */}
+                  {p.ca_thresholds != null && (
+                    <div className="text-muted-foreground">
+                      CA:{" "}
+                      {p.ca_thresholds.length === 0
+                        ? "알림 없음"
+                        : [...p.ca_thresholds].sort((a, b) => b - a).join(" · ")}
+                    </div>
+                  )}
                 </TableCell>
                 <TableCell className="text-[13px]">
                   {p.channels.map((c) => CHANNEL_LABELS[c] ?? c).join(", ")}
@@ -482,6 +498,8 @@ interface PolicyFormState {
   enabled: boolean;
   eventTypes: NotificationEventType[];
   thresholds: number[];
+  /** null = CA도 위 임계값을 쓴다(미설정). 빈 배열이면 CA는 알리지 않는다. */
+  caThresholds: number[] | null;
   channels: NotificationChannel[];
   recipients: NotificationRecipient[];
   environments: string;
@@ -495,6 +513,7 @@ function toForm(policy: NotificationPolicy | null): PolicyFormState {
       enabled: true,
       eventTypes: ["certificate.expiring"],
       thresholds: [...DEFAULT_THRESHOLDS],
+      caThresholds: null,
       channels: ["inbox"],
       recipients: [{ kind: "owner" }],
       environments: "",
@@ -506,6 +525,8 @@ function toForm(policy: NotificationPolicy | null): PolicyFormState {
     enabled: policy.enabled,
     eventTypes: [...policy.event_types],
     thresholds: [...policy.thresholds],
+    // undefined(구버전 응답)와 null은 둘 다 미설정이다.
+    caThresholds: policy.ca_thresholds == null ? null : [...policy.ca_thresholds],
     channels: [...policy.channels],
     recipients: policy.recipients.map((r) => ({ ...r })),
     environments: (policy.filter_environments ?? []).join(", "),
@@ -585,6 +606,15 @@ function PolicyForm({
     setError(null);
   }
 
+  function toggleCAThreshold(day: number) {
+    const cur = form.caThresholds ?? [];
+    patch({
+      caThresholds: cur.includes(day)
+        ? cur.filter((d) => d !== day)
+        : [...cur, day],
+    });
+  }
+
   function toggleChannel(channel: NotificationChannel) {
     patch({
       channels: form.channels.includes(channel)
@@ -631,6 +661,11 @@ function PolicyForm({
       enabled: form.enabled,
       event_types: form.eventTypes,
       thresholds: [...form.thresholds].sort((a, b) => b - a),
+      // null을 그대로 보낸다 — 서버는 "키 없음(유지)"과 "null(해제)"을 구분한다.
+      ca_thresholds:
+        form.caThresholds == null
+          ? null
+          : [...form.caThresholds].sort((a, b) => b - a),
       channels: form.channels,
       recipients: form.recipients,
       filter_environments: splitList(form.environments),
@@ -655,6 +690,11 @@ function PolicyForm({
 
   const customDays = form.thresholds
     .filter((d) => !DEFAULT_THRESHOLDS.includes(d))
+    .sort((a, b) => b - a);
+
+  // API로만 넣을 수 있는 CA 임계값(프리셋 밖의 값)도 화면에서 보이고 뺄 수 있어야 한다.
+  const caCustomDays = (form.caThresholds ?? [])
+    .filter((d) => !DEFAULT_CA_THRESHOLDS.includes(d))
     .sort((a, b) => b - a);
 
   return (
@@ -753,6 +793,60 @@ function PolicyForm({
         <p className="text-xs text-muted-foreground">
           기본값 90 / 60 / 30 / 7 / 1일. 임계일마다 인증서 1건당 알림이 한 번씩
           만들어집니다.
+        </p>
+      </div>
+
+      {/*
+        발급 기관(CA)은 만료의 파급 범위가 다르다 — 그 CA가 발급한 인증서가 전부
+        함께 신뢰를 잃고, 대응도 재발급이 아니라 새 CA 구축·배포다. 사건 종류·채널·
+        수신자는 그대로 공유하고 임계값만 따로 둔다.
+      */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-3">
+          <Switch
+            id="policy-ca-thresholds"
+            checked={form.caThresholds != null}
+            onCheckedChange={(v) =>
+              patch({ caThresholds: v ? [...DEFAULT_CA_THRESHOLDS] : null })
+            }
+          />
+          <Label htmlFor="policy-ca-thresholds" className="font-normal">
+            발급 기관(CA) 인증서는 별도 임계값 사용
+          </Label>
+        </div>
+        {form.caThresholds != null && (
+          <div className="flex flex-wrap items-center gap-2 pl-11">
+            {DEFAULT_CA_THRESHOLDS.map((day) => (
+              <Button
+                key={day}
+                type="button"
+                size="sm"
+                variant={form.caThresholds!.includes(day) ? "default" : "outline"}
+                onClick={() => toggleCAThreshold(day)}
+              >
+                {day}일
+              </Button>
+            ))}
+            {caCustomDays.map((day) => (
+              <Button
+                key={day}
+                type="button"
+                size="sm"
+                variant="secondary"
+                onClick={() => toggleCAThreshold(day)}
+                title="클릭하면 제거합니다"
+              >
+                {day}일 ×
+              </Button>
+            ))}
+          </div>
+        )}
+        <p className="pl-11 text-xs text-muted-foreground">
+          {form.caThresholds == null
+            ? "끄면 CA 인증서도 위의 임계값을 그대로 씁니다."
+            : form.caThresholds.length === 0
+              ? "임계값이 하나도 없으면 CA 인증서는 만료 임박 알림을 만들지 않습니다(만료된 뒤의 알림은 그대로 나갑니다)."
+              : "CA는 교체에 시간이 오래 걸리므로 리프보다 이른 임계값을 권장합니다."}
         </p>
       </div>
 

@@ -101,6 +101,7 @@ func (a notifyStore) LeaseDeliveries(ctx context.Context, limit int) ([]notify.D
 				Environment:   d.Payload.Environment,
 				OwnerDisplay:  d.Payload.OwnerDisplay,
 				LocationCount: d.Payload.LocationCount,
+				IsCA:          d.Payload.IsCA,
 			},
 		})
 	}
