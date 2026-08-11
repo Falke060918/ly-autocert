@@ -139,15 +139,21 @@ func run(logger *slog.Logger) error {
 	// rescanCtl은 상태 조회·수동 1배치 발주 API가 쓰는 어댑터이며,
 	// RESCAN_ENABLED=false여도 non-nil이다 — 꺼진 것과 배선이 없는 것을
 	// 화면이 구분해야 한다(알림 채널 어댑터와 같은 규약).
-	stopRescan, rescanCtl := startRescanScheduler(ctx, logger, cfg, st)
+	stopRescan, rescanCtl, discMgr := startRescanScheduler(ctx, logger, cfg, st)
 	defer stopRescan()
+
+	// 정기 스캔 스케줄 tick (0019) — 주기가 오면 스윕 1건을 발주하고, 발주한 스윕이
+	// 끝나면 그 실행을 닫아 다음 주기를 연다. 재스캔 Manager를 그대로 쓴다:
+	// '등록된 인증서' 정기 스캔의 '지금 실행'이 곧 재스캔 1배치 발주이기 때문이다.
+	stopSchedules, scheduleCtl := startScanScheduleRunner(ctx, logger, cfg, discMgr)
+	defer stopSchedules()
 
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
-		// 선택 의존성 6개를 주입한다. 없어도 코어 API는 뜨지만, 없으면 채널 상태가
+		// 선택 의존성 7개를 주입한다. 없어도 코어 API는 뜨지만, 없으면 채널 상태가
 		// "배선 없음"이고 스윕 기본값이 SCAN_SWEEP_*를, 등록 예시가 실제 포트를 무시하며
 		// 접근 IP 제한이 XFF를 보지 않고 비상 우회 대역도 갖지 않으며, 재스캔 현황이
-		// "미배선"으로 나오고 수동 1배치 발주가 503이 된다.
+		// "미배선"으로 나오고 수동 1배치 발주와 정기 스캔 '지금 실행'이 503이 된다.
 		// 세션 쿠키 Secure는 SESSION_COOKIE_SECURE(기본 false) — HTTPS 리버스
 		// 프록시로 종단할 때만 켠다 (docs/manual/TLS.md).
 		Handler: api.NewServer(pool, authSvc, rec, cfg.SensorCAEncKey,
@@ -157,6 +163,8 @@ func run(logger *slog.Logger) error {
 			api.WithScanSuggestedNetworks(cfg.ScanSuggestedNetworks),
 			// 재스캔 스케줄러(discovery)를 API의 상태·수동 발주 엔드포인트에 잇는다.
 			api.WithRescanController(rescanCtl),
+			// 정기 스캔 스케줄러를 '지금 실행'·실행 취소 엔드포인트에 잇는다.
+			api.WithScheduleController(scheduleCtl),
 			// 등록 명령 예시가 실제 게이트웨이 포트를 안내하게 한다.
 			api.WithSensorGatewayPort(cfg.SensorGatewayPort),
 			api.WithSecureCookies(cfg.SessionCookieSecure),

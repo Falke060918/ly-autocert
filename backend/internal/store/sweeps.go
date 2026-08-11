@@ -107,9 +107,12 @@ type SweepInput struct {
 	RatePPS        int      // 0이면 DefaultSweepRatePPS
 	ChunkEndpoints int      // 0이면 DefaultSweepChunkEndpoints
 	MaxDays        int      // 0이면 DefaultSweepMaxDays
-	ActorID        *string
-	RequestID      *string
-	SourceIP       *string
+	// ScheduleID는 이 스윕을 발주한 정기 스캔 스케줄이다(0019). 사람이 낸 발주는 nil이며
+	// 정기/수동 구분은 이 컬럼으로 한다 — scan_jobs.origin CHECK은 건드리지 않는다.
+	ScheduleID *string
+	ActorID    *string
+	RequestID  *string
+	SourceIP   *string
 }
 
 // SweepProgress는 자식 scan_jobs 집계에서 파생한 진행률이다(저장하지 않는다).
@@ -127,6 +130,8 @@ type SweepProgress struct {
 }
 
 // Sweep은 스윕 1건이다. Progress는 조회 시점 집계다.
+// ScheduleID는 이 스윕을 발주한 정기 스캔 스케줄이다(0019) — 사람이 낸 발주는 null이고
+// 정기/수동 구분은 그 컬럼으로 한다(scan_jobs.origin은 건드리지 않는다).
 type Sweep struct {
 	ID                string        `json:"id"`
 	Name              *string       `json:"name,omitempty"`
@@ -142,6 +147,7 @@ type Sweep struct {
 	EstimatedFinishAt *time.Time    `json:"estimated_finish_at"`
 	StalledSince      *time.Time    `json:"stalled_since"`
 	LastError         *string       `json:"last_error"`
+	ScheduleID        *string       `json:"schedule_id"`
 	CreatedBy         *string       `json:"created_by,omitempty"`
 	CreatedAt         time.Time     `json:"created_at"`
 	UpdatedAt         time.Time     `json:"updated_at"`
@@ -310,16 +316,17 @@ func (s *Store) CreateSweep(ctx context.Context, in SweepInput) (*Sweep, error) 
 		INSERT INTO scan_sweeps (
 			name, targets, port_spec, executor_scope, status,
 			total_endpoints, total_chunks, rate_pps, chunk_endpoints,
-			estimated_finish_at, created_by)
+			estimated_finish_at, created_by, schedule_id)
 		VALUES (
 			$1,
 			coalesce(string_to_array(nullif($2, ''), chr(31)), '{}'),
 			$3, $4, 'queued',
 			$5, $6, $7, $8,
-			now() + make_interval(secs => $9), $10::uuid)
+			now() + make_interval(secs => $9), $10::uuid, $11::uuid)
 		RETURNING id`,
 		in.Name, strings.Join(in.Targets, sansSep), in.PortSpec, in.ExecutorScope,
 		totalEndpoints, totalChunks, ratePPS, chunkEndpoints, etaSeconds, in.ActorID,
+		in.ScheduleID,
 	).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("store: insert scan sweep: %w", err)
@@ -778,7 +785,8 @@ func (s *Store) RefreshSweepStalls(ctx context.Context, stallAfter time.Duration
 const sweepColumns = `sw.id, sw.name, sw.status,
 	array_to_string(sw.targets, chr(31)), sw.port_spec, sw.executor_scope,
 	sw.total_endpoints, sw.total_chunks, sw.next_seq, sw.rate_pps, sw.chunk_endpoints,
-	sw.estimated_finish_at, sw.stalled_since, sw.last_error, sw.created_by::text,
+	sw.estimated_finish_at, sw.stalled_since, sw.last_error,
+	sw.schedule_id::text, sw.created_by::text,
 	sw.created_at, sw.updated_at, sw.started_at, sw.finished_at`
 
 // sweepProgressColumns/sweepProgressJoin은 진행률을 자식 scan_jobs 집계로
@@ -808,7 +816,7 @@ func scanSweep(sc rowScanner) (Sweep, error) {
 	)
 	err := sc.Scan(&sw.ID, &sw.Name, &sw.Status, &targetsStr, &sw.PortSpec, &sw.ExecutorScope,
 		&sw.TotalEndpoints, &sw.TotalChunks, &sw.NextSeq, &sw.RatePPS, &sw.ChunkEndpoints,
-		&sw.EstimatedFinishAt, &sw.StalledSince, &sw.LastError, &sw.CreatedBy,
+		&sw.EstimatedFinishAt, &sw.StalledSince, &sw.LastError, &sw.ScheduleID, &sw.CreatedBy,
 		&sw.CreatedAt, &sw.UpdatedAt, &sw.StartedAt, &sw.FinishedAt,
 		&sw.Progress.ChunksCompleted, &sw.Progress.ChunksActive, &sw.Progress.FailedAttempts,
 		&sw.Progress.ScannedEndpoints, &sw.Progress.ReachableEndpoints,

@@ -35,6 +35,8 @@ type Manager struct {
 	// 실행도 스케줄러의 stop 대기에 함께 잡히게 한다. 대입은 기동 시 1회뿐이고
 	// HTTP 서버는 그 뒤에 뜬다(cmd/server/main.go 순서) — 이후로는 읽기 전용이다.
 	rescanSched *rescanScheduler
+	// schedule은 정기 스캔 스케줄러 설정이다 (schedules.go). 기본값은 NewManager가 채운다.
+	schedule ScheduleOptions
 
 	// cancelMu/cancels는 수동 단발 스캔(Start의 서버 실행 경로)의 Job별 취소
 	// 레지스트리다. 취소 API가 CancelScan으로 실행 중 goroutine의 ctx를 끊는다.
@@ -46,7 +48,8 @@ type Manager struct {
 
 // NewManager는 Manager를 만든다.
 func NewManager(st *store.Store) *Manager {
-	return &Manager{store: st, sweep: DefaultSweepOptions(), rescan: DefaultRescanOptions()}
+	return &Manager{store: st, sweep: DefaultSweepOptions(), rescan: DefaultRescanOptions(),
+		schedule: DefaultScheduleOptions()}
 }
 
 // UseSweepOptions는 스윕 스케줄러 설정을 주입한 Manager를 돌려준다(자기 자신).

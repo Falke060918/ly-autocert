@@ -488,10 +488,13 @@ func rescanOptions(c config.RescanConfig) discovery.RescanOptions {
 // 반환하는 controller는 그래도 non-nil이다 — 알림 채널 어댑터와 같은 규약이다.
 // 꺼져 있는 것과 배선이 없는 것은 화면에서 구분돼야 하고(`enabled` vs `wired`),
 // 감시 엔드포인트 수·적체 수는 스케줄러가 안 돌아도 의미가 있는 값이다.
+// 반환하는 mgr은 정기 스캔 스케줄러가 이어서 쓰는 인스턴스다 — '등록된 인증서'
+// 정기 스캔의 '지금 실행'이 곧 재스캔 1배치 발주이므로, 그 발주가 스케줄러와 같은
+// 설정·같은 진행 중 실행 추적(wg)을 공유해야 한다.
 func startRescanScheduler(
 	ctx context.Context, logger *slog.Logger, cfg config.Config, st *store.Store,
-) (stop func(), controller api.RescanController) {
-	mgr := discovery.NewManager(st).UseRescanOptions(rescanOptions(cfg.Rescan))
+) (stop func(), controller api.RescanController, mgr *discovery.Manager) {
+	mgr = discovery.NewManager(st).UseRescanOptions(rescanOptions(cfg.Rescan))
 	stop = mgr.StartRescanScheduler(ctx)
 	if cfg.Rescan.Enabled {
 		logger.Info("discovery: rescan scheduler started",
@@ -501,7 +504,61 @@ func startRescanScheduler(
 			"replace_confirm", cfg.Rescan.ReplaceConfirm,
 			"retire_misses", cfg.Rescan.RetireMisses)
 	}
-	return stop, &rescanController{mgr: mgr, cfg: cfg.Rescan, serverCtx: ctx}
+	return stop, &rescanController{mgr: mgr, cfg: cfg.Rescan, serverCtx: ctx}, mgr
+}
+
+// scheduleOptions는 정기 스캔 스케줄러 설정을 만든다 (0019).
+// 전용 환경변수를 새로 만들지 않는다 — full·preset의 실체가 스윕이므로 스윕 설정을
+// 따르고, 주기·대상·레이트는 DB의 설정 행이 정본이다.
+func scheduleOptions(cfg config.Config) discovery.ScheduleOptions {
+	return discovery.ScheduleOptions{
+		// 스윕 발주자가 없으면 청크를 돌 주체가 없다 — 함께 뜨고 함께 꺼진다.
+		Enabled:         cfg.Sweep.Enabled,
+		DefaultInterval: discovery.DefaultScheduleInterval,
+		MaxPerTick:      discovery.DefaultSchedulesPerTick,
+		MaxDays:         cfg.Sweep.MaxDays,
+	}
+}
+
+// startScanScheduleRunner는 정기 스캔 tick 루프를 띄운다(주기 도래 → 스윕 1건 발주).
+// mgr은 재스캔 스케줄러가 쓰는 인스턴스를 그대로 받는다(위 주석 참조).
+//
+// 반환하는 controller는 스윕이 꺼져 있어도 non-nil이다 — 알림 채널·재스캔 어댑터와
+// 같은 규약이다(꺼진 것과 배선이 없는 것은 화면에서 구분돼야 한다).
+func startScanScheduleRunner(
+	ctx context.Context, logger *slog.Logger, cfg config.Config, mgr *discovery.Manager,
+) (stop func(), controller api.ScheduleController) {
+	mgr = mgr.UseSweepOptions(sweepOptions(cfg.Sweep)).UseScheduleOptions(scheduleOptions(cfg))
+	stop = mgr.StartScanScheduleRunner(ctx)
+	if cfg.Sweep.Enabled {
+		logger.Info("discovery: scan schedule runner started",
+			"default_interval", discovery.DefaultScheduleInterval.String(),
+			"max_per_tick", discovery.DefaultSchedulesPerTick,
+			"max_days", cfg.Sweep.MaxDays)
+	}
+	return stop, &scheduleController{mgr: mgr, serverCtx: ctx}
+}
+
+// scheduleController는 정기 스캔 스케줄러를 api.ScheduleController로 잇는 어댑터다
+// (rescanController와 같은 자리 — api는 discovery의 스케줄 타입을 import하지 않는다).
+type scheduleController struct {
+	mgr *discovery.Manager
+	// serverCtx는 서버 수명 컨텍스트다. '지금 실행'이 시작하는 발주·인프로세스 스캔은
+	// 응답보다 오래 살아야 하므로 요청 컨텍스트를 쓰지 않는다(재스캔과 같은 이유).
+	serverCtx context.Context
+}
+
+var _ api.ScheduleController = (*scheduleController)(nil)
+
+// RunNow는 주기를 리셋하지 않고 1회 실행만 연다.
+func (c *scheduleController) RunNow(_ context.Context, scheduleID string, act store.ScanScheduleActor) (*store.ScanScheduleRun, error) {
+	return c.mgr.RunScanScheduleNow(c.serverCtx, scheduleID, act)
+}
+
+// CancelRun은 실행 1건을 취소한다(발주한 스윕을 먼저 멈춘다).
+// 취소는 DB 전이뿐이라 요청 컨텍스트를 그대로 쓴다.
+func (c *scheduleController) CancelRun(ctx context.Context, runID string, act store.ScanScheduleActor) (*store.ScanScheduleRun, error) {
+	return c.mgr.CancelScanScheduleRun(ctx, runID, act)
 }
 
 // rescanController는 재스캔 스케줄러를 api.RescanController로 잇는 어댑터다

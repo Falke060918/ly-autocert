@@ -92,6 +92,10 @@ func (e *ScanScheduleRunActiveError) Is(target error) bool { return target == Er
 // ErrScanScheduleRunNotFound는 존재하지 않는 실행 종료 요청에 반환한다.
 var ErrScanScheduleRunNotFound = errors.New("store: scan schedule run not found")
 
+// ErrScanScheduleRunState는 이미 종료된 실행에 종료 전이를 요청했을 때다(핸들러 409).
+// "없는 실행"(404)과 "이미 끝난 실행"(409)은 사용자가 취할 행동이 달라 가른다.
+var ErrScanScheduleRunState = errors.New("store: scan schedule run is not running")
+
 // ScanSchedule은 정기 스캔 설정 1건이다.
 type ScanSchedule struct {
 	ID               string     `json:"id"`
@@ -851,6 +855,77 @@ func (s *Store) FinishScanScheduleRun(ctx context.Context, runID string, res Sca
 	}
 	if err != nil {
 		return nil, fmt.Errorf("store: finish scan schedule run: %w", err)
+	}
+	return &run, nil
+}
+
+// GetScanScheduleRun은 실행 1건을 조회한다. 없으면 ErrScanScheduleRunNotFound.
+// 조회 전용이라 감사 이벤트를 남기지 않는다 (00-spec 7.12).
+func (s *Store) GetScanScheduleRun(ctx context.Context, runID string) (*ScanScheduleRun, error) {
+	run, err := scanScheduleRunRow(s.db.QueryRowContext(ctx,
+		`SELECT `+scanScheduleRunColumns+` FROM scan_schedule_runs WHERE id = $1::uuid`, runID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrScanScheduleRunNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: get scan schedule run: %w", err)
+	}
+	return &run, nil
+}
+
+// CancelScanScheduleRun은 실행 1건을 canceled로 전이하고 감사 이벤트를 남긴다.
+// 발주된 스윕을 멈추는 것은 호출자 몫이다 — 이 함수는 실행 이력만 닫는다
+// (스윕 취소는 discovery.sweep 감사를 따로 남기는 별개의 전이다).
+//
+// running이 아니면 ErrScanScheduleRunState다(이미 끝난 실행의 카운터를 덮어쓰지 않는다).
+func (s *Store) CancelScanScheduleRun(ctx context.Context, runID string, act ScanScheduleActor) (*ScanScheduleRun, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("store: begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	cur, err := scanScheduleRunRow(tx.QueryRowContext(ctx,
+		`SELECT `+scanScheduleRunColumns+` FROM scan_schedule_runs WHERE id = $1::uuid FOR UPDATE`, runID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrScanScheduleRunNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: lock scan schedule run: %w", err)
+	}
+	if cur.Status != ScheduleRunRunning {
+		return nil, ErrScanScheduleRunState
+	}
+
+	run, err := scanScheduleRunRow(tx.QueryRowContext(ctx, `
+		UPDATE scan_schedule_runs
+		   SET status = 'canceled', finished_at = now()
+		 WHERE id = $1::uuid AND status = 'running'
+		RETURNING `+scanScheduleRunColumns, runID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrScanScheduleRunState
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: cancel scan schedule run: %w", err)
+	}
+
+	// 감사 삽입은 트랜잭션의 마지막 문장이어야 한다 (docs/GOTCHAS.md).
+	if err := audit.Insert(ctx, tx, audit.Event{
+		Type:       EventDiscoverySchedule,
+		ActorID:    act.ActorID,
+		TargetType: "scan_schedule",
+		TargetID:   &run.ScheduleID,
+		RequestID:  act.RequestID,
+		Before:     map[string]any{"phase": "run_started", "run_id": run.ID, "trigger": run.Trigger},
+		After:      map[string]any{"phase": "run_canceled", "run_id": run.ID, "trigger": run.Trigger},
+		Result:     domain.AuditSuccess,
+		SourceIP:   act.SourceIP,
+	}); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: commit: %w", err)
 	}
 	return &run, nil
 }
