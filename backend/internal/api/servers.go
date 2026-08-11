@@ -49,7 +49,8 @@ func parseServerScope(v string) (string, *paramError) {
 }
 
 // parseServerListParams는 서버 목록 쿼리 파라미터를 검증해 store 입력으로 바꾼다.
-// 파라미터: q, expired, expires_within_days, scope, mismatch, sort, order, page, page_size.
+// 파라미터: q, expired, expires_within_days, scope, mismatch, issued_by,
+// sort, order, page, page_size.
 //
 // 인증서 목록과 필터를 공유하지 않는다 — 여기의 만료 필터는 EXISTS 의미라
 // type·self_signed·issuer_org를 그대로 옮기면 뜻이 조용히 달라진다.
@@ -89,6 +90,15 @@ func parseServerListParams(r *http.Request) (store.ListServersInput, *paramError
 			return in, &paramError{"invalid_mismatch", "mismatch는 true 또는 false여야 합니다."}
 		}
 		in.Mismatch = &b
+	}
+	if v := q.Get("issued_by"); v != "" {
+		// 잘못된 형식은 DB ::uuid 캐스트 500으로 새지 않게 여기서 거른다
+		// (인증서 목록의 issued_by와 같은 규약). 다만 여기는 **전이적**이다 —
+		// 그 CA의 하위 CA가 발급한 것까지 계열 전체를 본다.
+		if !isUUID(v) {
+			return in, &paramError{"invalid_issued_by", "issued_by는 인증서 id(UUID)여야 합니다."}
+		}
+		in.IssuedBy = v
 	}
 	if v := q.Get("sort"); v != "" {
 		if !store.IsServerSortField(v) {
