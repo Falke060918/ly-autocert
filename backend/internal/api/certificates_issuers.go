@@ -17,9 +17,11 @@ type certificateIssuersResponse struct {
 
 // handleCertificateIssuers는 GET /api/v1/certificates/issuers를 처리한다.
 // organizations는 발급 기관(issuer_organization)별 비-CA 인증서 분포이고,
-// ca_tree는 보유 CA의 루트→중간 2계층 트리(노드별 직접 발급 리프 수 포함)다.
-// 트리 노드의 id를 목록 API의 issued_by= 필터에 넣으면 그 CA가 발급한
-// 인증서 목록으로 이동한다 — 두 API가 같은 매칭 술어를 쓴다.
+// ca_tree는 보유 CA의 **N계층 트리**다 — 중간 CA의 중간 CA도 제 부모 아래에
+// 그대로 중첩된다(노드별 직접 발급 리프 수·하위 포함 합산·깊이 포함).
+// 리프는 노드당 최대 5건만 leaf_preview로 싣는다. 전체 리프는 노드의 id를
+// 목록 API의 issued_by= 필터에 넣어 페이지네이션과 함께 조회한다 —
+// 두 API가 같은 매칭 술어를 쓰므로 leaf_count와 목록 건수가 일치한다.
 func handleCertificateIssuers(st *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		res, err := st.CertificateIssuers(r.Context())

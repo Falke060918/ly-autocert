@@ -300,7 +300,7 @@ func TestCertificateIssuersAggregation(t *testing.T) {
 	if child.LeafCount != 2 {
 		t.Errorf("intermediate leaf_count = %d, want 2", child.LeafCount)
 	}
-	// 중간 CA는 손자가 없으므로(2계층 평탄화) subtree = 직접 발급이다.
+	// 이 픽스처의 중간 CA는 하위 CA가 없으므로 subtree = 직접 발급이다.
 	if child.SubtreeLeafCount != 2 {
 		t.Errorf("intermediate subtree_leaf_count = %d, want 2", child.SubtreeLeafCount)
 	}
@@ -308,6 +308,219 @@ func TestCertificateIssuersAggregation(t *testing.T) {
 	// 단독 자체 서명 리프는 어떤 CA와도 매칭되지 않는다.
 	if agg.UnmatchedLeafCount < 1 {
 		t.Errorf("unmatched_leaf_count = %d, want >= 1", agg.UnmatchedLeafCount)
+	}
+}
+
+// newTestDeepIssuerChain은 루트 → 중간1 → 중간2 → 리프 4단 체인을 만든다.
+// 2계층 평탄화라면 중간2가 루트 바로 아래로 올라와 계층이 사라진다.
+func newTestDeepIssuerChain(t *testing.T, tag string) (root, int1, int2, leaf domain.Certificate) {
+	t.Helper()
+	newKey := func() *ecdsa.PrivateKey {
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatalf("generate key: %v", err)
+		}
+		return key
+	}
+	mkCert := func(tmpl, parent *x509.Certificate, pub *ecdsa.PublicKey, signer *ecdsa.PrivateKey) *x509.Certificate {
+		der, err := x509.CreateCertificate(rand.Reader, tmpl, parent, pub, signer)
+		if err != nil {
+			t.Fatalf("create certificate: %v", err)
+		}
+		cert, err := x509.ParseCertificate(der)
+		if err != nil {
+			t.Fatalf("parse certificate: %v", err)
+		}
+		return cert
+	}
+	caTmpl := func(serial int64, cn string) *x509.Certificate {
+		return &x509.Certificate{
+			SerialNumber:          big.NewInt(serial),
+			Subject:               pkix.Name{CommonName: cn, Organization: []string{tag + " Org"}},
+			NotBefore:             time.Now().Add(-time.Hour),
+			NotAfter:              time.Now().Add(3650 * 24 * time.Hour),
+			KeyUsage:              x509.KeyUsageCertSign,
+			IsCA:                  true,
+			BasicConstraintsValid: true,
+		}
+	}
+
+	rootKey, k1, k2, leafKey := newKey(), newKey(), newKey(), newKey()
+	rootTmpl := caTmpl(300, tag+"-root")
+	rootCert := mkCert(rootTmpl, rootTmpl, &rootKey.PublicKey, rootKey)
+	int1Cert := mkCert(caTmpl(301, tag+"-int1"), rootCert, &k1.PublicKey, rootKey)
+	int2Cert := mkCert(caTmpl(302, tag+"-int2"), int1Cert, &k2.PublicKey, k1)
+	leafCert := mkCert(&x509.Certificate{
+		SerialNumber: big.NewInt(303),
+		Subject:      pkix.Name{CommonName: tag + "-leaf.example.test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(90 * 24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{tag + "-leaf.example.test"},
+	}, int2Cert, &leafKey.PublicKey, k2)
+
+	now := time.Now()
+	return certparse.Describe(rootCert, now), certparse.Describe(int1Cert, now),
+		certparse.Describe(int2Cert, now), certparse.Describe(leafCert, now)
+}
+
+// TestCertificateIssuersDeepTree는 CA 트리가 깊이 제한 없이(2계층 평탄화 없이)
+// 실제 계층 그대로 내려오는지, 각 노드의 하위 합산·깊이·리프 미리보기가
+// 맞는지 검증한다.
+func TestCertificateIssuersDeepTree(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool)
+	ctx := context.Background()
+
+	root, int1, int2, leaf := newTestDeepIssuerChain(t, "deeptree")
+	reqID := "test-req-issuer-deep"
+	fileName := "issuers-deep-fixture.pem"
+	t.Cleanup(func() {
+		_, _ = pool.Exec(`DELETE FROM certificates WHERE fingerprint_sha256 IN ($1, $2, $3, $4)`,
+			root.FingerprintSHA256, int1.FingerprintSHA256,
+			int2.FingerprintSHA256, leaf.FingerprintSHA256)
+		cleanupAuditByRequestID(pool, reqID)
+	})
+
+	res, err := st.ImportCertificates(ctx, ImportInput{
+		Certificates: []domain.Certificate{root, int1, int2, leaf},
+		FileName:     &fileName,
+		RequestID:    &reqID,
+	})
+	if err != nil {
+		t.Fatalf("import fixtures: %v", err)
+	}
+	ids := map[string]string{}
+	for _, ic := range res.Certificates {
+		ids[ic.Certificate.FingerprintSHA256] = ic.Certificate.ID
+	}
+
+	agg, err := st.CertificateIssuers(ctx)
+	if err != nil {
+		t.Fatalf("certificate issuers: %v", err)
+	}
+
+	var rootNode *CATreeNode
+	for i := range agg.CATree {
+		if agg.CATree[i].ID != nil && *agg.CATree[i].ID == ids[root.FingerprintSHA256] {
+			rootNode = &agg.CATree[i]
+		}
+	}
+	if rootNode == nil {
+		t.Fatal("ca_tree missing fixture root node")
+	}
+	if rootNode.Depth != 0 {
+		t.Errorf("root depth = %d, want 0", rootNode.Depth)
+	}
+	if rootNode.SubtreeLeafCount != 1 {
+		t.Errorf("root subtree_leaf_count = %d, want 1", rootNode.SubtreeLeafCount)
+	}
+	if len(rootNode.Children) != 1 {
+		t.Fatalf("root children = %d, want 1 (중간1만)", len(rootNode.Children))
+	}
+	n1 := rootNode.Children[0]
+	if n1.ID == nil || *n1.ID != ids[int1.FingerprintSHA256] {
+		t.Fatalf("root child = %v, want int1", n1.ID)
+	}
+	if n1.Depth != 1 {
+		t.Errorf("int1 depth = %d, want 1", n1.Depth)
+	}
+	if n1.LeafCount != 0 || n1.SubtreeLeafCount != 1 {
+		t.Errorf("int1 leaf_count/subtree = %d/%d, want 0/1", n1.LeafCount, n1.SubtreeLeafCount)
+	}
+	if len(n1.Children) != 1 {
+		t.Fatalf("int1 children = %d, want 1 (중간2 — 평탄화되면 0)", len(n1.Children))
+	}
+	n2 := n1.Children[0]
+	if n2.ID == nil || *n2.ID != ids[int2.FingerprintSHA256] {
+		t.Fatalf("int1 child = %v, want int2", n2.ID)
+	}
+	if n2.Depth != 2 {
+		t.Errorf("int2 depth = %d, want 2", n2.Depth)
+	}
+	if n2.LeafCount != 1 || n2.SubtreeLeafCount != 1 {
+		t.Errorf("int2 leaf_count/subtree = %d/%d, want 1/1", n2.LeafCount, n2.SubtreeLeafCount)
+	}
+	if len(n2.Children) != 0 {
+		t.Errorf("int2 children = %d, want 0", len(n2.Children))
+	}
+
+	// 리프 미리보기: 리프를 직접 발급한 노드에만 실린다.
+	if len(n2.LeafPreview) != 1 {
+		t.Fatalf("int2 leaf_preview = %d, want 1", len(n2.LeafPreview))
+	}
+	if n2.LeafPreview[0].ID != ids[leaf.FingerprintSHA256] {
+		t.Errorf("int2 leaf_preview id = %s, want the fixture leaf", n2.LeafPreview[0].ID)
+	}
+	if n2.LeafPreview[0].CommonName != "deeptree-leaf.example.test" {
+		t.Errorf("int2 leaf_preview common_name = %q", n2.LeafPreview[0].CommonName)
+	}
+	if len(rootNode.LeafPreview) != 0 || len(n1.LeafPreview) != 0 {
+		t.Error("리프를 직접 발급하지 않은 노드에 leaf_preview가 실렸다")
+	}
+}
+
+// TestCALeafPreviewCapped는 미리보기가 상한(caLeafPreviewLimit)을 넘지 않고
+// 만료 임박 순으로 잘리는지 검증한다 — 노드가 많을 때 응답이 인벤토리 전체를
+// 싣지 않게 하는 것이 이 상한의 목적이다.
+func TestCALeafPreviewCapped(t *testing.T) {
+	previews := map[string][]CALeafPreview{}
+	cas := []caIssuerRow{{
+		chainRow: chainRow{
+			id: "ca-1", subjectDN: "CN=cap", issuerDN: "CN=cap",
+			notAfter: time.Now().Add(time.Hour), ctype: "ca", status: "active",
+		},
+		leafCount: caLeafPreviewLimit + 3,
+	}}
+	for i := 0; i < caLeafPreviewLimit; i++ {
+		previews["ca-1"] = append(previews["ca-1"], CALeafPreview{ID: "leaf", CommonName: "x"})
+	}
+	tree := buildCATree(cas, previews)
+	if len(tree) != 1 {
+		t.Fatalf("tree roots = %d, want 1", len(tree))
+	}
+	if len(tree[0].LeafPreview) != caLeafPreviewLimit {
+		t.Errorf("leaf_preview = %d, want %d", len(tree[0].LeafPreview), caLeafPreviewLimit)
+	}
+	if tree[0].LeafCount <= len(tree[0].LeafPreview) {
+		t.Error("leaf_count가 미리보기 길이보다 커야 프론트가 '전체 보기'를 띄울 수 있다")
+	}
+}
+
+// TestBuildCATreeBreaksCycles는 교차 서명 등으로 부모 관계가 순환해도
+// 트리 구성이 끝나고 노드가 유실되지 않는지 검증한다.
+func TestBuildCATreeBreaksCycles(t *testing.T) {
+	mk := func(id, subject, issuer, ski, aki string) caIssuerRow {
+		s, a := ski, aki
+		return caIssuerRow{chainRow: chainRow{
+			id: id, subjectDN: subject, issuerDN: issuer, cn: id,
+			notAfter: time.Now().Add(time.Hour), ctype: "ca", status: "active",
+			ski: &s, aki: &a,
+		}}
+	}
+	// A는 B가, B는 A가 발급했다고 주장한다 (자체 서명 루트 없음).
+	cas := []caIssuerRow{
+		mk("a", "CN=A", "CN=B", "ski-a", "ski-b"),
+		mk("b", "CN=B", "CN=A", "ski-b", "ski-a"),
+	}
+	tree := buildCATree(cas, nil)
+	seen := map[string]bool{}
+	var walk func(nodes []CATreeNode, depth int)
+	walk = func(nodes []CATreeNode, depth int) {
+		if depth > maxCATreeDepth+1 {
+			t.Fatal("트리가 상한보다 깊다 — 순환이 끊기지 않았다")
+		}
+		for _, n := range nodes {
+			if n.ID != nil {
+				seen[*n.ID] = true
+			}
+			walk(n.Children, depth+1)
+		}
+	}
+	walk(tree, 0)
+	if !seen["a"] || !seen["b"] {
+		t.Errorf("순환 CA 노드가 유실됐다: %v", seen)
 	}
 }
 

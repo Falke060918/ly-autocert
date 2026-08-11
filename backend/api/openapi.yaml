@@ -252,10 +252,14 @@ paths:
       summary: 발급 기관 분포·CA 트리 집계
       description: >
         organizations는 발급 기관(issuer_organization)별 비-CA 인증서 분포이고
-        ca_tree는 보유 CA의 루트→중간 2계층 트리다(노드별 직접 발급 리프 수 포함,
-        더 깊은 중간 CA는 루트 바로 아래로 평탄화). 트리 노드의 id를 목록 API의
-        issued_by= 필터에 넣으면 그 CA가 발급한 인증서 목록으로 이동한다 — 두 API가
-        같은 매칭 술어를 쓴다. status=replaced 인증서는 리프 수·분포에서 제외한다
+        ca_tree는 보유 CA의 N계층 트리다 — 중간 CA의 중간 CA도 평탄화하지 않고
+        제 부모 아래에 그대로 중첩된다(노드별 직접 발급 리프 수 leaf_count, 하위
+        전체 합산 subtree_leaf_count, 계층 depth 포함).
+        리프(비-CA 인증서)는 노드당 최대 5건만 leaf_preview로 싣는다 — 만료 임박순이며
+        leaf_count가 leaf_preview 길이보다 크면 나머지가 있다는 뜻이다. 전체 리프는
+        트리 노드의 id를 목록 API의 issued_by= 필터에 넣어 페이지네이션과 함께
+        조회한다 — 두 API가 같은 매칭 술어를 쓰므로 leaf_count와 목록 건수가 일치한다.
+        status=replaced 인증서는 리프 수·미리보기·분포에서 제외한다
         (대시보드 요약과 같은 규약). 인증된 전 역할(6종) 접근 가능. 읽기 전용이라
         감사 이벤트를 남기지 않는다.
       tags: [certificates]
@@ -2673,13 +2677,30 @@ components:
           nullable: true
           description: null이면 발급자 DN에 O가 없는 인증서 묶음
         count: { type: integer }
+    CALeafPreview:
+      type: object
+      description: >
+        CA 노드가 직접 발급한 리프 1건의 미리보기. 트리를 펼쳤을 때 "무엇이
+        달려 있나"를 즉시 보여주기 위한 최소 필드만 담는다 — 전체 목록은
+        GET /api/v1/certificates?issued_by=&lt;노드 id&gt;로 조회한다.
+      required: [id, common_name, subject_dn, not_after, status]
+      properties:
+        id: { type: string, format: uuid }
+        common_name: { type: string }
+        subject_dn: { type: string }
+        not_after: { type: string, format: date-time }
+        status:
+          type: string
+          enum: [active, expired, revoked, replaced, unknown]
     CATreeNode:
       type: object
       description: >
-        CA 트리 1노드. 루트(자체 서명 CA) 아래에 그 계보의 중간 CA가 평탄화되어
-        붙는다. 인벤토리에 없는 상위는 stored=false·id null로 subject_dn만 안다
+        CA 트리 1노드. 루트(자체 서명 CA) 아래로 실제 계층 그대로 중첩된다 —
+        중간 CA의 중간 CA도 평탄화하지 않고 제 부모 아래에 붙는다(깊이 제한 없음;
+        내부 안전 상한 16단은 교차 서명·손상 데이터용이며 정상 데이터는 걸리지 않는다).
+        인벤토리에 없는 상위는 stored=false·id null로 subject_dn만 안다
         (체인 항목과 같은 규약).
-      required: [id, stored, subject_dn, common_name, not_after, status, self_signed, leaf_count, subtree_leaf_count, children]
+      required: [id, stored, subject_dn, common_name, not_after, status, self_signed, depth, leaf_count, subtree_leaf_count, leaf_preview, children]
       properties:
         id: { type: string, format: uuid, nullable: true }
         stored: { type: boolean }
@@ -2691,16 +2712,29 @@ components:
           nullable: true
           enum: [active, expired, revoked, replaced, unknown, null]
         self_signed: { type: boolean }
+        depth:
+          type: integer
+          description: 이 노드가 놓인 계층 (최상위 0). 중첩 구조에서 파생 가능하지만 명시한다.
         leaf_count:
           type: integer
           description: 이 CA가 직접 발급한 비-CA 인증서 수 (replaced 제외)
         subtree_leaf_count:
           type: integer
           description: >
-            이 노드와 하위(children) CA의 leaf_count 합산. 루트의 "하위 포함"
-            표기용이며, 중간 CA는 손자가 없어(2계층 평탄화) leaf_count와 같다.
+            이 노드와 모든 하위 CA(손자·증손자 포함)의 leaf_count 합산.
+            화면의 "하위 포함 N건" 표기용이다.
+        leaf_preview:
+          type: array
+          maxItems: 5
+          description: >
+            이 노드가 직접 발급한 리프 중 만료가 가장 임박한 최대 5건.
+            leaf_count가 이 배열 길이보다 크면 나머지가 있다는 뜻이며,
+            GET /api/v1/certificates?issued_by=&lt;id&gt;로 이어서 조회한다.
+            stored=false인 자리 노드는 항상 빈 배열이다.
+          items: { $ref: "#/components/schemas/CALeafPreview" }
         children:
           type: array
+          description: 이 노드가 직접 발급한 하위 CA들
           items: { $ref: "#/components/schemas/CATreeNode" }
     CertificateIssuers:
       type: object
