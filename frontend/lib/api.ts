@@ -101,6 +101,61 @@ export interface Certificate {
 }
 
 /**
+ * 위험 판정 심각도 4단. ok는 "위험 항목이 하나도 없음"이고, **최고 심각도** 기준이라
+ * 네 값이 인벤토리를 겹침 없이 나눈다(합 = total).
+ */
+export type RiskSeverity = "danger" | "warn" | "info" | "ok";
+
+/**
+ * 판정 항목 코드 — 화면 배지·필터의 안정적인 키다(백엔드 certrisk 카탈로그와 1:1).
+ * 값은 바뀌지 않는 계약이라 유니온으로 고정한다.
+ */
+export type RiskCode =
+  | "weak_key"
+  | "key_deprecated_2030"
+  | "key_strong"
+  | "ed25519_key"
+  | "weak_signature"
+  | "no_san"
+  | "wildcard"
+  | "wildcard_broad"
+  | "wildcard_multi_label"
+  | "long_validity"
+  | "expired_ca"
+  | "self_signed"
+  | "chain_anomaly"
+  | "legacy_tls"
+  | "incomplete_chain";
+
+/**
+ * 판정 대상 축. certificate는 인증서 자체의 속성이고 location은 설치된 위치의
+ * 속성이다 — 조치 주체가 다르다(위치 축은 재발급이 아니라 서버 설정·배포를 고쳐야 한다).
+ */
+export type RiskScope = "certificate" | "location";
+
+/** 판정 결과 1건. message는 사람이 읽는 사유이며 인증서 원문·개인키는 담기지 않는다. */
+export interface RiskFinding {
+  code: RiskCode;
+  severity: RiskSeverity;
+  scope: RiskScope;
+  title: string;
+  /** 공인(publicly trusted) 인증서 전용 규칙인지. 현재 항목은 전부 false다. */
+  public_trust_only: boolean;
+  message: string;
+}
+
+/**
+ * 인증서 1건의 위험 판정. **저장값이 아니라 조회 시 계산한 값**이다 —
+ * 기준선이 2027·2030에 움직이므로 화면도 응답을 캐시하지 않고 그대로 쓴다.
+ */
+export interface RiskAssessment {
+  /** findings의 최고 심각도. 판정 항목이 하나도 없으면 ok다. */
+  severity: RiskSeverity;
+  /** 카탈로그 고정 순서 — 요청마다 순서가 바뀌지 않는다. */
+  findings: RiskFinding[];
+}
+
+/**
  * 목록 1행 = 인증서 + 목록 전용 파생 열.
  * last_seen_at은 인증서의 속성이 아니라 설치 위치 집계라 상세 응답·CSV에는 없다.
  */
@@ -111,6 +166,8 @@ export interface CertificateListItem extends Certificate {
    * 확인되지 않았으면 null이다. 서버 정렬 화이트리스트에 없어 정렬은 불가하다.
    */
   last_seen_at: string | null;
+  /** 조회 시점에 계산한 위험 판정 (저장하지 않는다). */
+  risk: RiskAssessment;
 }
 
 export interface CertificateListResponse {
@@ -146,6 +203,25 @@ export interface CertificateLocation {
   last_verified_at: string | null;
   deployment_status: "unknown" | "deployed" | "pending" | "failed" | "removed";
   tls_version: string | null;
+  /**
+   * 이 위치의 (대상, 포트) 엔드포인트에서 마지막으로 관측된 인증서 지문
+   * (endpoint_monitors, 0015). 재스캔이 꺼져 있거나 아직 한 번도 성공하지
+   * 못했으면 null이다 — 즉 "확인 안 됨"이지 "없음"이 아니다.
+   */
+  current_fingerprint: string | null;
+  /**
+   * current_fingerprint에 해당하는 인벤토리 인증서 id. 관측된 인증서가 아직
+   * 인벤토리에 없으면 지문만 있고 이 값은 null이다.
+   * 화면은 두 필드로 위치를 3분류한다 (lib/servers.ts locationServiceState).
+   */
+  current_certificate_id: string | null;
+  /** 마지막 관측에서 엔드포인트가 **제시한** 체인 길이 (0018). 미상이면 null. */
+  presented_chain_len: number | null;
+  /**
+   * 제시된 체인만으로 리프에서 위로 이어지는지 (0018). false는 곧 중간 CA 누락이고
+   * null은 미상이다(0018 이전 관측·파일 업로드) — 미상을 위험으로 표시하지 않는다.
+   */
+  chain_complete: boolean | null;
   target: TargetRef;
 }
 
@@ -182,6 +258,11 @@ export interface CertificateDetailResponse {
   owner: CertificateOwner | null;
   locations: CertificateLocation[];
   chain: CertificateChainItem[];
+  /**
+   * 조회 시점에 계산한 위험 판정. 상세는 위치 배열을 가지고 있어 위치 축
+   * (scope=location) 판정도 실제 위치로 계산된다 — 목록의 요약 판정보다 정확하다.
+   */
+  risk: RiskAssessment;
 }
 
 export interface CertificateSummary {

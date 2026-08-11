@@ -30,6 +30,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CertStatusBadge, DdayText } from "@/components/cert-badges";
+import { RiskSummaryBadge } from "@/components/risk-badges";
 import { FreshnessText } from "@/components/freshness";
 import { useTicker } from "@/components/notification-bell";
 import { canExportInventory, canManageInventory, useAuth } from "@/lib/auth";
@@ -49,9 +50,21 @@ import {
   ISSUER_ORG_UNKNOWN,
   type IssuerAggregationResponse,
 } from "@/lib/issuers";
+import {
+  applyRiskFilter,
+  getCertificateRisks,
+  isRiskCode,
+  isRiskSeverity,
+  RISK_CODE_PARAM,
+  RISK_PARAM,
+  RISK_SEVERITY_LABELS,
+  RISK_SEVERITY_ORDER,
+  type CertificateRisksResponse,
+} from "@/lib/risks";
 import { dnCommonName, dnOrganization, formatDate, isSelfSigned } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { findCANode, IssuersView } from "./issuers-view";
+import { ServersView } from "./servers-view";
 
 const TYPE_LABELS: Record<string, string> = {
   server: "서버",
@@ -122,6 +135,11 @@ function CertificatesBody() {
   const [issuerAgg, setIssuerAgg] =
     React.useState<IssuerAggregationResponse | null>(null);
   const [issuerAggError, setIssuerAggError] = React.useState(false);
+  // 위험 판정 집계 — 필터 Select의 건수 라벨용. 판정은 저장값이 아니라 조회 시
+  // 계산되므로 목록을 다시 받을 때마다 같이 받는다(캐시하지 않는다).
+  // 실패하면 필터만 숨긴다 — 목록의 위험 배지는 목록 응답에 실려 오므로 무관하다.
+  const [riskAgg, setRiskAgg] =
+    React.useState<CertificateRisksResponse | null>(null);
 
   // 신선도 표기는 상대 시각이라 주기적으로 다시 그린다(렌더 중 Date.now 금지).
   const now = useTicker(60_000);
@@ -137,6 +155,13 @@ function CertificatesBody() {
       })
       .catch(() => {
         if (!cancelled) setIssuerAggError(true);
+      });
+    getCertificateRisks()
+      .then((res) => {
+        if (!cancelled) setRiskAgg(res);
+      })
+      .catch(() => {
+        /* 위험 필터만 숨긴다 */
       });
     return () => {
       cancelled = true;
@@ -166,6 +191,14 @@ function CertificatesBody() {
     applyIssuerFilter(out, {
       issuerOrg: org === ISSUER_ORG_UNKNOWN ? "" : org,
       issuedBy: searchParams.get(ISSUED_BY_PARAM),
+    });
+    // 위험 필터는 값을 검증하고 넘긴다 — 손으로 고친 주소로 400을 받으면
+    // 목록 전체가 오류 알럿으로 바뀐다.
+    const sev = searchParams.get(RISK_PARAM);
+    const code = searchParams.get(RISK_CODE_PARAM);
+    applyRiskFilter(out, {
+      severity: isRiskSeverity(sev) ? sev : null,
+      code: isRiskCode(code) ? code : null,
     });
     return out;
   }, [searchParams]);
@@ -213,7 +246,7 @@ function CertificatesBody() {
     issuerOrgValue != null ||
     [
       "q", "status", "type", "expired", "expires_within_days", "self_signed", "unowned",
-      "include_replaced", ISSUED_BY_PARAM,
+      "include_replaced", ISSUED_BY_PARAM, RISK_PARAM, RISK_CODE_PARAM,
     ].some((k) => searchParams.get(k));
 
   const includeReplaced = searchParams.get("include_replaced") === "true";
@@ -223,8 +256,12 @@ function CertificatesBody() {
   const canManage = canManageInventory(user);
   const canExport = canExportInventory(user);
 
-  const view = searchParams.get("view") === "issuers" ? "issuers" : "list";
+  const viewParam = searchParams.get("view");
+  const view =
+    viewParam === "issuers" || viewParam === "servers" ? viewParam : "list";
   const issuedById = searchParams.get(ISSUED_BY_PARAM);
+  const riskSeverity = searchParams.get(RISK_PARAM);
+  const riskCode = searchParams.get(RISK_CODE_PARAM);
   // 발급 CA 칩 라벨 — 집계 트리에서 이름을 찾고, 못 찾으면 일반 문구로 남긴다.
   const issuedByNode = findCANode(issuerAgg, issuedById);
 
@@ -256,17 +293,20 @@ function CertificatesBody() {
       <h1 className="sr-only">인증서</h1>
 
       {/*
-        같은 인벤토리를 두 관점으로 본다 — 행 단위 목록 / CA 계층(발급 기관).
-        제목 블록을 없앤 대신 이 줄이 화면 머리 역할을 한다: 건수와 화면 액션을
-        탭과 같은 줄에 얹어 세로를 한 줄도 더 쓰지 않는다.
+        같은 인벤토리를 세 관점으로 본다 — 행 단위 목록 / 호스트(서버) /
+        CA 계층(발급 기관). 제목 블록을 없앤 대신 이 줄이 화면 머리 역할을 한다:
+        건수와 화면 액션을 탭과 같은 줄에 얹어 세로를 한 줄도 더 쓰지 않는다.
       */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <Tabs
           value={view}
-          onValueChange={(v) => setQuery({ view: v === "issuers" ? v : null }, false)}
+          onValueChange={(v) =>
+            setQuery({ view: v === "list" ? null : v }, false)
+          }
         >
           <TabsList>
             <TabsTrigger value="list">목록</TabsTrigger>
+            <TabsTrigger value="servers">서버</TabsTrigger>
             <TabsTrigger value="issuers">발급 기관</TabsTrigger>
           </TabsList>
         </Tabs>
@@ -305,6 +345,8 @@ function CertificatesBody() {
 
       {view === "issuers" ? (
         <IssuersView agg={issuerAgg} error={issuerAggError} />
+      ) : view === "servers" ? (
+        <ServersView setQuery={setQuery} />
       ) : (
         <>
       <div className="flex flex-wrap items-center gap-2">
@@ -403,6 +445,56 @@ function CertificatesBody() {
           </Select>
         )}
         {/*
+          위험 필터 2종 — 심각도(최고 심각도 기준, 겹침 없이 분할)와 판정 항목
+          (한 인증서가 여러 항목에 걸린다). 건수는 집계 API가 준 값이고 교체된
+          인증서를 뺀 수라 목록의 기본값(교체 제외)과 같은 모수다 — "교체된 인증서
+          포함"을 켜면 목록 건수가 라벨보다 커질 수 있다.
+        */}
+        {riskAgg && (
+          <Select
+            value={isRiskSeverity(riskSeverity) ? riskSeverity : "all"}
+            onValueChange={(v) =>
+              setQuery({ [RISK_PARAM]: v === "all" ? null : v })
+            }
+          >
+            <SelectTrigger className="w-[160px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">위험: 전체</SelectItem>
+              {RISK_SEVERITY_ORDER.map((sev) => {
+                const count =
+                  riskAgg.severities.find((s) => s.severity === sev)?.count ?? 0;
+                return (
+                  <SelectItem key={sev} value={sev}>
+                    {RISK_SEVERITY_LABELS[sev]} ({count.toLocaleString()})
+                  </SelectItem>
+                );
+              })}
+            </SelectContent>
+          </Select>
+        )}
+        {riskAgg && (
+          <Select
+            value={isRiskCode(riskCode) ? riskCode : "all"}
+            onValueChange={(v) =>
+              setQuery({ [RISK_CODE_PARAM]: v === "all" ? null : v })
+            }
+          >
+            <SelectTrigger className="w-[200px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">판정 항목: 전체</SelectItem>
+              {riskAgg.findings.map((f) => (
+                <SelectItem key={f.code} value={f.code}>
+                  {f.title} ({f.count.toLocaleString()})
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+        {/*
           교체된 인증서는 기본으로 숨긴다 — 갱신이 끝나 죽은 인증서가 목록·만료
           집계에 섞이면 이미 처리한 건에 대한 알림처럼 신뢰를 깎는다. 다만 이력
           추적은 필요하므로 토글로 되돌릴 수 있게 두고 상태는 URL에 남긴다.
@@ -484,6 +576,11 @@ function CertificatesBody() {
                   <SortHead field="common_name" sort={sort} order={order} setQuery={setQuery} />
                   <TableHead className="text-right">SAN</TableHead>
                   <TableHead>상태</TableHead>
+                  {/*
+                    위험은 조회 시 계산된 판정이라 저장 컬럼이 없다 — 서버 정렬
+                    화이트리스트에도 없어 정렬 대신 필터로만 좁힌다.
+                  */}
+                  <TableHead>위험</TableHead>
                   <SortHead field="not_after" sort={sort} order={order} setQuery={setQuery} />
                   <TableHead>키</TableHead>
                   <TableHead>서명 알고리즘</TableHead>
@@ -510,6 +607,9 @@ function CertificatesBody() {
                     </TableCell>
                     <TableCell>
                       <CertStatusBadge status={c.status} notAfter={c.not_after} />
+                    </TableCell>
+                    <TableCell>
+                      <RiskSummaryBadge risk={c.risk} />
                     </TableCell>
                     <TableCell className="whitespace-nowrap">
                       <span className="font-mono text-xs tabular-nums">

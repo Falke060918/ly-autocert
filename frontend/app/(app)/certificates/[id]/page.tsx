@@ -18,6 +18,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { CertStatusBadge, DdayText } from "@/components/cert-badges";
+import { RiskFindingRow, RiskSeverityBadge } from "@/components/risk-badges";
 import { FreshnessText } from "@/components/freshness";
 import { useTicker } from "@/components/notification-bell";
 import {
@@ -31,6 +32,8 @@ import {
   ISSUED_BY_PARAM,
   type IssuerAggregationResponse,
 } from "@/lib/issuers";
+import { riskIssues } from "@/lib/risks";
+import { deploymentSummary, locationServiceState } from "@/lib/servers";
 import { dnCommonName, formatDate, formatDateTime, isSelfSigned } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { findCANode } from "../issuers-view";
@@ -171,6 +174,15 @@ export default function CertificateDetailPage() {
   const visibleLocations = showRemoved
     ? [...liveLocations, ...removedLocations]
     : liveLocations;
+  /*
+   * 배포 현황 — "몇 곳에 깔려 있나"가 아니라 "그중 지금도 이 인증서를 내주는 곳이
+   * 몇 곳인가"가 갱신 작업의 실제 남은 일이다. 판정 근거는 엔드포인트에서 마지막으로
+   * 관측된 지문(current_fingerprint)이고, 관측이 없으면 '확인 안 됨'으로 남긴다 —
+   * 모르는 것을 서비스 중으로 세면 갱신을 끝난 일로 착각하게 된다.
+   */
+  const deployment = deploymentSummary(data.locations, c.fingerprint_sha256);
+  // ok 등급 항목은 "문제없음"의 근거라 경고 목록에서 뺀다.
+  const riskFindings = riskIssues(data.risk);
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-4">
@@ -200,6 +212,20 @@ export default function CertificateDetailPage() {
             교체됨
           </Badge>
         )}
+        {/*
+          위험 판정은 조회 시 계산된 값이다. 여기서는 판정을 실제로 돌렸다는 사실이
+          필요하므로 항목이 하나도 없을 때(ok)도 배지를 세운다.
+        */}
+        <RiskSeverityBadge
+          severity={data.risk.severity}
+          count={riskFindings.length}
+          showOK
+          title={
+            riskFindings.length > 0
+              ? riskFindings.map((f) => f.title).join(" · ")
+              : "위험 판정 항목이 없습니다."
+          }
+        />
         <DdayText notAfter={c.not_after} />
       </div>
 
@@ -232,9 +258,25 @@ export default function CertificateDetailPage() {
           등록 <b className="font-medium text-foreground">{formatDateTime(c.created_at)}</b>
         </span>
         <span>
-          설치 위치 <b className="font-medium text-foreground">{liveLocations.length}</b>곳
+          배포 <b className="font-medium text-foreground">{deployment.deployed}</b>곳
           {removedLocations.length > 0 && ` (이전 ${removedLocations.length}곳)`}
         </span>
+        <span>
+          서비스 중 <b className="font-medium text-foreground">{deployment.serving}</b>
+        </span>
+        <span>
+          교체됨 <b className="font-medium text-foreground">{deployment.replaced}</b>
+        </span>
+        {/*
+          합이 맞지 않으면 화면이 거짓말한다 — 관측이 없어 판정하지 못한 위치는
+          숨기지 않고 그대로 드러낸다(배포 = 서비스 중 + 교체됨 + 확인 안 됨).
+        */}
+        {deployment.unknown > 0 && (
+          <span title="이 위치의 엔드포인트에서 관측된 인증서 지문이 없습니다. 재스캔이 꺼져 있거나 아직 한 번도 성공하지 못했습니다.">
+            확인 안 됨{" "}
+            <b className="font-medium text-foreground">{deployment.unknown}</b>
+          </span>
+        )}
         <span>
           자동 갱신{" "}
           <b className="font-medium text-foreground">
@@ -245,6 +287,33 @@ export default function CertificateDetailPage() {
 
       <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
         <div className="grid gap-4">
+          {/*
+            위험 판정 — 저장값이 아니라 조회 시 계산된 값이라 기준선이 바뀌면
+            같은 인증서라도 결과가 달라진다. 항목이 없을 때도 카드를 없애지 않는다:
+            "판정을 안 돌린 것"과 "돌렸는데 문제가 없는 것"은 다른 사실이다.
+          */}
+          <Card className="gap-0 overflow-hidden py-0">
+            <div className="flex flex-wrap items-baseline gap-2 border-b px-4 py-3">
+              <h2 className="text-sm font-semibold tracking-tight">위험 판정</h2>
+              <span className="text-xs text-muted-foreground">
+                {riskFindings.length > 0
+                  ? `${riskFindings.length}개 항목`
+                  : "조회 시점 계산"}
+              </span>
+            </div>
+            {riskFindings.length === 0 ? (
+              <p className="px-4 py-6 text-center text-sm text-muted-foreground">
+                점검할 항목이 없습니다.
+              </p>
+            ) : (
+              <div className="space-y-3 p-4">
+                {riskFindings.map((f) => (
+                  <RiskFindingRow key={f.code} finding={f} />
+                ))}
+              </div>
+            )}
+          </Card>
+
           <Card className="gap-0 overflow-hidden py-0">
             <div className="border-b px-4 py-3">
               <h2 className="text-sm font-semibold tracking-tight">기본 정보</h2>
@@ -457,6 +526,8 @@ export default function CertificateDetailPage() {
                   <TableHead className="text-right">포트</TableHead>
                   <TableHead>TLS</TableHead>
                   <TableHead>최근 확인</TableHead>
+                  {/* 이 자리에 지금도 이 인증서가 있는지 — 관측 지문 기준. */}
+                  <TableHead>현재</TableHead>
                   <TableHead>배포 상태</TableHead>
                 </TableRow>
               </TableHeader>
@@ -513,6 +584,16 @@ export default function CertificateDetailPage() {
                         )}
                       </TableCell>
                       <TableCell>
+                        {removed ? (
+                          <span className="text-xs text-muted-foreground/60">—</span>
+                        ) : (
+                          <LocationServiceCell
+                            location={l}
+                            certificateFingerprint={c.fingerprint_sha256}
+                          />
+                        )}
+                      </TableCell>
+                      <TableCell>
                         <Badge variant="outline" className={dep.className}>
                           {dep.label}
                         </Badge>
@@ -526,6 +607,48 @@ export default function CertificateDetailPage() {
           </Card>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * 설치 위치 1행의 서비스 상태 — "이 자리에 지금도 이 인증서가 있는가".
+ * 관측 지문이 없으면 '확인 안 됨'으로 남긴다. 모르는 것을 서비스 중으로 표시하면
+ * 이미 교체된 서버를 아직 남은 일로, 남은 서버를 끝난 일로 보게 된다.
+ */
+function LocationServiceCell({
+  location,
+  certificateFingerprint,
+}: {
+  location: CertificateLocation;
+  certificateFingerprint: string;
+}) {
+  const state = locationServiceState(location, certificateFingerprint);
+  if (state === "serving") {
+    return <Badge variant="ok">서비스 중</Badge>;
+  }
+  if (state === "unknown") {
+    return (
+      <span
+        className="text-xs text-muted-foreground/70"
+        title="이 엔드포인트에서 관측된 인증서 지문이 없습니다. 재스캔이 꺼져 있거나 아직 한 번도 성공하지 못했습니다."
+      >
+        확인 안 됨
+      </span>
+    );
+  }
+  // 교체됨 — 관측된 인증서가 인벤토리에 있으면 그쪽으로 건너갈 수 있게 한다.
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <Badge variant="warn">교체됨</Badge>
+      {location.current_certificate_id && (
+        <Link
+          href={`/certificates/${location.current_certificate_id}`}
+          className="text-xs text-muted-foreground hover:text-foreground hover:underline hover:underline-offset-3"
+        >
+          현재 인증서 →
+        </Link>
+      )}
     </div>
   );
 }
