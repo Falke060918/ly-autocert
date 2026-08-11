@@ -3,10 +3,11 @@ package api
 // 정기 스캔 스케줄 API 통합 테스트 (0019).
 // TEST_DATABASE_URL 미설정 시 스킵 (전용 테스트 DB — 메인 DB에 돌리지 않는다).
 //
-// 검증 축 4개: ① 스케줄러 미배선에서도 조회·설정 변경이 살아 있고 실행만 503인가
+// 검증 축 5개: ① 스케줄러 미배선에서도 조회·설정 변경이 살아 있고 실행만 503인가
 // ② 권한 게이트가 스캔 발주와 같은 3역할인가 ③ **포트 문법 검증자가 실제로
 // 주입되었는가**(미주입이면 "비었는지"까지만 보므로 깨진 사양이 통과한다)
-// ④ 설정 변경이 discovery.schedule 감사 이벤트를 남기는가.
+// ④ 설정 변경이 discovery.schedule 감사 이벤트를 남기는가
+// ⑤ 생성·삭제가 **preset 전용**인가(full·registered는 409, preset은 N행 등록 가능).
 
 import (
 	"context"
@@ -225,6 +226,186 @@ func TestScanScheduleAPIWithoutWiring(t *testing.T) {
 		}
 		if code := errorCode(t, resp); code != "schedule_unavailable" {
 			t.Errorf("code = %q, want schedule_unavailable", code)
+		}
+	})
+}
+
+// TestScanSchedulePresetLifecycle은 생성·삭제 라우트를 고정한다.
+// **preset 전용**이라는 규칙이 API 표면에서 깨지면 시드 1행 정본이 무너진다 —
+// full을 하나 더 만들거나 registered를 지우면 스케줄러가 어느 행을 볼지 알 수 없다.
+func TestScanSchedulePresetLifecycle(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	operatorToken := newScheduleOperator(t, env, "schedule-operator-preset")
+	pw := randomPassword(t)
+	if _, err := env.svc.CreateUser(ctx, "schedule-viewer-preset", pw, nil,
+		domain.RoleViewer, nil, auth.AuditMeta{}); err != nil {
+		t.Fatalf("create viewer: %v", err)
+	}
+	viewerToken, status := env.login(t, "schedule-viewer-preset", pw)
+	if status != http.StatusOK {
+		t.Fatalf("login = %d, want 200", status)
+	}
+
+	// 테스트가 만든 preset은 시드 행과 달리 남으면 다른 테스트의 목록에 섞인다.
+	t.Cleanup(func() {
+		_, _ = env.pool.Exec(
+			`DELETE FROM scan_schedules WHERE kind = 'preset' AND name LIKE 'preset-test-%'`)
+	})
+
+	body := func(name string, extra map[string]any) map[string]any {
+		req := map[string]any{
+			"name": name, "enabled": true,
+			"targets": []string{"198.51.100.0/24"}, "port_spec": "web",
+		}
+		for k, v := range extra {
+			req[k] = v
+		}
+		return req
+	}
+
+	t.Run("viewer cannot create", func(t *testing.T) {
+		resp := env.do(t, http.MethodPost, "/api/v1/discovery/schedules", viewerToken,
+			body("preset-test-forbidden", nil))
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("viewer create = %d, want 403 (스캔 발주와 같은 3역할)", resp.StatusCode)
+		}
+	})
+
+	t.Run("only preset can be created", func(t *testing.T) {
+		resp := env.do(t, http.MethodPost, "/api/v1/discovery/schedules", operatorToken,
+			body("preset-test-kind", map[string]any{"kind": "full"}))
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("create(kind=full) = %d, want 400", resp.StatusCode)
+		}
+		if code := errorCode(t, resp); code != "invalid_request" {
+			t.Errorf("code = %q, want invalid_request", code)
+		}
+	})
+
+	t.Run("broken port spec is rejected — validator is injected", func(t *testing.T) {
+		resp := env.do(t, http.MethodPost, "/api/v1/discovery/schedules", operatorToken,
+			body("preset-test-badspec", map[string]any{"port_spec": "443,,8443"}))
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("create = %d, want 400 (포트 사양 파서가 걸러야 한다)", resp.StatusCode)
+		}
+		if code := errorCode(t, resp); code != "invalid_schedule" {
+			t.Errorf("code = %q, want invalid_schedule", code)
+		}
+	})
+
+	t.Run("unknown field is rejected", func(t *testing.T) {
+		resp := env.do(t, http.MethodPost, "/api/v1/discovery/schedules", operatorToken,
+			body("preset-test-unknown", map[string]any{"portspec": "web"}))
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("create = %d, want 400", resp.StatusCode)
+		}
+	})
+
+	t.Run("enabling without targets is rejected", func(t *testing.T) {
+		resp := env.do(t, http.MethodPost, "/api/v1/discovery/schedules", operatorToken,
+			body("preset-test-notargets", map[string]any{"targets": []string{}}))
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("create = %d, want 400 (대상 없이 켤 수 없다)", resp.StatusCode)
+		}
+	})
+
+	t.Run("interval below one hour is rejected", func(t *testing.T) {
+		resp := env.do(t, http.MethodPost, "/api/v1/discovery/schedules", operatorToken,
+			body("preset-test-fast", map[string]any{"interval_seconds": 60}))
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("create = %d, want 400 (주기 하한 1시간)", resp.StatusCode)
+		}
+	})
+
+	var created store.ScanSchedule
+	t.Run("create persists as preset and is audited", func(t *testing.T) {
+		before := env.auditCount(t, store.EventDiscoverySchedule, domain.AuditSuccess)
+		resp := env.do(t, http.MethodPost, "/api/v1/discovery/schedules", operatorToken,
+			body("preset-test-a", map[string]any{"interval_seconds": 7200}))
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create = %d, want 201", resp.StatusCode)
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if created.Kind != store.ScheduleKindPreset {
+			t.Errorf("kind = %q, want preset", created.Kind)
+		}
+		// 켜서 만들어도 즉시 돌지 않는다 — 예정만 잡힌다.
+		if created.NextRunAt == nil {
+			t.Error("next_run_at이 비었다 — 켜서 만들면 다음 실행이 잡혀야 한다")
+		}
+		if after := env.auditCount(t, store.EventDiscoverySchedule, domain.AuditSuccess); after != before+1 {
+			t.Errorf("감사 이벤트 %d → %d, want +1", before, after)
+		}
+	})
+
+	t.Run("preset can be registered more than once", func(t *testing.T) {
+		resp := env.do(t, http.MethodPost, "/api/v1/discovery/schedules", operatorToken,
+			body("preset-test-b", nil))
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("second create = %d, want 201 (preset은 N행)", resp.StatusCode)
+		}
+		presets := 0
+		for _, it := range listSchedules(t, env, operatorToken).Items {
+			if it.Kind == store.ScheduleKindPreset {
+				presets++
+			}
+		}
+		if presets < 2 {
+			t.Errorf("preset %d건, want 2건 이상", presets)
+		}
+	})
+
+	t.Run("seeded kinds cannot be deleted", func(t *testing.T) {
+		var fullID string
+		if err := env.pool.QueryRow(
+			`SELECT id::text FROM scan_schedules WHERE kind = 'full'`).Scan(&fullID); err != nil {
+			t.Fatalf("read full schedule: %v", err)
+		}
+		resp := env.do(t, http.MethodDelete, "/api/v1/discovery/schedules/"+fullID, operatorToken, nil)
+		if resp.StatusCode != http.StatusConflict {
+			t.Fatalf("delete(full) = %d, want 409", resp.StatusCode)
+		}
+		if code := errorCode(t, resp); code != "schedule_kind" {
+			t.Errorf("code = %q, want schedule_kind", code)
+		}
+	})
+
+	t.Run("unknown ids are 404", func(t *testing.T) {
+		resp := env.do(t, http.MethodDelete,
+			"/api/v1/discovery/schedules/3f2504e0-4f89-11d3-9a0c-0305e82c3399", operatorToken, nil)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("delete(unknown) = %d, want 404", resp.StatusCode)
+		}
+		resp = env.do(t, http.MethodDelete, "/api/v1/discovery/schedules/not-a-uuid", operatorToken, nil)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("delete(bad id) = %d, want 404", resp.StatusCode)
+		}
+	})
+
+	t.Run("viewer cannot delete", func(t *testing.T) {
+		resp := env.do(t, http.MethodDelete, "/api/v1/discovery/schedules/"+created.ID, viewerToken, nil)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("viewer delete = %d, want 403", resp.StatusCode)
+		}
+	})
+
+	t.Run("delete removes the row and is audited", func(t *testing.T) {
+		before := env.auditCount(t, store.EventDiscoverySchedule, domain.AuditSuccess)
+		resp := env.do(t, http.MethodDelete, "/api/v1/discovery/schedules/"+created.ID, operatorToken, nil)
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("delete = %d, want 204", resp.StatusCode)
+		}
+		if after := env.auditCount(t, store.EventDiscoverySchedule, domain.AuditSuccess); after != before+1 {
+			t.Errorf("감사 이벤트 %d → %d, want +1", before, after)
+		}
+		for _, it := range listSchedules(t, env, operatorToken).Items {
+			if it.ID == created.ID {
+				t.Fatal("삭제된 스케줄이 목록에 남아 있다")
+			}
 		}
 	})
 }

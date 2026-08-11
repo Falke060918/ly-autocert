@@ -222,12 +222,17 @@ func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorC
 	s.protected("GET /api/v1/discovery/rescan/status", s.handleGetRescanStatus, domain.AllRoles...)
 	s.protected("POST /api/v1/discovery/rescan/run", s.handleRunRescan,
 		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
-	// 정기 스캔 스케줄 (0019). 조회는 읽기 전용이라 전 역할, 설정 변경·실행·취소는
-	// 스캔 발주와 같은 3역할이다 — 새 역할 집합을 만들지 않는다.
-	// 변경 3종은 discovery.schedule 감사 이벤트를 store가 같은 트랜잭션으로 남긴다.
+	// 정기 스캔 스케줄 (0019). 조회는 읽기 전용이라 전 역할, 설정 변경·생성·삭제·
+	// 실행·취소는 스캔 발주와 같은 3역할이다 — 새 역할 집합을 만들지 않는다.
+	// 변경 5종은 discovery.schedule 감사 이벤트를 store가 같은 트랜잭션으로 남긴다.
 	// 리터럴 세그먼트(runs)가 {id}보다 우선 매칭된다 (Go 1.22+ ServeMux 규칙).
 	s.protected("GET /api/v1/discovery/schedules", s.handleListScanSchedules, domain.AllRoles...)
 	s.protected("PATCH /api/v1/discovery/schedules", s.handleUpdateScanSchedule,
+		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
+	// 생성·삭제는 preset 전용이다 — full·registered는 시드 1행이 정본이라 store가 막는다.
+	s.protected("POST /api/v1/discovery/schedules", s.handleCreateScanSchedule,
+		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
+	s.protected("DELETE /api/v1/discovery/schedules/{id}", s.handleDeleteScanSchedule,
 		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)
 	s.protected("POST /api/v1/discovery/schedules/{id}/run", s.handleRunScanSchedule,
 		domain.RoleSystemAdministrator, domain.RolePKIAdministrator, domain.RoleOperator)

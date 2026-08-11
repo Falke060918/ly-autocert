@@ -2,9 +2,12 @@ package api
 
 // 정기 스캔 스케줄 API (0019 scan_schedules).
 //
-// 노출면은 넷이다: 목록 조회 / 설정 부분 수정 / '지금 실행' / 실행 취소.
-// 생성·삭제 라우트는 아직 없다 — full·registered는 시드 1행이 정본이고 preset
-// 등록 화면이 나오는 시점에 함께 연다(설계상 store에는 이미 있다).
+// 노출면은 여섯이다: 목록 조회 / 설정 부분 수정 / preset 생성 / preset 삭제 /
+// '지금 실행' / 실행 취소.
+//
+// **생성·삭제는 preset 전용**이다. full·registered는 0019가 시드한 1행이 정본이라
+// 만들거나 지울 수 없고 설정만 바꾼다 — "쓰지 않음"은 삭제가 아니라 비활성화다.
+// 그 판정은 store(ErrScanScheduleKind)가 하고 여기서는 409로 옮긴다.
 //
 // 발주 자체는 이 패키지가 하지 않는다. tick 루프와 '지금 실행'은 discovery가
 // 갖고 있고 배선은 cmd/server가 한다 — 재스캔(RescanController)과 같은 실패 격리
@@ -121,6 +124,104 @@ func (s *Server) handleListScanSchedules(w http.ResponseWriter, r *http.Request)
 		Items:     items,
 		Wired:     s.schedules != nil,
 	})
+}
+
+// createScanScheduleRequest는 POST 본문이다(preset 전용).
+//
+// PATCH와 달리 null 명시로 "기본값 되돌림"을 표현할 일이 없다 — 아직 값이 없는
+// 신규 행이라 "키 없음"이 곧 서버 기본값이다. 그래서 json.RawMessage가 아니라
+// 평범한 포인터를 쓴다.
+type createScanScheduleRequest struct {
+	// Kind는 생략할 수 있고, 보낸다면 preset이어야 한다 — 값을 받아 두면
+	// "full을 하나 더 만들려 했다"가 400으로 드러난다(무시하면 조용히 preset이 생긴다).
+	Kind            *string  `json:"kind"`
+	Name            string   `json:"name"`
+	Enabled         bool     `json:"enabled"`
+	Targets         []string `json:"targets"`
+	PortSpec        string   `json:"port_spec"`
+	IntervalSeconds *int     `json:"interval_seconds"`
+	RatePPS         *int     `json:"rate_pps"`
+	ExecutorScope   string   `json:"executor_scope"`
+}
+
+// handleCreateScanSchedule은 POST /api/v1/discovery/schedules다.
+// preset 스케줄 1건을 만들고 discovery.schedule 감사 이벤트를 남긴다(store 동일-tx).
+// 허용 역할은 라우트에서 강제한다(설정 변경과 같은 3역할).
+//
+// enabled로 만들어도 즉시 돌지 않는다 — 첫 실행은 now()+주기다(store 규약).
+// 바로 돌리려면 '지금 실행'을 따로 누른다.
+func (s *Server) handleCreateScanSchedule(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var req createScanScheduleRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxScheduleRequestBytes))
+	// 모르는 필드는 거부한다 — PATCH와 같은 규약이다.
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request",
+			"요청 본문을 JSON으로 파싱할 수 없습니다.")
+		return
+	}
+	if req.Kind != nil && strings.TrimSpace(*req.Kind) != store.ScheduleKindPreset {
+		writeError(w, r, http.StatusBadRequest, "invalid_request",
+			"새로 만들 수 있는 것은 사전 설정(preset) 정기 스캔뿐입니다. "+
+				"전체·등록된 인증서 정기 스캔은 기본 1건이 정본이라 설정만 바꿉니다.")
+		return
+	}
+
+	created, err := s.store.CreateScanSchedule(ctx, store.ScanScheduleInput{
+		Name:            req.Name,
+		Enabled:         req.Enabled,
+		Targets:         req.Targets,
+		PortSpec:        req.PortSpec,
+		IntervalSeconds: req.IntervalSeconds,
+		RatePPS:         req.RatePPS,
+		ExecutorScope:   req.ExecutorScope,
+		// 포트 문법 검증자 주입 — 비면 store는 "비었는지"까지만 본다.
+		ValidatePortSpec: scheduleSpecValidator,
+		Actor:            s.scanScheduleActor(r),
+	})
+	switch {
+	case errors.Is(err, store.ErrScanScheduleInput):
+		writeError(w, r, http.StatusBadRequest, "invalid_schedule", scheduleInputMessage(err))
+		return
+	case err != nil:
+		slog.Error("discovery: create scan schedule failed", "error", err.Error(),
+			"request_id", deref(requestIDFrom(ctx)))
+		writeError(w, r, http.StatusInternalServerError, "internal_error",
+			"정기 스캔 설정을 만들 수 없습니다.")
+		return
+	}
+	writeJSON(w, http.StatusCreated, created)
+}
+
+// handleDeleteScanSchedule은 DELETE /api/v1/discovery/schedules/{id}다.
+// preset만 지울 수 있고 full·registered는 409다(비활성화가 그 자리다).
+// 실행 이력은 함께 사라지지만, 그 실행이 발주했던 스윕은 남는다 — 도는 중이면
+// 스윕 목록에서 따로 취소한다(schedule_id만 NULL이 된다).
+func (s *Server) handleDeleteScanSchedule(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !isUUID(id) {
+		writeError(w, r, http.StatusNotFound, "not_found", "정기 스캔 설정을 찾을 수 없습니다.")
+		return
+	}
+
+	err := s.store.DeleteScanSchedule(r.Context(), id, s.scanScheduleActor(r))
+	switch {
+	case errors.Is(err, store.ErrScanScheduleNotFound):
+		writeError(w, r, http.StatusNotFound, "not_found", "정기 스캔 설정을 찾을 수 없습니다.")
+		return
+	case errors.Is(err, store.ErrScanScheduleKind):
+		writeError(w, r, http.StatusConflict, "schedule_kind",
+			"전체·등록된 인증서 정기 스캔은 삭제할 수 없습니다. 대신 비활성화하십시오.")
+		return
+	case err != nil:
+		slog.Error("discovery: delete scan schedule failed", "error", err.Error(),
+			"request_id", deref(requestIDFrom(r.Context())))
+		writeError(w, r, http.StatusInternalServerError, "internal_error",
+			"정기 스캔 설정을 삭제할 수 없습니다.")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // updateScanScheduleRequest는 PATCH 본문이다. 대상은 id 또는 kind로 지목한다 —
