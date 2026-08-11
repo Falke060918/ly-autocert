@@ -336,12 +336,8 @@ export default function DiscoveryPage() {
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-4">
-      <div>
-        <h1 className="text-lg font-semibold tracking-tight">Discovery</h1>
-        <p className="text-[13px] text-muted-foreground">
-          에이전트 없이 네트워크 TLS 스캔으로 인증서를 찾아 인벤토리에 등록합니다.
-        </p>
-      </div>
+      {/* 제목은 화면에서 걷어냈지만 문서 구조(h1)는 스크린리더용으로 남긴다. */}
+      <h1 className="sr-only">Discovery</h1>
 
       <div className="grid items-start gap-4 lg:grid-cols-[340px_minmax(0,1fr)]">
         <RunCard

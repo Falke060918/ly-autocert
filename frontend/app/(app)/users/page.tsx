@@ -198,20 +198,10 @@ function UsersBody() {
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-4">
-      <div className="flex items-end justify-between gap-4">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight">사용자</h1>
-          <p className="text-[13px] text-muted-foreground">
-            계정과 역할을 관리합니다. 퇴사·직무 변경 시 계정을 비활성화하면 이후
-            로그인이 즉시 거부됩니다.
-          </p>
-        </div>
-        <Button onClick={() => setCreateOpen(true)}>
-          <UserPlus data-icon="inline-start" />
-          사용자 추가
-        </Button>
-      </div>
+      {/* 제목은 화면에서 걷어냈지만 문서 구조(h1)는 스크린리더용으로 남긴다. */}
+      <h1 className="sr-only">사용자</h1>
 
+      {/* 제목 블록을 없앤 대신 필터 줄이 화면 머리다 — 액션도 같은 줄에 얹는다. */}
       <div className="flex flex-wrap items-center gap-2">
         <SearchField initial={q} onSearch={(v) => setQuery({ q: v })} />
         <Select
@@ -243,16 +233,21 @@ function UsersBody() {
             <SelectItem value="inactive">비활성</SelectItem>
           </SelectContent>
         </Select>
-        {hasFilter && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="ml-auto"
-            onClick={() => router.replace(pathname)}
-          >
-            초기화
+        <div className="ml-auto flex items-center gap-2">
+          {hasFilter && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => router.replace(pathname)}
+            >
+              초기화
+            </Button>
+          )}
+          <Button size="sm" onClick={() => setCreateOpen(true)}>
+            <UserPlus data-icon="inline-start" />
+            사용자 추가
           </Button>
-        )}
+        </div>
       </div>
 
       {error && (

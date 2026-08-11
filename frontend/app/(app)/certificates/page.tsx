@@ -252,17 +252,34 @@ function CertificatesBody() {
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-4">
-      <div className="flex items-start gap-3">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight">인증서</h1>
-          <p className="text-[13px] text-muted-foreground">
-            {data ? `조건에 맞는 인증서 ${data.total.toLocaleString()}건` : "인벤토리 목록"}
-          </p>
-        </div>
+      {/* 제목은 화면에서 걷어냈지만 문서 구조(h1)는 스크린리더용으로 남긴다. */}
+      <h1 className="sr-only">인증서</h1>
+
+      {/*
+        같은 인벤토리를 두 관점으로 본다 — 행 단위 목록 / CA 계층(발급 기관).
+        제목 블록을 없앤 대신 이 줄이 화면 머리 역할을 한다: 건수와 화면 액션을
+        탭과 같은 줄에 얹어 세로를 한 줄도 더 쓰지 않는다.
+      */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <Tabs
+          value={view}
+          onValueChange={(v) => setQuery({ view: v === "issuers" ? v : null }, false)}
+        >
+          <TabsList>
+            <TabsTrigger value="list">목록</TabsTrigger>
+            <TabsTrigger value="issuers">발급 기관</TabsTrigger>
+          </TabsList>
+        </Tabs>
+        {view === "list" && data && (
+          <span className="text-[13px] text-muted-foreground">
+            조건에 맞는 인증서 {data.total.toLocaleString()}건
+          </span>
+        )}
         <div className="ml-auto flex items-center gap-2">
           {canExport && (
             <Button
               variant="outline"
+              size="sm"
               disabled={exporting || !data || data.total === 0}
               onClick={() => void exportCsv()}
             >
@@ -271,7 +288,7 @@ function CertificatesBody() {
             </Button>
           )}
           {canManage && (
-            <Button onClick={() => setUploadOpen((v) => !v)}>
+            <Button size="sm" onClick={() => setUploadOpen((v) => !v)}>
               <Upload data-icon="inline-start" />
               인증서 등록
             </Button>
@@ -285,17 +302,6 @@ function CertificatesBody() {
           onClose={() => setUploadOpen(false)}
         />
       )}
-
-      {/* 같은 인벤토리를 두 관점으로 본다 — 행 단위 목록 / CA 계층(발급 기관). */}
-      <Tabs
-        value={view}
-        onValueChange={(v) => setQuery({ view: v === "issuers" ? v : null }, false)}
-      >
-        <TabsList>
-          <TabsTrigger value="list">목록</TabsTrigger>
-          <TabsTrigger value="issuers">발급 기관</TabsTrigger>
-        </TabsList>
-      </Tabs>
 
       {view === "issuers" ? (
         <IssuersView agg={issuerAgg} error={issuerAggError} />

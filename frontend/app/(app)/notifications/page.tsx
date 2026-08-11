@@ -185,25 +185,8 @@ export default function NotificationsPage() {
 
   return (
     <div className="mx-auto max-w-[1000px] space-y-4">
-      <div className="flex items-end justify-between gap-4">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight">알림</h1>
-          <p className="text-[13px] text-muted-foreground">
-            만료가 임박한 인증서를 알림 정책이 감지해 보낸 내역입니다. 내용은
-            사건 시점에 굳어 있어 인증서가 지워져도 그대로 남습니다.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={reload} disabled={busy}>
-            <RefreshCw data-icon="inline-start" />
-            새로 고침
-          </Button>
-          <Button size="sm" onClick={markAll} disabled={busy || unread === 0}>
-            <CheckCheck data-icon="inline-start" />
-            전체 읽음
-          </Button>
-        </div>
-      </div>
+      {/* 제목은 화면에서 걷어냈지만 문서 구조(h1)는 스크린리더용으로 남긴다. */}
+      <h1 className="sr-only">알림</h1>
 
       {loadError && (
         <Alert variant="destructive">
@@ -219,18 +202,31 @@ export default function NotificationsPage() {
       )}
 
       <Tabs value={tab} onValueChange={switchTab}>
-        <TabsList>
-          {TABS.map((t) => (
-            <TabsTrigger key={t.value} value={t.value}>
-              {t.label}
-              {t.value === "unread" && unread > 0 && (
-                <span className="ml-1.5 rounded-full bg-red-600 px-1.5 text-[10px] leading-4 font-medium text-white tabular-nums">
-                  {unread > 99 ? "99+" : unread}
-                </span>
-              )}
-            </TabsTrigger>
-          ))}
-        </TabsList>
+        {/* 제목 블록을 없앤 대신 탭 줄이 화면 머리다 — 액션도 같은 줄에 얹는다. */}
+        <div className="flex flex-wrap items-center gap-2">
+          <TabsList>
+            {TABS.map((t) => (
+              <TabsTrigger key={t.value} value={t.value}>
+                {t.label}
+                {t.value === "unread" && unread > 0 && (
+                  <span className="ml-1.5 rounded-full bg-red-600 px-1.5 text-[10px] leading-4 font-medium text-white tabular-nums">
+                    {unread > 99 ? "99+" : unread}
+                  </span>
+                )}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+          <div className="ml-auto flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={reload} disabled={busy}>
+              <RefreshCw data-icon="inline-start" />
+              새로 고침
+            </Button>
+            <Button size="sm" onClick={markAll} disabled={busy || unread === 0}>
+              <CheckCheck data-icon="inline-start" />
+              전체 읽음
+            </Button>
+          </div>
+        </div>
 
         <TabsContent value={tab} className="mt-3">
           {!loaded && !loadError && (

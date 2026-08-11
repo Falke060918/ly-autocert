@@ -173,24 +173,20 @@ export default function AccessSettingsPage() {
 
   return (
     <div className="mx-auto max-w-[1100px] space-y-4">
-      <div className="flex items-end justify-between gap-4">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight">접근 제한</h1>
-          <p className="text-[13px] text-muted-foreground">
-            이 콘솔에 접속할 수 있는 출발지 IP를 제한합니다. 허용 목록이 비어
-            있으면 제한이 없습니다.
-          </p>
-        </div>
-        <Button onClick={() => setAddOpen(true)}>
-          <Plus data-icon="inline-start" />
-          허용 IP 추가
-        </Button>
-      </div>
+      {/* 제목은 화면에서 걷어냈지만 문서 구조(h1)는 스크린리더용으로 남긴다. */}
+      <h1 className="sr-only">접근 제한</h1>
 
+      {/* 제목 블록을 없앤 대신 현재 접속 카드의 머리줄이 화면 액션을 받는다. */}
       <CurrentAccessCard
         access={access}
         activeCount={activeCount}
         covered={covered}
+        action={
+          <Button size="sm" className="ml-auto" onClick={() => setAddOpen(true)}>
+            <Plus data-icon="inline-start" />
+            허용 IP 추가
+          </Button>
+        }
       />
 
       {error && (
@@ -331,17 +327,27 @@ function CurrentAccessCard({
   access,
   activeCount,
   covered,
+  action,
 }: {
   access: AdminIPAccessState | null;
   activeCount: number;
   covered: boolean;
+  /** 화면 액션(허용 IP 추가) — 제목 줄이 없어져 이 카드 머리줄이 받는다. */
+  action?: React.ReactNode;
 }) {
   if (access == null) {
-    return <Skeleton className="h-24 rounded-lg" />;
+    // 조회 실패면 이 카드는 스켈레톤에서 멈춘다 — 액션까지 같이 사라지면
+    // 규칙을 추가할 길이 없어지므로 옆에 세워 둔다.
+    return (
+      <div className="flex items-start gap-3">
+        <Skeleton className="h-24 flex-1 rounded-lg" />
+        {action}
+      </div>
+    );
   }
   return (
     <Card className="space-y-3 p-4">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <span className="text-[13px] text-muted-foreground">
           서버가 본 현재 내 접속 IP
         </span>
@@ -356,6 +362,7 @@ function CurrentAccessCard({
         {access.client_via_bootstrap && (
           <Badge variant="outline">비상 우회 대역으로 접속 중</Badge>
         )}
+        {action}
       </div>
 
       {!access.trusted_proxy_configured && (
