@@ -88,7 +88,12 @@ CFG_FRONTEND_PORT=""
 CFG_BACKEND_PORT=""
 CFG_SENSOR_PORT=""
 CFG_SENSOR_ENABLED=0
-CFG_HTTPS=0
+# 접속 방식의 정본. http | https 둘 중 하나다 — "둘 다 동시 서비스"는 없다
+# (HTTPS 구성은 80→443 리다이렉트를 이미 포함한다).
+CFG_SCHEME="http"
+CFG_HTTPS=0                # CFG_SCHEME의 내부 호환 미러(0|1). 판정은 CFG_SCHEME으로만 한다.
+CFG_PUBLIC_HOST=""         # 접속 FQDN(HTTPS에서 묻는다). 비면 PRIMARY_IP를 쓴다.
+COMPOSE_OVERLAYS=()        # dc()가 base 위에 얹을 오버레이 파일 목록
 
 usage() {
 	cat <<'EOF'
@@ -180,17 +185,30 @@ ver_ge() {
 	return 0
 }
 
+# CFG_SCHEME을 세우는 유일한 통로다. 오버레이 목록도 여기서만 바뀐다 —
+# 스킴 판정과 compose 인자가 어긋나는 것이 그 자체로 사고이기 때문이다.
+set_scheme() {
+	# shellcheck disable=SC2034 # CFG_HTTPS는 판정에 쓰지 않는 호환용 미러다(로그·디버깅용)
+	case "$1" in
+		https) CFG_SCHEME="https"; CFG_HTTPS=1 ;;
+		*)     CFG_SCHEME="http";  CFG_HTTPS=0 ;;
+	esac
+	COMPOSE_OVERLAYS=()
+	if [ "$CFG_SCHEME" = "https" ]; then COMPOSE_OVERLAYS+=("$COMPOSE_HTTPS_FILE"); fi
+}
+
+scheme_is_https() { [ "$CFG_SCHEME" = "https" ]; }
+
 dc() {
 	# 프로젝트명을 명시한다 — .env의 COMPOSE_PROJECT_NAME과 같은 값이지만, .env를 쓰기
 	# 전(사전 점검·기존 스택 감지) 단계에서도 같은 프로젝트를 봐야 한다.
-	local pargs=()
+	local pargs=() fargs=(-f "$COMPOSE_FILE") f
 	if [ -n "$COMPOSE_PROJECT" ]; then pargs=(-p "$COMPOSE_PROJECT"); fi
 	# ${a[@]+"${a[@]}"} — 빈 배열을 set -u 에서 참조해도 안전한 형태(bash 4.2 대응).
-	if [ "$CFG_HTTPS" -eq 1 ]; then
-		docker compose ${pargs[@]+"${pargs[@]}"} --project-directory "$ROOT_DIR" -f "$COMPOSE_FILE" -f "$COMPOSE_HTTPS_FILE" "$@"
-	else
-		docker compose ${pargs[@]+"${pargs[@]}"} --project-directory "$ROOT_DIR" -f "$COMPOSE_FILE" "$@"
-	fi
+	for f in ${COMPOSE_OVERLAYS[@]+"${COMPOSE_OVERLAYS[@]}"}; do
+		fargs+=(-f "$f")
+	done
+	docker compose ${pargs[@]+"${pargs[@]}"} --project-directory "$ROOT_DIR" "${fargs[@]}" "$@"
 }
 
 # compose v2의 기본 프로젝트명 규칙: 소문자화 → [a-z0-9_-] 밖의 문자 제거 → 앞쪽 _- 제거.
@@ -368,12 +386,15 @@ _http_ok_bash() {
 
 # --- .env 편집 ---------------------------------------------------------------
 
+# env_open [시드파일] — 작업용 사본을 연다.
+# 시드를 생략하면 설치 루트의 .env 다. 패치 모드는 **구버전 .env**를 시드로 넘긴다.
 env_open() {
+	local seed=${1:-$ENV_FILE}
 	if [ -n "$ENV_TMP" ] && [ -f "$ENV_TMP" ]; then rm -f "$ENV_TMP"; fi
 	ENV_TMP=$(mktemp "${TMPDIR:-/tmp}/autocert-env.XXXXXX")
 	chmod 600 "$ENV_TMP"
-	if [ -f "$ENV_FILE" ]; then
-		cat "$ENV_FILE" > "$ENV_TMP"
+	if [ -f "$seed" ]; then
+		cat "$seed" > "$ENV_TMP"
 	else
 		{
 			printf '# INHERIT AutoCert 설정 — scripts/install.sh 가 생성했다.\n'
@@ -383,10 +404,11 @@ env_open() {
 	fi
 }
 
-env_get() {
-	local k=$1 line
-	[ -f "$ENV_TMP" ] || return 0
-	line=$(grep -m1 "^${k}=" "$ENV_TMP" 2>/dev/null || true)
+# file_env_get 파일 키 — 임의의 .env 파일에서 값 하나를 읽는다(작업 사본과 무관).
+file_env_get() {
+	local f=$1 k=$2 line
+	[ -f "$f" ] || return 0
+	line=$(grep -m1 "^${k}=" "$f" 2>/dev/null || true)
 	line=${line#*=}
 	line=${line%$'\r'}   # Windows에서 편집된 .env 대비
 	# 값이 따옴표로 감싸여 있으면 벗긴다.
@@ -395,6 +417,11 @@ env_get() {
 		\'*\') line=${line#\'}; line=${line%\'} ;;
 	esac
 	printf '%s' "$line"
+}
+
+env_get() {
+	[ -n "$ENV_TMP" ] || return 0
+	file_env_get "$ENV_TMP" "$1"
 }
 
 env_set() {
@@ -412,6 +439,27 @@ env_set() {
 	else
 		printf '%s=%s\n' "$k" "$v" >> "$ENV_TMP"
 	fi
+}
+
+# 키의 **행 자체**를 지운다. 빈 값으로 두는 것과 다르다 — 예를 들어
+# AUTOCERT_VERSION은 값이 남아 있으면 신버전 이미지 태그가 구버전으로 고정된다.
+env_unset() {
+	local k=$1
+	[ -f "$ENV_TMP" ] || return 0
+	grep -q "^${k}=" "$ENV_TMP" 2>/dev/null || return 0
+	awk -v k="$k" 'index($0, k "=") == 1 { next } { print }' "$ENV_TMP" > "$ENV_TMP.new"
+	mv "$ENV_TMP.new" "$ENV_TMP"
+	chmod 600 "$ENV_TMP"
+}
+
+# Windows에서 편집·전송된 .env는 값 끝에 CR이 남아 컨테이너가 "8080\r" 같은 값을 본다.
+env_normalize_crlf() {
+	[ -f "$ENV_TMP" ] || return 0
+	grep -q $'\r' "$ENV_TMP" 2>/dev/null || return 0
+	sed 's/\r$//' "$ENV_TMP" > "$ENV_TMP.new"
+	mv "$ENV_TMP.new" "$ENV_TMP"
+	chmod 600 "$ENV_TMP"
+	ui_note ".env의 CRLF 줄끝을 정규화했다."
 }
 
 env_commit() {
@@ -1061,25 +1109,25 @@ print_status() {
 }
 
 print_done() {
-	local scheme="http" webport="$CFG_FRONTEND_PORT"
-	if [ "$CFG_HTTPS" -eq 1 ]; then
-		scheme="https"
+	local webport="$CFG_FRONTEND_PORT" host
+	host=${CFG_PUBLIC_HOST:-$PRIMARY_IP}
+	if scheme_is_https; then
 		webport=$(env_get HTTPS_PORT); webport=${webport:-443}
 	fi
 
 	ui_blank
 	ui_title "설치 완료"
 	if [ "$webport" = "80" ] || [ "$webport" = "443" ]; then
-		ui_step "접속 주소:  ${scheme}://${PRIMARY_IP}"
+		ui_step "접속 주소:  ${CFG_SCHEME}://${host}"
 	else
-		ui_step "접속 주소:  ${scheme}://${PRIMARY_IP}:${webport}"
+		ui_step "접속 주소:  ${CFG_SCHEME}://${host}:${webport}"
 	fi
 	ui_info "브라우저로 열어 첫 화면에서 관리자 계정을 만든다 (초기 비밀번호 같은 건 없다)."
 	ui_blank
 
 	ui_step "방화벽에서 열 포트"
 	ui_info "- ${webport}/tcp  관리 콘솔 (필수)"
-	if [ "$CFG_HTTPS" -eq 1 ]; then
+	if scheme_is_https; then
 		local rport
 		rport=$(env_get HTTP_REDIRECT_PORT); rport=${rport:-80}
 		ui_info "- ${rport}/tcp  HTTPS 리다이렉트 (선택)"
@@ -1134,8 +1182,8 @@ https_proxy_present() {
 # 반대로 오탐으로 켜면 프록시가 인증서를 못 찾아 기동이 깨진다 — 그래서 .env 흔적 1개 이상과
 # **인증서 파일 실존**을 함께 요구한다(server.crt·server.key는 고객사가 직접 둔 파일이다).
 detect_https_deployment() {
-	# --mode https 로 이미 정해진 값은 덮어쓰지 않는다.
-	if [ "$CFG_HTTPS" -eq 1 ]; then return 0; fi
+	# 이미 정해진 값(--scheme https / AUTOCERT_SCHEME)은 덮어쓰지 않는다.
+	if scheme_is_https; then return 0; fi
 
 	local traces="" secure
 	if [ -n "$(env_get HTTPS_PORT)" ]; then traces="HTTPS_PORT"; fi
@@ -1162,8 +1210,41 @@ detect_https_deployment() {
 		return 0
 	fi
 
-	CFG_HTTPS=1
+	set_scheme https
 	ui_ok "기존 설치가 HTTPS 구성으로 판단되어 TLS 오버레이를 유지한다 (근거: ${traces})"
+}
+
+# 이 설치의 접속 방식을 정한다. 우선순위:
+#   1) .env의 AUTOCERT_SCHEME — install.sh가 직접 기록하는 정본
+#   2) 레거시 휴리스틱(detect_https_deployment) — 그 이전 버전으로 깔린 설치 호환
+# 여기서 정해지는 것은 **의도**다. 자산(인증서) 확인은 ensure_tls_assets가 하고,
+# 자산이 없으면 거기서 http로 내려온다.
+resolve_scheme() {
+	local recorded
+	CFG_PUBLIC_HOST=$(value_for AUTOCERT_PUBLIC_HOST "")
+	recorded=$(value_for AUTOCERT_SCHEME "")
+	case "$recorded" in
+		https)
+			set_scheme https
+			ui_ok "기록된 접속 방식: HTTPS (.env AUTOCERT_SCHEME)"
+			return 0
+			;;
+		http)
+			set_scheme http
+			ui_ok "기록된 접속 방식: HTTP (.env AUTOCERT_SCHEME)"
+			return 0
+			;;
+	esac
+	set_scheme http
+	detect_https_deployment
+}
+
+# 다음 실행이 휴리스틱에 기대지 않도록 확정값을 .env에 남긴다.
+persist_scheme() {
+	env_set AUTOCERT_SCHEME "$CFG_SCHEME"
+	if [ -n "$CFG_PUBLIC_HOST" ]; then
+		env_set AUTOCERT_PUBLIC_HOST "$CFG_PUBLIC_HOST"
+	fi
 }
 
 # --- 모드 --------------------------------------------------------------------
@@ -1174,13 +1255,13 @@ mode_install() {
 	ensure_images
 
 	env_open
-	detect_https_deployment
 	persist_project_name
 	collect_our_ports
 	ask_ports
 	ask_sensor
 	inject_trusted_proxies
 	ensure_postgres_password
+	persist_scheme
 	ensure_notify_base_url
 	env_commit
 
@@ -1198,13 +1279,13 @@ mode_reconfigure() {
 	ensure_source_tree
 	ensure_images
 	env_open
-	detect_https_deployment
 	persist_project_name
 	collect_our_ports
 	ask_ports
 	ask_sensor
 	inject_trusted_proxies
 	ensure_postgres_password
+	persist_scheme
 	ensure_notify_base_url
 	env_commit
 
@@ -1234,7 +1315,7 @@ mode_https() {
 		return 1
 	fi
 
-	CFG_HTTPS=1
+	set_scheme https
 	env_open
 	persist_project_name
 	collect_our_ports
@@ -1284,29 +1365,37 @@ ensure_postgres_password() {
 }
 
 # 알림 본문 딥링크 기준 URL. 비어 있으면 링크만 빠지므로 자동으로 채워 준다.
+# 스킴이 바뀐 경우(HTTP→HTTPS 등)에는 기존 값을 그대로 두면 메일 속 링크가 전부
+# 죽은 주소가 되므로 다시 만든다.
 ensure_notify_base_url() {
-	local cur port scheme
+	local cur want
+	want=$(console_base_url)
 	cur=$(value_for NOTIFY_BASE_URL "")
 	if [ -n "$cur" ]; then
-		env_set NOTIFY_BASE_URL "$cur"
+		case "$cur" in
+			"${CFG_SCHEME}://"*)
+				env_set NOTIFY_BASE_URL "$cur"
+				return 0
+				;;
+		esac
+		ui_warn "알림 링크 기준 URL의 접속 방식이 현재 구성과 다르다 — ${want} 로 바꾼다."
+	fi
+	env_set NOTIFY_BASE_URL "$want"
+}
+
+# 콘솔의 대외 접속 URL. 안내 문구와 NOTIFY_BASE_URL이 같은 값을 쓰게 한다.
+console_base_url() {
+	local host port
+	host=${CFG_PUBLIC_HOST:-$PRIMARY_IP}
+	if scheme_is_https; then
+		port=$(env_get HTTPS_PORT); port=${port:-443}
+		if [ "$port" = "443" ]; then printf 'https://%s' "$host"; return 0; fi
+		printf 'https://%s:%s' "$host" "$port"
 		return 0
 	fi
-	if [ "$CFG_HTTPS" -eq 1 ]; then
-		scheme=https
-		port=$(env_get HTTPS_PORT); port=${port:-443}
-		if [ "$port" = "443" ]; then
-			env_set NOTIFY_BASE_URL "https://${PRIMARY_IP}"
-			return 0
-		fi
-	else
-		scheme=http
-		port=${CFG_FRONTEND_PORT:-$DEFAULT_FRONTEND_PORT}
-		if [ "$port" = "80" ]; then
-			env_set NOTIFY_BASE_URL "http://${PRIMARY_IP}"
-			return 0
-		fi
-	fi
-	env_set NOTIFY_BASE_URL "${scheme}://${PRIMARY_IP}:${port}"
+	port=${CFG_FRONTEND_PORT:-$DEFAULT_FRONTEND_PORT}
+	if [ "$port" = "80" ]; then printf 'http://%s' "$host"; return 0; fi
+	printf 'http://%s:%s' "$host" "$port"
 }
 
 # --- 진입점 ------------------------------------------------------------------
@@ -1335,6 +1424,10 @@ main() {
 		ui_ok "사전 점검만 수행했다. 설치하려면 --check-only 없이 실행한다."
 		exit 0
 	fi
+
+	# 접속 방식(http|https)은 dc()의 오버레이 목록을 지배하므로 여기서 먼저 정한다.
+	# COMPOSE_HTTPS_OK를 보므로 preflight 뒤여야 한다.
+	resolve_scheme
 
 	local mode=$REQUESTED_MODE
 	if [ -z "$mode" ]; then
