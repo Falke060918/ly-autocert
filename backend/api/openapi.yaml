@@ -903,8 +903,15 @@ paths:
         IP/CIDR 목록과 포트로 에이전트리스 TLS 스캔 Job을 만든다. 즉시 job_id를 반환하고(202)
         실제 스캔은 백그라운드에서 돈다. 도달 가능한 TLS 엔드포인트의 인증서를 fingerprint
         기준으로 중복 판정해 인벤토리에 저장한다. 자기서명·만료 인증서도 수집한다(수집 전용,
-        검증하지 않음). 생성·완료는 감사 이벤트를 남긴다. 허용 역할은
-        system_administrator·pki_administrator·operator다.
+        검증하지 않음). 생성·완료는 감사 이벤트를 남긴다.
+
+
+        총 엔드포인트 수(IP 수 × 포트 수)가 임계(SCAN_SWEEP_CHUNK_ENDPOINTS, 기본 4096)를
+        넘으면 **스윕으로 자동 승격**한다 — 즉시 스캔의 응답성을 지키기 위함이며,
+        그때 응답은 mode=sweep·promoted=true·sweep_id다(감사도 discovery.sweep에
+        promoted=true로 남는다). 레이트·청크·ETA 상한은 스윕 경로 그대로다.
+        발주 전에 크기·소요를 보려면 POST /discovery/scans/preview를 쓴다.
+        허용 역할은 system_administrator·pki_administrator·operator다.
       tags: [discovery]
       requestBody:
         required: true
@@ -913,7 +920,9 @@ paths:
             schema: { $ref: "#/components/schemas/ScanRequest" }
       responses:
         "202":
-          description: 스캔 Job 생성됨 (백그라운드 실행)
+          description: >
+            스캔 Job 생성됨 (백그라운드 실행). 임계를 넘은 요청은 스윕으로 승격되어
+            mode=sweep·sweep_id로 답한다.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ScanAccepted" }
@@ -934,7 +943,10 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/DuplicateScan" }
         "422":
-          description: sensor_id가 존재하지 않거나 active 상태가 아닌 센서
+          description: >
+            sensor_id가 존재하지 않거나 active 상태가 아닌 센서(invalid_sensor), 또는
+            스윕으로 승격된 요청의 예상 소요가 상한을 넘음(sweep_too_long — 메시지에
+            실제 일수 포함)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -991,6 +1003,43 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ScanSuggestions" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/discovery/scans/preview:
+    post:
+      operationId: previewDiscoveryScan
+      summary: 스캔 미리보기 (대상·포트 파싱 + 승격 판정 + 예상 소요)
+      description: >
+        아무것도 만들지 않고 스캔 요청을 서버 파서로 펼쳐 본다 — 개별 IP 수, 포트 수,
+        총 엔드포인트 수, 단발/스윕 승격 여부, 적용될 레이트와 예상 소요다.
+        발주(POST /discovery/scans)와 **같은 함수**가 계산하므로 여기 보인 숫자가
+        실제로 도는 작업과 같다. 포트·IP 파서는 서버 한 곳이 정본이며 클라이언트는
+        추정기를 갖지 않는다. 예상 소요가 상한(SCAN_SWEEP_MAX_DAYS)을 넘으면 거부하지
+        않고 too_long=true와 사유 문구로 알린다 — 그래야 발주 전에 범위를 줄일 수 있다.
+        조회이므로 감사 이벤트를 남기지 않는다. GET이 아니라 POST인 이유는 대상 목록이
+        URL 길이 상한을 넘기 때문이다. 허용 역할은 발주와 같은
+        system_administrator·pki_administrator·operator다 — 스캔을 만들 수 없는 역할에게
+        발주 폼의 사전 계산만 열어 줄 이유가 없다. sensor_id는 크기·소요에 영향이 없어
+        여기서는 검증하지 않는다.
+      tags: [discovery]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScanRequest" }
+      responses:
+        "200":
+          description: 파싱·승격 판정 결과
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScanPreview" }
+        "400":
+          description: 잘못된 대상·포트 사양 (발주와 같은 파서·같은 메시지)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -2821,8 +2870,9 @@ components:
           type: string
           description: >
             자유 텍스트 포트 사양. 콤마 나열("443,8443")·범위("8000-9000")·
-            프리셋(web/common)을 혼용한다. 지정하면 ports보다 우선한다.
-            all 프리셋은 스윕 전용이라 여기서는 400이다.
+            프리셋(web/common/all)을 혼용한다. 지정하면 ports보다 우선한다.
+            all 프리셋도 그대로 받는다 — 총 엔드포인트 수가 임계를 넘으면
+            스윕으로 자동 승격되므로 요청을 다시 쓸 필요가 없다.
           example: "443,8000-9000,web"
         ports:
           type: array
@@ -2893,14 +2943,85 @@ components:
           description: SCAN_SUGGESTED_NETWORKS 운영자 지정 대역 (정규화된 CIDR)
     ScanAccepted:
       type: object
-      required: [job_id, status, total_endpoints]
+      description: >
+        스캔 발주 결과. 총 엔드포인트 수가 임계(SCAN_SWEEP_CHUNK_ENDPOINTS, 기본 4096)를
+        **넘으면** 단발 Job 대신 스윕이 만들어진다(자동 승격) — 그때는 mode=sweep,
+        promoted=true이고 job_id 대신 sweep_id가 실린다. 화면은 mode로 어느 쪽을
+        추적할지 정한다.
+      required: [mode, promoted, status, total_endpoints]
       properties:
-        job_id: { type: string, format: uuid }
-        status: { type: string, enum: [pending] }
+        mode:
+          type: string
+          enum: [scan, sweep]
+          description: 실제로 만들어진 작업 종류
+        promoted:
+          type: boolean
+          description: 단발 요청이 임계 초과로 스윕이 되었는가
+        job_id:
+          type: string
+          format: uuid
+          description: mode=scan일 때만 있다
+        sweep_id:
+          type: string
+          format: uuid
+          description: mode=sweep일 때만 있다
+        status: { type: string, enum: [pending, queued] }
         total_endpoints:
           type: integer
+          format: int64
           description: 펼쳐진 (IP, 포트) 조합 수
+        total_chunks:
+          type: integer
+          description: mode=sweep일 때의 청크 수
+        estimated_finish_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: mode=sweep일 때의 예상 종료 시각
         request_id: { type: string }
+    ScanPreview:
+      type: object
+      description: >
+        스캔 미리보기 결과 (아무것도 만들지 않는다). 발주와 같은 함수가 계산하므로
+        이 숫자가 실제로 도는 작업과 같다. 포트 목록 자체는 싣지 않는다 — all
+        프리셋이면 6.5만 개다(프리셋의 실제 포트는 GET /discovery/port-presets).
+      required:
+        [request_id, mode, promoted, promotion_threshold, targets, ip_count, port_spec,
+         port_count, total_endpoints, rate_pps, estimated_seconds, estimated_finish_at,
+         total_chunks, max_days, too_long]
+      properties:
+        request_id: { type: string }
+        mode:
+          type: string
+          enum: [scan, sweep]
+          description: 이대로 발주하면 만들어질 작업 종류
+        promoted: { type: boolean, description: 임계 초과로 스윕이 되는가 }
+        promotion_threshold:
+          type: integer
+          description: 승격 임계 엔드포인트 수 (SCAN_SWEEP_CHUNK_ENDPOINTS, 기본 4096)
+        targets:
+          type: array
+          items: { type: string }
+          description: 입력 원문 그대로(정규화하지 않는다)
+        ip_count: { type: integer, description: 전개된 개별 IP 수 (중복 제거) }
+        port_spec:
+          type: string
+          description: 유효 포트 사양. 입력이 비면 기본값 common, ports 배열 입력은 같은 문법의 문자열로 되돌린다.
+        port_count: { type: integer }
+        total_endpoints: { type: integer, format: int64, description: IP 수 × 포트 수 }
+        rate_pps:
+          type: integer
+          description: 실제 적용될 레이트 (단발 50 / 스윕 SCAN_SWEEP_RATE_PPS)
+        estimated_seconds: { type: integer, format: int64, description: 예상 소요(초, 올림) }
+        estimated_finish_at: { type: string, format: date-time }
+        total_chunks: { type: integer, description: 승격 경로에서만 0이 아니다 }
+        max_days: { type: integer, description: 스윕 ETA 상한 (SCAN_SWEEP_MAX_DAYS) }
+        too_long:
+          type: boolean
+          description: true면 이대로 발주해도 422(sweep_too_long)로 거부된다
+        message:
+          type: string
+          description: too_long일 때의 사유 문구(실제 소요 일수 포함 — 발주 거부 메시지와 같다)
     ScanJob:
       type: object
       description: 스캔 Job 상태·진행률·결과 요약
