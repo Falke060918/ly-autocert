@@ -689,13 +689,15 @@ func recordDiscoveredChain(ctx context.Context, tx *sql.Tx, scope string, obs En
 			updatedAt time.Time
 			created   bool
 		)
-		err := tx.QueryRowContext(ctx, upsertCertificateSQL,
+		args := append([]any{
 			dc.FingerprintSHA256, dc.SerialNumber, dc.SubjectDN, dc.IssuerDN, dc.CommonName,
 			strings.Join(dc.SANs, sansSep),
 			dc.NotBefore, dc.NotAfter, dc.PublicKeyAlgorithm, dc.PublicKeySize,
 			dc.SignatureAlgorithm, string(dc.CertificateType), string(dc.Status),
 			dc.SubjectKeyID, dc.AuthorityKeyID, dc.IssuerOrganization,
-		).Scan(&id, &status, &createdAt, &updatedAt, &created)
+		}, certificateContentArgs(dc.Content)...)
+		err := tx.QueryRowContext(ctx, upsertCertificateSQL, args...).
+			Scan(&id, &status, &createdAt, &updatedAt, &created)
 		if err != nil {
 			return 0, fmt.Errorf("store: upsert discovered certificate: %w", err)
 		}
@@ -718,7 +720,10 @@ func recordDiscoveredChain(ctx context.Context, tx *sql.Tx, scope string, obs En
 	if err != nil {
 		return 0, err
 	}
-	if err := upsertNetworkLocation(ctx, tx, leaf.id, targetID, obs.Port, obs.TLSVersion); err != nil {
+	// 이 엔드포인트가 "몇 장을 제시했고 그것만으로 체인이 이어지는가"는 위치에
+	// 남긴다 (0018). 인벤토리의 다른 인증서로 보완하지 않는 것이 판정의 요점이다.
+	chain := certparse.AnalyzePresentedChain(obs.Chain)
+	if err := upsertNetworkLocation(ctx, tx, leaf.id, targetID, obs.Port, obs.TLSVersion, chain); err != nil {
 		return 0, err
 	}
 	return newCount, nil
@@ -750,22 +755,34 @@ func ensureNetworkTarget(ctx context.Context, tx *sql.Tx, scope, ip, hostname st
 }
 
 // upsertNetworkLocation은 (인증서, 대상, 포트) 위치를 만들거나 최근 확인 시각·
-// TLS 버전을 갱신한다. 부분 유니크 인덱스(uq_certificate_locations_network_endpoint,
-// 0006)를 아비터로 쓰는 단일 upsert라 재스캔·동시 실행에도 위치가 증식하지 않는다.
-func upsertNetworkLocation(ctx context.Context, tx *sql.Tx, certID, targetID string, port int, tlsVersion string) error {
+// TLS 버전·제시 체인 판정을 갱신한다. 부분 유니크 인덱스
+// (uq_certificate_locations_network_endpoint, 0006)를 아비터로 쓰는 단일 upsert라
+// 재스캔·동시 실행에도 위치가 증식하지 않는다.
+// 제시 체인(0018)은 관측할 때마다 최신 값으로 덮어쓴다 — 서버 설정이 고쳐지면
+// 판정도 따라 바뀌어야 한다. 체인이 비어 있는 관측은 NULL(미상)로 남긴다.
+func upsertNetworkLocation(ctx context.Context, tx *sql.Tx, certID, targetID string, port int, tlsVersion string, chain certparse.PresentedChain) error {
 	var tv *string
 	if tlsVersion != "" {
 		tv = &tlsVersion
 	}
+	var chainLen *int
+	var chainComplete *bool
+	if chain.Length > 0 {
+		chainLen, chainComplete = &chain.Length, &chain.Complete
+	}
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO certificate_locations
-			(certificate_id, target_id, location_type, port, tls_version, last_verified_at, deployment_status)
-		VALUES ($1, $2, $3, $4, $5, now(), $6)
+			(certificate_id, target_id, location_type, port, tls_version, last_verified_at, deployment_status,
+			 presented_chain_len, chain_complete)
+		VALUES ($1, $2, $3, $4, $5, now(), $6, $7, $8)
 		ON CONFLICT (certificate_id, target_id, port) WHERE location_type = 'network_endpoint'
 		DO UPDATE SET last_verified_at = now(),
 		              deployment_status = excluded.deployment_status,
-		              tls_version = coalesce(excluded.tls_version, certificate_locations.tls_version)`,
-		certID, targetID, string(domain.LocationNetworkEndpoint), port, tv, string(domain.DeployDeployed))
+		              tls_version = coalesce(excluded.tls_version, certificate_locations.tls_version),
+		              presented_chain_len = coalesce(excluded.presented_chain_len, certificate_locations.presented_chain_len),
+		              chain_complete = coalesce(excluded.chain_complete, certificate_locations.chain_complete)`,
+		certID, targetID, string(domain.LocationNetworkEndpoint), port, tv, string(domain.DeployDeployed),
+		chainLen, chainComplete)
 	if err != nil {
 		return fmt.Errorf("store: upsert network location: %w", err)
 	}

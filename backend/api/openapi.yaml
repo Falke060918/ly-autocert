@@ -183,7 +183,7 @@ paths:
             enum: [weak_key, key_deprecated_2030, key_strong, ed25519_key,
                    weak_signature, no_san, wildcard, wildcard_broad,
                    wildcard_multi_label, long_validity, expired_ca, self_signed,
-                   chain_anomaly, legacy_tls]
+                   chain_anomaly, legacy_tls, incomplete_chain]
         - name: sort
           in: query
           description: 정렬 필드 (기본 not_after)
@@ -370,7 +370,7 @@ paths:
             enum: [weak_key, key_deprecated_2030, key_strong, ed25519_key,
                    weak_signature, no_san, wildcard, wildcard_broad,
                    wildcard_multi_label, long_validity, expired_ca, self_signed,
-                   chain_anomaly, legacy_tls]
+                   chain_anomaly, legacy_tls, incomplete_chain]
         - name: sort
           in: query
           description: 정렬 필드 (기본 not_after)
@@ -2148,15 +2148,16 @@ components:
           enum: [weak_key, key_deprecated_2030, key_strong, ed25519_key,
                  weak_signature, no_san, wildcard, wildcard_broad,
                  wildcard_multi_label, long_validity, expired_ca, self_signed,
-                 chain_anomaly, legacy_tls]
+                 chain_anomaly, legacy_tls, incomplete_chain]
         severity: { $ref: "#/components/schemas/RiskSeverity" }
         scope:
           type: string
           enum: [certificate, location]
           description: >
             판정 대상 축. certificate는 인증서 자체의 속성이고 location은 인증서가
-            설치된 위치(엔드포인트)의 속성이다 — 조치 주체가 다르다. legacy_tls는
-            인증서를 재발급해도 해결되지 않고 서버 설정을 고쳐야 한다.
+            설치된 위치(엔드포인트)의 속성이다 — 조치 주체가 다르다. legacy_tls·
+            incomplete_chain은 인증서를 재발급해도 해결되지 않고 서버 설정·배포를
+            고쳐야 한다.
         title: { type: string, description: 화면 표시용 짧은 항목 이름 }
         public_trust_only:
           type: boolean
@@ -2196,7 +2197,7 @@ components:
           enum: [weak_key, key_deprecated_2030, key_strong, ed25519_key,
                  weak_signature, no_san, wildcard, wildcard_broad,
                  wildcard_multi_label, long_validity, expired_ca, self_signed,
-                 chain_anomaly, legacy_tls]
+                 chain_anomaly, legacy_tls, incomplete_chain]
         severity: { $ref: "#/components/schemas/RiskSeverity" }
         scope: { type: string, enum: [certificate, location] }
         title: { type: string }
@@ -2428,6 +2429,22 @@ components:
             current_fingerprint에 해당하는 인벤토리 인증서 id. 화면은 이 값으로
             위치를 3분류한다 — certificate_id와 같으면 "서비스 중", 다르면
             "다른 인증서로 교체됨", current_fingerprint가 null이면 "확인 안 됨".
+        presented_chain_len:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: >
+            마지막 관측에서 이 엔드포인트가 제시한 인증서 장수 (0018).
+            0018 이전 관측·파일 업로드 위치는 null(미상)이며 재스캔으로만 채워진다.
+        chain_complete:
+          type: boolean
+          nullable: true
+          description: >
+            제시된 체인만으로 리프에서 위로 끊김 없이 이어지는지 (0018).
+            인벤토리의 다른 인증서로 보완하지 않은 값이므로 false는 곧 중간 CA
+            누락(풀체인 미배포)이다 — 브라우저는 AIA로 보완하지만 curl·Java·
+            Python·모바일 클라이언트는 즉시 실패한다. 루트 CA를 보내지 않는 것은
+            정상 관행이므로 불완전으로 세지 않는다. null이면 미상이다.
         target: { $ref: "#/components/schemas/TargetRef" }
     ServerList:
       type: object

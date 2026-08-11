@@ -57,6 +57,15 @@ const riskLegacyTLSSQL = `EXISTS (
 		   AND l.deployment_status <> 'removed'
 		   AND l.tls_version IN ('TLS 1.0', 'TLS 1.1'))`
 
+// riskIncompleteChainSQL은 중간 CA 누락 판정이다 (0018, 위치 축).
+// `= false`이므로 NULL(미상 — 0018 이전 관측·파일 업로드)은 잡히지 않는다.
+// certrisk.incompleteChainRule이 nil을 판정에서 빼는 것과 같은 기준이다.
+const riskIncompleteChainSQL = `EXISTS (
+		SELECT 1 FROM certificate_locations l
+		 WHERE l.certificate_id = certificates.id
+		   AND l.deployment_status <> 'removed'
+		   AND l.chain_complete = false)`
+
 // riskPredicates는 판정 코드별 SQL 술어다 (certrisk.Rules()의 코드와 1:1이어야 한다).
 var riskPredicates = map[certrisk.Code]string{
 	certrisk.CodeWeakKey: `((upper(certificates.public_key_algorithm) = 'RSA'
@@ -92,6 +101,8 @@ var riskPredicates = map[certrisk.Code]string{
 		AND NOT ` + riskSelfSignedShape + `)`,
 
 	certrisk.CodeLegacyTLS: riskLegacyTLSSQL,
+
+	certrisk.CodeIncompleteChain: riskIncompleteChainSQL,
 }
 
 func init() {

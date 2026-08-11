@@ -39,7 +39,10 @@ type riskFixture struct {
 	ski        *string
 	aki        *string
 	tlsVersion string // 비어 있지 않으면 network_endpoint 위치를 1건 만든다
-	locRemoved bool
+	// chainComplete는 0018 위치 컬럼이다. nil이면 컬럼도 NULL(미상)이며,
+	// tlsVersion이 비어 있어도 값이 있으면 위치를 1건 만든다.
+	chainComplete *bool
+	locRemoved    bool
 }
 
 // insertRiskFixture는 판정 테스트용 인증서(+ 선택적 위치) 1건을 INSERT한다.
@@ -103,16 +106,21 @@ func insertRiskFixture(t *testing.T, pool *sql.DB, targetID string, f riskFixtur
 		t.Fatalf("insert risk fixture %s: %v", f.label, err)
 	}
 
-	if f.tlsVersion != "" {
+	if f.tlsVersion != "" || f.chainComplete != nil {
 		dep := "unknown"
 		if f.locRemoved {
 			dep = "removed"
 		}
+		var tls *string
+		if f.tlsVersion != "" {
+			v := f.tlsVersion
+			tls = &v
+		}
 		if _, err := pool.Exec(`
 			INSERT INTO certificate_locations
-				(certificate_id, target_id, location_type, port, tls_version, deployment_status)
-			VALUES ($1, $2, 'network_endpoint', 443, $3, $4)`,
-			id, targetID, f.tlsVersion, dep); err != nil {
+				(certificate_id, target_id, location_type, port, tls_version, deployment_status, chain_complete)
+			VALUES ($1, $2, 'network_endpoint', 443, $3, $4, $5)`,
+			id, targetID, tls, dep, f.chainComplete); err != nil {
 			t.Fatalf("insert location for %s: %v", f.label, err)
 		}
 	}
@@ -122,6 +130,7 @@ func insertRiskFixture(t *testing.T, pool *sql.DB, targetID string, f riskFixtur
 // riskFixtures는 규칙마다 경계값 양쪽을 포함하는 픽스처 집합이다.
 func riskFixtures() []riskFixture {
 	ski, other := "aabbccdd", "11223344"
+	chainYes, chainNo := true, false
 	return []riskFixture{
 		{label: "clean-baseline", sans: []string{"clean.example.test"}},
 
@@ -186,6 +195,14 @@ func riskFixtures() []riskFixture {
 		{label: "tls11", tlsVersion: "TLS 1.1", sans: []string{"tls11.example.test"}},
 		{label: "tls12", tlsVersion: "TLS 1.2", sans: []string{"tls12.example.test"}},
 		{label: "tls10-removed", tlsVersion: "TLS 1.0", locRemoved: true, sans: []string{"gone.example.test"}},
+
+		// 위치 축 (제시 체인, 0018). chain-unknown은 위치는 있는데 컬럼이 NULL인
+		// 경우다 — 0018 이전 관측이 danger로 뜨면 재스캔 전 인벤토리가 전부 빨간불이 된다.
+		{label: "chain-incomplete", chainComplete: &chainNo, sans: []string{"nochain.example.test"}},
+		{label: "chain-complete", chainComplete: &chainYes, sans: []string{"fullchain.example.test"}},
+		{label: "chain-unknown", tlsVersion: "TLS 1.3", sans: []string{"chainnull.example.test"}},
+		{label: "chain-incomplete-removed", chainComplete: &chainNo, locRemoved: true,
+			sans: []string{"nochain-gone.example.test"}},
 
 		// 여러 판정이 겹치는 건 (최고 심각도 규약 확인용)
 		{label: "combo-danger", keyAlg: "RSA", keySize: 1024, sigAlg: "SHA1-RSA",
@@ -511,5 +528,64 @@ func TestCertificateDetailCarriesRisk(t *testing.T) {
 		if f.Code == certrisk.CodeLegacyTLS {
 			t.Error("removed location should not produce legacy_tls in detail")
 		}
+	}
+}
+
+// 상세 조회의 중간 CA 누락 판정 (0018). 미상(NULL)은 판정되지 않아야 한다 —
+// 모르는 것을 danger로 띄우면 재스캔 전 인벤토리가 전부 빨간불이 된다.
+func TestCertificateDetailCarriesIncompleteChain(t *testing.T) {
+	pool := testPool(t)
+	st := New(pool)
+	ctx := context.Background()
+	clearInventory(t, pool)
+	t.Cleanup(func() { clearInventory(t, pool) })
+
+	items := loadRiskFixtures(t, st, pool)
+	find := func(cn string) CertificateListItem {
+		for _, it := range items {
+			if it.CommonName == cn {
+				return it
+			}
+		}
+		t.Fatalf("fixture %q not found", cn)
+		return CertificateListItem{}
+	}
+	hasIncomplete := func(id string) bool {
+		t.Helper()
+		d, err := st.GetCertificateDetail(ctx, id)
+		if err != nil {
+			t.Fatalf("detail: %v", err)
+		}
+		for _, f := range d.Risk.Findings {
+			if f.Code == certrisk.CodeIncompleteChain {
+				if f.Scope != certrisk.ScopeLocation {
+					t.Errorf("incomplete_chain scope = %q, want location", f.Scope)
+				}
+				return true
+			}
+		}
+		return false
+	}
+
+	if !hasIncomplete(find("chain-incomplete").ID) {
+		t.Error("chain_complete=false가 상세에서 판정되지 않았다")
+	}
+	if hasIncomplete(find("chain-complete").ID) {
+		t.Error("chain_complete=true가 판정에 걸렸다")
+	}
+	if hasIncomplete(find("chain-unknown").ID) {
+		t.Error("chain_complete=NULL(0018 이전 관측)이 danger로 떴다")
+	}
+	if hasIncomplete(find("chain-incomplete-removed").ID) {
+		t.Error("removed 위치가 판정에 걸렸다")
+	}
+
+	// 상세 응답의 위치에도 사실이 실려야 한다(화면이 어느 위치인지 짚을 수 있게).
+	d, err := st.GetCertificateDetail(ctx, find("chain-incomplete").ID)
+	if err != nil {
+		t.Fatalf("detail: %v", err)
+	}
+	if len(d.Locations) != 1 || d.Locations[0].ChainComplete == nil || *d.Locations[0].ChainComplete {
+		t.Errorf("위치의 chain_complete가 응답에 실리지 않았다: %+v", d.Locations)
 	}
 }

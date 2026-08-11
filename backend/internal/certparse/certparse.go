@@ -124,8 +124,18 @@ func FingerprintSHA256(cert *x509.Certificate) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// SPKISHA256은 SubjectPublicKeyInfo의 SHA-256 다이제스트를 소문자 hex 64자로 반환한다.
+// 지문(FingerprintSHA256)은 인증서 전체라 재발급하면 바뀌지만, 이 값은 같은 키를
+// 재사용하면 그대로다 — 공개키 재사용 판정의 키다.
+func SPKISHA256(cert *x509.Certificate) string {
+	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+	return hex.EncodeToString(sum[:])
+}
+
 // Describe는 파싱된 인증서를 도메인 메타데이터로 변환한다.
-// ID·CreatedAt·UpdatedAt은 저장 시점에 DB가 채운다. 인증서 본문은 담지 않는다.
+// ID·CreatedAt·UpdatedAt은 저장 시점에 DB가 채운다.
+// Content에는 DER 원문(공개 부분)과 원문에서만 알 수 있는 속성이 담긴다 (0018) —
+// 저장 전용이며 어떤 로그·에러 메시지에도 싣지 않는다 (보안 하드 규칙 3).
 func Describe(cert *x509.Certificate, now time.Time) domain.Certificate {
 	return domain.Certificate{
 		FingerprintSHA256:  FingerprintSHA256(cert),
@@ -144,7 +154,85 @@ func Describe(cert *x509.Certificate, now time.Time) domain.Certificate {
 		AuthorityKeyID:     keyIDHex(cert.AuthorityKeyId),
 		CertificateType:    classify(cert),
 		Status:             lifecycleStatus(cert, now),
+		Content:            describeContent(cert),
 	}
+}
+
+// describeContent는 원문 파생 속성을 모은다. 슬라이스는 값이 없어도 nil이 아니라
+// 빈 슬라이스다 — 저장 계층이 "미상(NULL)"과 "값 없음('{}')"을 가르는 근거다.
+func describeContent(cert *x509.Certificate) domain.CertificateContent {
+	spki := SPKISHA256(cert)
+	ku := int(cert.KeyUsage)
+	isCA := cert.IsCA
+	return domain.CertificateContent{
+		RawDER:            cert.Raw,
+		SPKISHA256:        &spki,
+		KeyUsage:          &ku,
+		ExtKeyUsage:       extKeyUsageNames(cert),
+		IsCA:              &isCA,
+		PathLenConstraint: pathLenConstraint(cert),
+		OCSPURLs:          copyStrings(cert.OCSPServer),
+		CRLURLs:           copyStrings(cert.CRLDistributionPoints),
+		AIACAIssuerURLs:   copyStrings(cert.IssuingCertificateURL),
+	}
+}
+
+func copyStrings(v []string) []string {
+	out := make([]string, 0, len(v))
+	return append(out, v...)
+}
+
+// extKeyUsageNameByValue는 EKU 열거값 → 저장용 안정 키다.
+// 화면·필터가 쓰는 값이므로 한 번 정한 문자열은 바꾸지 않는다.
+var extKeyUsageNameByValue = map[x509.ExtKeyUsage]string{
+	x509.ExtKeyUsageAny:                            "any",
+	x509.ExtKeyUsageServerAuth:                     "server_auth",
+	x509.ExtKeyUsageClientAuth:                     "client_auth",
+	x509.ExtKeyUsageCodeSigning:                    "code_signing",
+	x509.ExtKeyUsageEmailProtection:                "email_protection",
+	x509.ExtKeyUsageIPSECEndSystem:                 "ipsec_end_system",
+	x509.ExtKeyUsageIPSECTunnel:                    "ipsec_tunnel",
+	x509.ExtKeyUsageIPSECUser:                      "ipsec_user",
+	x509.ExtKeyUsageTimeStamping:                   "time_stamping",
+	x509.ExtKeyUsageOCSPSigning:                    "ocsp_signing",
+	x509.ExtKeyUsageMicrosoftServerGatedCrypto:     "microsoft_server_gated_crypto",
+	x509.ExtKeyUsageNetscapeServerGatedCrypto:      "netscape_server_gated_crypto",
+	x509.ExtKeyUsageMicrosoftCommercialCodeSigning: "microsoft_commercial_code_signing",
+	x509.ExtKeyUsageMicrosoftKernelCodeSigning:     "microsoft_kernel_code_signing",
+}
+
+// extKeyUsageNames는 EKU 전체를 인증서에 실린 순서대로 반환한다.
+// x509가 이름을 모르는 EKU는 OID 점 표기 그대로 남긴다 — 버리면 사설 PKI의
+// 용도 확장을 통째로 잃는다 (classify()는 첫 매칭 1개만 보고 나머지를 버린다).
+func extKeyUsageNames(cert *x509.Certificate) []string {
+	out := make([]string, 0, len(cert.ExtKeyUsage)+len(cert.UnknownExtKeyUsage))
+	for _, eku := range cert.ExtKeyUsage {
+		if name, ok := extKeyUsageNameByValue[eku]; ok {
+			out = append(out, name)
+			continue
+		}
+		out = append(out, fmt.Sprintf("unknown_%d", int(eku)))
+	}
+	for _, oid := range cert.UnknownExtKeyUsage {
+		out = append(out, oid.String())
+	}
+	return out
+}
+
+// pathLenConstraint는 BasicConstraints의 pathLenConstraint를 반환한다.
+// -1은 "제약 없음", nil은 비적용(CA가 아니거나 BasicConstraints 확장이 없음)이다.
+func pathLenConstraint(cert *x509.Certificate) *int {
+	if !cert.IsCA || !cert.BasicConstraintsValid {
+		return nil
+	}
+	n := -1
+	switch {
+	case cert.MaxPathLenZero:
+		n = 0
+	case cert.MaxPathLen > 0:
+		n = cert.MaxPathLen
+	}
+	return &n
 }
 
 // firstOrganization은 DN의 첫 번째 비어 있지 않은 O(Organization) 값을 반환한다.

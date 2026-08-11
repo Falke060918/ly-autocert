@@ -128,8 +128,14 @@ type LocationWithTarget struct {
 	//   - CurrentCertificateID == certificate_id  → 서비스 중
 	//   - CurrentCertificateID != certificate_id  → 다른 인증서로 교체됨(구버전 잔존)
 	//   - CurrentFingerprint == nil               → 확인 안 됨
-	CurrentCertificateID *string   `json:"current_certificate_id"`
-	Target               TargetRef `json:"target"`
+	CurrentCertificateID *string `json:"current_certificate_id"`
+	// PresentedChainLen·ChainComplete는 이 엔드포인트가 마지막 관측에서 **제시한**
+	// 체인의 사실이다 (0018). 인벤토리의 다른 인증서로 보완하지 않은 값이므로
+	// chain_complete=false는 곧 중간 CA 누락(풀체인 미배포)이다.
+	// 0018 이전 관측·파일 업로드 위치는 둘 다 nil(미상)이다 — 재스캔으로만 채워진다.
+	PresentedChainLen *int      `json:"presented_chain_len"`
+	ChainComplete     *bool     `json:"chain_complete"`
+	Target            TargetRef `json:"target"`
 }
 
 // OwnerRef는 인증서 소유자 표시용 요약이다. 화면이 owner_id(UUID)를 그대로
@@ -203,12 +209,12 @@ func scanCertificate(sc interface{ Scan(...any) error }) (domain.Certificate, er
 	return c, nil
 }
 
-// scanCertificateListRow는 certificateColumns 뒤에 목록 전용 파생 열 2개
-// (last_seen_at, 위치가 관측한 TLS 버전 목록)가 붙은 행을 읽는다.
-func scanCertificateListRow(sc interface{ Scan(...any) error }, lastSeen **time.Time, tlsVersions *sql.NullString) (domain.Certificate, error) {
+// scanCertificateListRow는 certificateColumns 뒤에 목록 전용 파생 열 3개
+// (last_seen_at, 위치가 관측한 TLS 버전 목록, 체인 불완전 위치 유무)가 붙은 행을 읽는다.
+func scanCertificateListRow(sc interface{ Scan(...any) error }, lastSeen **time.Time, tlsVersions *sql.NullString, chainIncomplete *sql.NullBool) (domain.Certificate, error) {
 	var c domain.Certificate
 	var sans, ctype, status string
-	dest := append(certificateScanDest(&c, &sans, &ctype, &status), lastSeen, tlsVersions)
+	dest := append(certificateScanDest(&c, &sans, &ctype, &status), lastSeen, tlsVersions, chainIncomplete)
 	if err := sc.Scan(dest...); err != nil {
 		return c, err
 	}
@@ -216,19 +222,25 @@ func scanCertificateListRow(sc interface{ Scan(...any) error }, lastSeen **time.
 	return c, nil
 }
 
-// tlsVersionLocations는 chr(31) 연결 문자열로 받은 관측 TLS 버전 목록을
-// 위치 축 판정 입력으로 편다. 이미 removed 위치를 뺀 목록이므로 Removed는 false다.
-func tlsVersionLocations(joined sql.NullString) []certrisk.LocationInput {
-	if !joined.Valid || joined.String == "" {
-		return nil
-	}
-	parts := strings.Split(joined.String, sansSep)
-	out := make([]certrisk.LocationInput, 0, len(parts))
-	for _, p := range parts {
-		if p == "" {
-			continue
+// listRiskLocations는 목록 조회가 상관 서브쿼리로 요약해 온 위치 정보를 위치 축
+// 판정 입력으로 편다. 목록은 위치 배열을 싣지 않으므로 **판정에 필요한 사실만**
+// 요약해서 받는다 — 요약 조건이 SQL 술어(riskLegacyTLSSQL·riskIncompleteChainSQL)와
+// 어긋나면 "배지는 danger인데 필터로는 안 잡히는" 상태가 된다.
+// 두 요약 모두 removed 위치를 이미 뺀 값이라 Removed는 false다.
+func listRiskLocations(tlsVersions sql.NullString, chainIncomplete sql.NullBool) []certrisk.LocationInput {
+	var out []certrisk.LocationInput
+	if tlsVersions.Valid && tlsVersions.String != "" {
+		for _, p := range strings.Split(tlsVersions.String, sansSep) {
+			if p == "" {
+				continue
+			}
+			out = append(out, certrisk.LocationInput{TLSVersion: p})
 		}
-		out = append(out, certrisk.LocationInput{TLSVersion: p})
+	}
+	// NULL이면 판정 대상 위치가 하나도 없거나 전부 미상이다 — 어느 쪽이든 판정하지 않는다.
+	if chainIncomplete.Valid && chainIncomplete.Bool {
+		incomplete := false
+		out = append(out, certrisk.LocationInput{ChainComplete: &incomplete})
 	}
 	return out
 }
@@ -378,9 +390,11 @@ func (s *Store) ListCertificates(ctx context.Context, in ListCertificatesInput) 
 	}
 
 	// id 보조 정렬로 페이지 경계를 안정화한다.
-	// last_seen_at·관측 TLS 버전은 상관 서브쿼리로 붙인다(정렬·필터에는 쓰지 않는다).
-	// TLS 버전은 위험 판정의 위치 축 입력이며 removed 위치의 옛 관측은 제외한다
-	// (certrisk.legacyTLSRule·riskLegacyTLSSQL과 같은 기준).
+	// last_seen_at·관측 TLS 버전·체인 불완전 여부는 상관 서브쿼리로 붙인다
+	// (정렬·필터에는 쓰지 않는다). 뒤 둘은 위험 판정의 위치 축 입력이며 removed
+	// 위치의 옛 관측은 제외한다 — Go 규칙(certrisk.legacyTLSRule·incompleteChainRule)과
+	// SQL 술어(riskLegacyTLSSQL·riskIncompleteChainSQL)가 같은 기준이어야 한다.
+	// chain_complete는 IS NOT NULL로 좁혀 "미상"이 false로 뭉개지지 않게 한다.
 	query := fmt.Sprintf(`SELECT %s,
 			(SELECT max(l.last_verified_at) FROM certificate_locations l
 			  WHERE l.certificate_id = certificates.id),
@@ -388,7 +402,12 @@ func (s *Store) ListCertificates(ctx context.Context, in ListCertificatesInput) 
 			   FROM certificate_locations l
 			  WHERE l.certificate_id = certificates.id
 			    AND l.deployment_status <> 'removed'
-			    AND l.tls_version IS NOT NULL)
+			    AND l.tls_version IS NOT NULL),
+			(SELECT bool_or(NOT l.chain_complete)
+			   FROM certificate_locations l
+			  WHERE l.certificate_id = certificates.id
+			    AND l.deployment_status <> 'removed'
+			    AND l.chain_complete IS NOT NULL)
 		 FROM certificates%s ORDER BY %s %s, id ASC LIMIT $%d OFFSET $%d`,
 		certificateColumns, where, col, dir, len(args)+1, len(args)+2)
 	rows, err := s.db.QueryContext(ctx, query, append(args, size, (page-1)*size)...)
@@ -404,14 +423,15 @@ func (s *Store) ListCertificates(ctx context.Context, in ListCertificatesInput) 
 	for rows.Next() {
 		var item CertificateListItem
 		var tlsVersions sql.NullString
-		c, err := scanCertificateListRow(rows, &item.LastSeenAt, &tlsVersions)
+		var chainIncomplete sql.NullBool
+		c, err := scanCertificateListRow(rows, &item.LastSeenAt, &tlsVersions, &chainIncomplete)
 		if err != nil {
 			return nil, fmt.Errorf("store: scan certificate: %w", err)
 		}
 		item.Certificate = c
 		item.Risk = certrisk.Evaluate(certrisk.Input{
 			Certificate: c,
-			Locations:   tlsVersionLocations(tlsVersions),
+			Locations:   listRiskLocations(tlsVersions, chainIncomplete),
 			Now:         now,
 		})
 		items = append(items, item)
@@ -449,6 +469,7 @@ func (s *Store) GetCertificateDetail(ctx context.Context, id string) (*Certifica
 		SELECT l.id, l.certificate_id, l.target_id, l.location_type, l.file_path,
 			l.store_name, l.service_name, l.port, l.last_verified_at, l.deployment_status,
 			l.tls_version, m.current_fingerprint, mc.id,
+			l.presented_chain_len, l.chain_complete,
 			t.id, t.name, t.target_type, t.hostname, host(t.ip_address)
 		FROM certificate_locations l
 		JOIN targets t ON t.id = l.target_id
@@ -470,6 +491,7 @@ func (s *Store) GetCertificateDetail(ctx context.Context, id string) (*Certifica
 			&l.ID, &l.CertificateID, &l.TargetID, &locType, &l.FilePath,
 			&l.StoreName, &l.ServiceName, &l.Port, &l.LastVerifiedAt, &depStatus,
 			&l.TLSVersion, &l.CurrentFingerprint, &l.CurrentCertificateID,
+			&l.PresentedChainLen, &l.ChainComplete,
 			&l.Target.ID, &l.Target.Name, &l.Target.TargetType, &l.Target.Hostname, &l.Target.IPAddress,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan location: %w", err)
@@ -504,10 +526,14 @@ func (s *Store) GetCertificateDetail(ctx context.Context, id string) (*Certifica
 // locationRiskInputs는 상세 조회의 설치 위치를 위치 축 판정 입력으로 옮긴다.
 // deployment_status='removed'는 더 이상 인증서를 제공하지 않는 위치이므로
 // 옛 관측으로 판정하지 않는다(목록 경로의 서브쿼리 조건과 같은 기준).
+// ChainComplete는 nil을 그대로 넘긴다 — 미상은 판정 대상이 아니다 (0018).
 func locationRiskInputs(locs []LocationWithTarget) []certrisk.LocationInput {
 	out := make([]certrisk.LocationInput, 0, len(locs))
 	for _, l := range locs {
-		in := certrisk.LocationInput{Removed: l.DeploymentStatus == domain.DeployRemoved}
+		in := certrisk.LocationInput{
+			Removed:       l.DeploymentStatus == domain.DeployRemoved,
+			ChainComplete: l.ChainComplete,
+		}
 		if l.TLSVersion != nil {
 			in.TLSVersion = *l.TLSVersion
 		}

@@ -414,6 +414,67 @@ func TestLegacyTLSIsLocationScoped(t *testing.T) {
 	}
 }
 
+func TestIncompleteChainIsLocationScoped(t *testing.T) {
+	c := baseCert()
+	yes, no := true, false
+
+	// 위치가 없거나 미상(nil)이면 판정하지 않는다 — 모르는 것을 danger로 띄우지 않는다.
+	if hasCode(assess(c), CodeIncompleteChain) {
+		t.Error("no locations should not produce incomplete_chain")
+	}
+	if hasCode(assess(c, LocationInput{}), CodeIncompleteChain) {
+		t.Error("chain_complete=nil(0018 이전 관측)이 판정에 걸렸다")
+	}
+	// 완전한 체인도 걸리지 않는다.
+	if hasCode(assess(c, LocationInput{ChainComplete: &yes}), CodeIncompleteChain) {
+		t.Error("complete chain should not produce incomplete_chain")
+	}
+
+	a := assess(c, LocationInput{ChainComplete: &no})
+	f := findingFor(t, a, CodeIncompleteChain)
+	if f.Scope != ScopeLocation {
+		t.Errorf("scope = %q, want location (재발급이 아니라 배포를 고쳐야 한다)", f.Scope)
+	}
+	if f.Severity != SeverityDanger || a.Severity != SeverityDanger {
+		t.Errorf("severity = %q/%q, want danger", f.Severity, a.Severity)
+	}
+
+	// removed 위치의 옛 관측으로는 판정하지 않는다.
+	if hasCode(assess(c, LocationInput{ChainComplete: &no, Removed: true}), CodeIncompleteChain) {
+		t.Error("removed location should not produce incomplete_chain")
+	}
+
+	// 여러 위치가 걸려도 판정은 1건으로 묶이고 곳 수가 실린다.
+	multi := assess(c,
+		LocationInput{ChainComplete: &no},
+		LocationInput{ChainComplete: &no},
+		LocationInput{ChainComplete: &yes},
+		LocationInput{},
+	)
+	count := 0
+	for _, x := range multi.Findings {
+		if x.Code == CodeIncompleteChain {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("incomplete_chain findings = %d, want 1", count)
+	}
+	if msg := findingFor(t, multi, CodeIncompleteChain).Message; !strings.Contains(msg, "2곳") {
+		t.Errorf("message should count 2 locations, got %q", msg)
+	}
+}
+
+// 위치 축 규칙 둘은 서로 독립이다 — 하나가 걸려도 다른 하나를 가리지 않는다.
+func TestLocationScopedRulesAreIndependent(t *testing.T) {
+	c := baseCert()
+	no := false
+	a := assess(c, LocationInput{TLSVersion: "TLS 1.0", ChainComplete: &no})
+	if !hasCode(a, CodeLegacyTLS) || !hasCode(a, CodeIncompleteChain) {
+		t.Errorf("codes = %v, want both legacy_tls and incomplete_chain", codes(a))
+	}
+}
+
 // 최고 심각도는 판정 항목 중 가장 심각한 값이다 (ok < info < warn < danger).
 func TestAssessmentSeverityIsMaximum(t *testing.T) {
 	c := baseCert()

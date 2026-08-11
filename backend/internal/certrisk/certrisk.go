@@ -103,6 +103,8 @@ const (
 	CodeChainAnomaly Code = "chain_anomaly"
 	// CodeLegacyTLS는 위치가 TLS 1.0/1.1로 협상하는 경우다 (위치 축).
 	CodeLegacyTLS Code = "legacy_tls"
+	// CodeIncompleteChain은 엔드포인트가 중간 CA를 함께 제시하지 않는 경우다 (위치 축).
+	CodeIncompleteChain Code = "incomplete_chain"
 )
 
 // Rule은 판정 항목 1개의 고정 메타데이터다.
@@ -136,6 +138,7 @@ var rules = []Rule{
 	{CodeSelfSigned, SeverityWarn, ScopeCertificate, "자체 서명", false},
 	{CodeChainAnomaly, SeverityDanger, ScopeCertificate, "체인 이상", false},
 	{CodeLegacyTLS, SeverityDanger, ScopeLocation, "낡은 TLS 버전", false},
+	{CodeIncompleteChain, SeverityDanger, ScopeLocation, "중간 CA 누락", false},
 }
 
 // ruleByCode는 코드 → 규칙 조회용 색인이다.
@@ -188,6 +191,11 @@ type LocationInput struct {
 	// Removed는 이 위치가 더 이상 인증서를 제공하지 않는다고 판정된 상태인지다
 	// (deployment_status='removed'). 사라진 위치의 옛 관측으로 danger를 띄우지 않는다.
 	Removed bool
+	// ChainComplete는 이 위치가 마지막 관측에서 제시한 체인만으로 리프에서 위로
+	// 이어졌는지다 (0018 certificate_locations.chain_complete).
+	// **nil은 미상이며 판정하지 않는다** — 0018 이전 관측·파일 업로드 위치가 nil이고,
+	// 모르는 것을 danger로 띄우면 재스캔 전 인벤토리 전체가 빨간불이 된다.
+	ChainComplete *bool
 }
 
 // Input은 판정 1회의 입력이다. Locations가 비어 있으면 위치 축 판정은 생략된다
@@ -236,6 +244,9 @@ func Evaluate(in Input) Assessment {
 	}
 	if msg, ok := legacyTLSRule(in.Locations); ok {
 		add(CodeLegacyTLS, msg)
+	}
+	if msg, ok := incompleteChainRule(in.Locations); ok {
+		add(CodeIncompleteChain, msg)
 	}
 
 	sev := SeverityOK
