@@ -12,7 +12,10 @@ export function AppTopbar() {
   const { user, loading, logout } = useAuth();
 
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between border-b bg-background px-6">
+    // 뷰포트 고정 — 본문만 스크롤한다. 아래로 지나가는 콘텐츠를 가려야 하므로
+    // 배경은 반드시 불투명(bg-background)이고, z는 사이드바와 같은 층이되
+    // 다이얼로그·팝오버(z-50 포털)보다는 아래다.
+    <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center justify-between border-b bg-background px-6">
       {/* 좌측은 의도적으로 비워둔다 — 추후 탭 자리(사용자 확정: Phase 문구 삭제). */}
       <div />
       <div className="flex items-center gap-3">

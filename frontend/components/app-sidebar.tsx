@@ -80,8 +80,10 @@ export function AppSidebar() {
     user?.role === "security_administrator";
 
   return (
-    <aside className="flex w-60 shrink-0 flex-col border-r bg-sidebar">
-      <div className="flex h-14 flex-col justify-center border-b px-5">
+    // 뷰포트 고정 — 본문이 아무리 길어도 사이드바는 따라 내려가지 않는다.
+    // h-dvh(100vh 아님)라 모바일 브라우저의 주소창 접힘에도 바닥이 잘리지 않는다.
+    <aside className="sticky top-0 z-30 flex h-dvh w-60 shrink-0 flex-col border-r bg-sidebar">
+      <div className="flex h-14 shrink-0 flex-col justify-center border-b px-5">
         <div className="text-sm font-semibold tracking-tight">
           INHERIT AutoCert
         </div>
@@ -89,37 +91,40 @@ export function AppSidebar() {
           인증서 라이프사이클 관리
         </div>
       </div>
-      <nav className="flex flex-col gap-1 p-3">
-        <div className="px-3 pb-1 text-xs font-medium text-muted-foreground/70">
-          운영
-        </div>
-        {NAV_ITEMS.map((item) => (
-          <NavLink key={item.href} {...item} pathname={pathname} />
-        ))}
-      </nav>
-      {/* 관리 영역 — 구현된 항목만 링크로 두고, 나머지는 목업의 잠금 표시를 유지한다. */}
-      <nav className="flex flex-col gap-1 p-3 pt-1" aria-label="관리 메뉴">
-        <div className="px-3 pb-1 text-xs font-medium text-muted-foreground/70">
-          관리
-        </div>
-        {canAdminUsers &&
-          ADMIN_NAV_ITEMS.map((item) => (
-            <NavLink key={item.href} {...item} pathname={pathname} />
-          ))}
-        {canAdminNotifications &&
-          NOTIFY_ADMIN_NAV_ITEMS.map((item) => (
-            <NavLink key={item.href} {...item} pathname={pathname} />
-          ))}
-        {["CA 관리", "정책", "작업", "감사 로그"].map((label) => (
-          <div
-            key={label}
-            className="flex items-center justify-between rounded-md px-3 py-2 text-sm text-muted-foreground/50"
-          >
-            {label}
-            <span className="text-xs">준비 중</span>
+      {/* 메뉴가 뷰포트보다 길어지면 브랜드 헤더는 남기고 이 영역만 따로 스크롤한다. */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        <nav className="flex flex-col gap-1 p-3">
+          <div className="px-3 pb-1 text-xs font-medium text-muted-foreground/70">
+            운영
           </div>
-        ))}
-      </nav>
+          {NAV_ITEMS.map((item) => (
+            <NavLink key={item.href} {...item} pathname={pathname} />
+          ))}
+        </nav>
+        {/* 관리 영역 — 구현된 항목만 링크로 두고, 나머지는 목업의 잠금 표시를 유지한다. */}
+        <nav className="flex flex-col gap-1 p-3 pt-1" aria-label="관리 메뉴">
+          <div className="px-3 pb-1 text-xs font-medium text-muted-foreground/70">
+            관리
+          </div>
+          {canAdminUsers &&
+            ADMIN_NAV_ITEMS.map((item) => (
+              <NavLink key={item.href} {...item} pathname={pathname} />
+            ))}
+          {canAdminNotifications &&
+            NOTIFY_ADMIN_NAV_ITEMS.map((item) => (
+              <NavLink key={item.href} {...item} pathname={pathname} />
+            ))}
+          {["CA 관리", "정책", "작업", "감사 로그"].map((label) => (
+            <div
+              key={label}
+              className="flex items-center justify-between rounded-md px-3 py-2 text-sm text-muted-foreground/50"
+            >
+              {label}
+              <span className="text-xs">준비 중</span>
+            </div>
+          ))}
+        </nav>
+      </div>
     </aside>
   );
 }
