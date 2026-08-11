@@ -322,7 +322,7 @@ func TestDetectPayloadCarriesOnlyPublicFields(t *testing.T) {
 		t.Fatalf("decode payload: %v", err)
 	}
 	// 새 키를 추가할 때는 이 목록을 함께 고친다 — 원문·개인키가 payload에 실릴
-	// 수 없다는 성질을 이 화이트리스트가 지킨다(0020 is_ca는 공개 분류값이다).
+	// 수 없다는 성질을 이 화이트리스트가 지킨다(0022 is_ca는 공개 분류값이다).
 	want := map[string]bool{
 		"certificate_id": true, "common_name": true, "not_after": true, "days_remaining": true,
 		"environment": true, "owner": true, "location_count": true, "is_ca": true,
@@ -1451,9 +1451,9 @@ func TestNotificationPolicyCRUD(t *testing.T) {
 	}
 }
 
-// ===== CA 전용 임계값 (0020) =====
+// ===== CA 전용 임계값 (0022) =====
 
-// TestDetectUsesCAThresholdsForCACertificates는 0020의 핵심 성질을 고정한다:
+// TestDetectUsesCAThresholdsForCACertificates는 0022의 핵심 성질을 고정한다:
 // ca_thresholds가 있으면 certificate_type='ca'인 인증서만 그 목록으로 판정하고,
 // 리프는 thresholds 그대로다. 하나의 정책·사건 종류를 그대로 공유하므로
 // 기존 채널·수신자 설정이 CA에도 그대로 적용된다.

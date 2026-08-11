@@ -218,7 +218,7 @@ func TestNotificationPolicyAPI(t *testing.T) {
 		}
 	})
 
-	// CA 전용 임계값(0020)은 3상태다. PATCH에서 "키 없음"과 "명시적 null"이 같은
+	// CA 전용 임계값(0022)은 3상태다. PATCH에서 "키 없음"과 "명시적 null"이 같은
 	// 값으로 접히면 한 번 설정한 CA 임계값을 API로 되돌릴 수 없게 된다.
 	t.Run("ca_thresholds keeps three states through PATCH", func(t *testing.T) {
 		patch := func(body map[string]any) map[string]any {

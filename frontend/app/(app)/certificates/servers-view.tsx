@@ -56,14 +56,21 @@ import {
   type ServerDetailResponse,
   type ServerEndpoint,
   type ServerListItem,
+  SERVER_ISSUED_BY_PARAM,
   type ServerListResponse,
 } from "@/lib/servers";
 
-/** 서버 뷰 전용 URL 파라미터 — 목록 뷰와 키를 공유하지 않는다. */
+/**
+ * 서버 뷰 전용 URL 파라미터 — 목록 뷰와 키를 공유하지 않는다.
+ * `issuedBy`도 마찬가지다: 목록 뷰의 `issued_by`는 **직계 1단계**인데 서버 API의
+ * 같은 이름 필터는 **계열 전체**라, 값이 뷰를 넘나들면 같은 이름이 다른 뜻으로
+ * 새어 나간다.
+ */
 const P = {
   q: "srv_q",
   expiry: "srv_expiry",
   mismatch: "srv_mismatch",
+  issuedBy: SERVER_ISSUED_BY_PARAM,
   sort: "srv_sort",
   page: "srv_page",
   pageSize: "srv_page_size",
@@ -98,6 +105,7 @@ export function ServersView({
   const expiryValue = searchParams.get(P.expiry) ?? "all";
   const mismatchOnly = searchParams.get(P.mismatch) === "true";
   const search = searchParams.get(P.q) ?? "";
+  const issuedBy = searchParams.get(P.issuedBy) ?? "";
 
   const apiQuery = React.useMemo(() => {
     const out = new URLSearchParams();
@@ -105,6 +113,7 @@ export function ServersView({
     if (expiryValue === "expired") out.set("expired", "true");
     else if (expiryValue !== "all") out.set("expires_within_days", expiryValue);
     if (mismatchOnly) out.set("mismatch", "true");
+    if (issuedBy) out.set("issued_by", issuedBy);
     const preset =
       SERVER_SORT_OPTIONS.find((o) => o.value === sortValue) ??
       SERVER_SORT_OPTIONS[0];
@@ -115,7 +124,7 @@ export function ServersView({
     const pageSize = searchParams.get(P.pageSize);
     if (pageSize) out.set("page_size", pageSize);
     return out;
-  }, [search, expiryValue, mismatchOnly, sortValue, searchParams]);
+  }, [search, expiryValue, mismatchOnly, issuedBy, sortValue, searchParams]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -172,7 +181,7 @@ export function ServersView({
   }, []);
 
   const hasFilter =
-    search !== "" || expiryValue !== "all" || mismatchOnly;
+    search !== "" || expiryValue !== "all" || mismatchOnly || issuedBy !== "";
 
   return (
     <div className="space-y-4">
@@ -242,6 +251,7 @@ export function ServersView({
                   [P.q]: null,
                   [P.expiry]: null,
                   [P.mismatch]: null,
+                  [P.issuedBy]: null,
                   [P.page]: null,
                 },
                 false,
@@ -252,6 +262,30 @@ export function ServersView({
           </Button>
         )}
       </div>
+
+      {/*
+        계열 필터는 Select가 아니라 링크로만 들어오므로, 걸려 있다는 사실과
+        해제 수단을 화면에 따로 낸다 — 안 그러면 "왜 서버가 몇 대뿐이지"가 된다.
+      */}
+      {issuedBy !== "" && (
+        <div className="flex flex-wrap items-center gap-2 text-[13px]">
+          <Badge variant="secondary">발급 기관 계열로 좁힘</Badge>
+          <span className="text-muted-foreground">
+            이 발급 기관과 그 하위 기관이 발급한 인증서를 쓰는 서버만 보고
+            있습니다.
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 text-xs"
+            onClick={() =>
+              setQuery({ [P.issuedBy]: null, [P.page]: null }, false)
+            }
+          >
+            해제
+          </Button>
+        </div>
+      )}
 
       {error && (
         <Alert variant="destructive">

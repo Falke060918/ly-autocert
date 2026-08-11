@@ -4,7 +4,7 @@
  * CA 트리 축은 인벤토리의 체인 연결(authority_key_id 등)에서 나온다.
  */
 
-import { apiFetch } from "@/lib/api";
+import { apiFetch, type CertificateStatus } from "@/lib/api";
 import { dnOrganization } from "@/lib/format";
 
 // ── 집계 (GET /certificates/issuers) ──────────────────────────────────────
@@ -14,6 +14,15 @@ export interface IssuerOrgCount {
   /** issuer_dn의 O= 값. 조직이 없는 DN·백필 전 행은 null로 묶인다. */
   organization: string | null;
   count: number;
+}
+
+/** CA 노드가 직접 발급한 리프 1건의 미리보기 (만료 임박순 최대 5건). */
+export interface CALeafPreview {
+  id: string;
+  common_name: string;
+  subject_dn: string;
+  not_after: string;
+  status: CertificateStatus;
 }
 
 /** 서버 ca_tree 노드의 실제 응답(wire) 형태 — 화면은 아래 IssuerCANode를 쓴다. */
@@ -26,9 +35,13 @@ interface CATreeNodeWire {
   not_after: string | null;
   status: string | null;
   self_signed: boolean;
+  /** 이 노드가 놓인 계층 (최상위 0). 구버전 백엔드에는 없어 보정한다. */
+  depth?: number;
   leaf_count: number;
   /** 하위(children) 포함 리프 합산 — 구버전 백엔드에는 없어 클라이언트가 보정한다. */
   subtree_leaf_count?: number;
+  /** 직접 발급 리프 미리보기 — 구버전 백엔드에는 없어 빈 배열로 보정한다. */
+  leaf_preview?: CALeafPreview[] | null;
   children: CATreeNodeWire[] | null;
 }
 
@@ -42,8 +55,11 @@ interface IssuerAggregationWire {
 
 /**
  * CA 트리 노드 — **N계층**이다(서버가 0021부터 계층을 평탄화하지 않는다).
- * `toCANode`가 children을 재귀로 편다. wire의 `id`를 `certificate_id`로,
- * `organization`은 subject_dn의 O=에서 파생해 소비자 형태로 맞춘다.
+ * 중간 CA의 중간 CA도 평탄화하지 않고 제 부모 아래에 그대로 중첩되므로
+ * 소비자는 반드시 **재귀로** 다뤄야 한다("루트→중간 2단"을 가정한 코드는
+ * 손자 노드를 통째로 잃는다). `toCANode`가 children을 재귀로 편다.
+ * wire의 `id`를 `certificate_id`로, `organization`은 subject_dn의 O=에서
+ * 파생해 소비자 형태로 맞춘다.
  */
 export interface IssuerCANode {
   /** 인벤토리에 이 CA 인증서가 실제로 있으면 그 id, 없으면 null (wire의 id). */
@@ -57,14 +73,19 @@ export interface IssuerCANode {
   not_after: string | null;
   status: string | null;
   self_signed: boolean;
+  /** 이 노드가 놓인 계층 (최상위 0). 들여쓰기·라벨이 이 값을 쓴다. */
+  depth: number;
   /** 이 CA가 **직접** 발급한 리프 수 — 하위 중간 CA 발급분은 포함하지 않는다. */
   leaf_count: number;
-  /**
-   * 하위(children) 포함 리프 합산 — 루트의 "하위 포함 N건" 표기용.
-   * 중간 노드는 손자가 없어(2계층 평탄화) leaf_count와 같다.
-   */
+  /** 이 노드와 모든 하위 CA(손자·증손자 포함)의 leaf_count 합산. */
   subtree_leaf_count: number;
-  /** 하위 중간 CA. 중간 노드에서는 빈 배열. */
+  /**
+   * 직접 발급 리프 중 만료가 가장 임박한 최대 5건.
+   * `leaf_count`가 이 배열 길이보다 크면 나머지가 있다는 뜻이고,
+   * 미보유(stored=false) 자리 노드는 항상 빈 배열이다.
+   */
+  leaf_preview: CALeafPreview[];
+  /** 이 노드가 직접 발급한 하위 CA들. 깊이 제한이 없다. */
   children: IssuerCANode[];
 }
 
@@ -78,8 +99,8 @@ export interface IssuerAggregationResponse {
   unmatched_leaf_count: number;
 }
 
-function toCANode(node: CATreeNodeWire): IssuerCANode {
-  const children = (node.children ?? []).map(toCANode);
+function toCANode(node: CATreeNodeWire, depth = 0): IssuerCANode {
+  const children = (node.children ?? []).map((c) => toCANode(c, depth + 1));
   return {
     certificate_id: node.id,
     stored: node.stored,
@@ -89,11 +110,15 @@ function toCANode(node: CATreeNodeWire): IssuerCANode {
     not_after: node.not_after,
     status: node.status,
     self_signed: node.self_signed,
+    // depth 미제공(구버전 백엔드) 시 중첩 위치에서 파생한다.
+    depth: node.depth ?? depth,
     leaf_count: node.leaf_count,
-    // 합산 미제공(구버전 백엔드) 시 직접 발급 + 자식 직접 발급으로 보정한다.
+    // 합산 미제공(구버전 백엔드) 시 자손 전체(재귀)를 더해 보정한다.
     subtree_leaf_count:
       node.subtree_leaf_count ??
-      node.leaf_count + children.reduce((sum, c) => sum + c.leaf_count, 0),
+      node.leaf_count +
+        children.reduce((sum, c) => sum + c.subtree_leaf_count, 0),
+    leaf_preview: node.leaf_preview ?? [],
     children,
   };
 }

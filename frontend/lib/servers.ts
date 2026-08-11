@@ -125,6 +125,16 @@ export const SERVER_SORT_OPTIONS = [
 
 export const DEFAULT_SERVER_SORT = "risk:asc";
 
+/**
+ * 서버 뷰의 CA 계열 필터 URL 파라미터.
+ *
+ * API 쪽 이름은 인증서 목록과 같은 `issued_by`지만 **뜻이 다르다** — 목록은
+ * 직계 1단계, 서버는 계열 전체(전이적 자손)다. URL에서까지 같은 키를 쓰면
+ * 뷰를 바꿀 때 값이 새어 다른 뜻으로 해석되므로 화면 쪽만 `srv_` 접두사를
+ * 쓰고 API 호출 직전에 `issued_by`로 되돌린다(srv_q·srv_sort와 같은 규약).
+ */
+export const SERVER_ISSUED_BY_PARAM = "srv_issued_by";
+
 /** 호스트 표시 이름 — 호스트명이 없으면 IP, 둘 다 없으면 대상 id 앞자리. */
 export function serverLabel(s: ServerListItem): string {
   return s.hostname ?? s.ip_address ?? s.id.slice(0, 8);
