@@ -41,8 +41,8 @@ interface IssuerAggregationWire {
 }
 
 /**
- * CA 트리 노드 — 루트→중간 **2계층 고정**이다. children은 루트 노드에만
- * 채워지고 중간 CA 노드에서는 빈 배열이다. wire의 `id`를 `certificate_id`로,
+ * CA 트리 노드 — **N계층**이다(서버가 0021부터 계층을 평탄화하지 않는다).
+ * `toCANode`가 children을 재귀로 편다. wire의 `id`를 `certificate_id`로,
  * `organization`은 subject_dn의 O=에서 파생해 소비자 형태로 맞춘다.
  */
 export interface IssuerCANode {
