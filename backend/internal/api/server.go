@@ -195,6 +195,10 @@ func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorC
 	// 스캔 Job 목록·대상 제안 — 읽기 전용이라 전 역할, 감사 이벤트 없음.
 	s.protected("GET /api/v1/discovery/scans", s.handleListScans, domain.AllRoles...)
 	s.protected("GET /api/v1/discovery/scan-suggestions", s.handleScanSuggestions, domain.AllRoles...)
+	// 통합 작업 목록(스캔 Job + 스윕 + 정기 스캔 실행)과 스캔 기본값 노출.
+	// 둘 다 읽기 전용이라 전 역할이다 — 조회도 역할 검사를 거친다(하드 규칙 6).
+	s.protected("GET /api/v1/discovery/activity", s.handleListDiscoveryActivity, domain.AllRoles...)
+	s.protected("GET /api/v1/discovery/defaults", s.handleDiscoveryDefaults, domain.AllRoles...)
 	s.protected("GET /api/v1/discovery/scans/{id}", handleGetScan(st), domain.AllRoles...)
 	// 취소는 발주와 같은 3역할. 전이 + discovery.scan.cancel 감사는 store가 동일 tx로.
 	s.protected("POST /api/v1/discovery/scans/{id}/cancel", handleCancelScan(disc, st),

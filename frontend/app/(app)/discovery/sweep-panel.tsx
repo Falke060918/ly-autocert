@@ -12,8 +12,6 @@ import { ApiError, type Sensor } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import {
   createSweep,
-  DEFAULT_SWEEP_MAX_DAYS,
-  DEFAULT_SWEEP_RATE_PPS,
   elapsedLabel,
   estimateSweep,
   formatCount,
@@ -23,6 +21,7 @@ import {
   STARTTLS_NOTICE,
   sweepSensorID,
   transitionSweep,
+  type DiscoveryDefaults,
   type PortPreset,
   type Sweep,
   type SweepRequest,
@@ -279,11 +278,17 @@ export function SweepList({
  */
 export function SweepForm({
   presets,
+  defaults,
   targetList,
   sensorId,
   onCreated,
 }: {
   presets: PortPreset[];
+  /**
+   * GET /discovery/defaults의 유효값. 아직 못 받았으면 null이고, 그때는
+   * 숫자를 지어내지 않는다(placeholder에 숫자 없음·미리보기 비움).
+   */
+  defaults: DiscoveryDefaults | null;
   /** 공용 대상 입력을 줄 목록으로 정리한 값 — 원문 그대로 서버에 보낸다. */
   targetList: string[];
   /** 실행을 위임할 센서 id. null이면 서버 직접 실행이다. */
@@ -302,7 +307,8 @@ export function SweepForm({
     targetList,
     portSpec.trim() || "all",
     presets,
-    Number.isFinite(rate) ? rate : DEFAULT_SWEEP_RATE_PPS,
+    Number.isFinite(rate) ? rate : (defaults?.sweep.rate_pps ?? null),
+    defaults?.sweep.max_days ?? null,
   );
 
   async function submit(e: React.FormEvent) {
@@ -359,9 +365,12 @@ export function SweepForm({
           id="sweep-rate"
           type="number"
           min={1}
-          max={1000}
+          // 상한도 서버가 정한다(초과분은 서버가 잘라낸다).
+          max={defaults?.limits.max_rate_pps}
           className="font-mono text-xs"
-          placeholder={`서버 기본값 (${DEFAULT_SWEEP_RATE_PPS})`}
+          placeholder={
+            defaults ? `서버 기본값 (${defaults.sweep.rate_pps})` : "서버 기본값"
+          }
           value={ratePPS}
           onChange={(e) => setRatePPS(e.target.value)}
         />
@@ -433,7 +442,7 @@ function SweepEstimateBox({
           </div>
           {estimate.exceedsLimit && (
             <p className="pt-1 text-amber-700">
-              서버 상한({DEFAULT_SWEEP_MAX_DAYS}일)을 넘습니다 — 이대로 시작하면
+              서버 상한({estimate.maxDays}일)을 넘습니다 — 이대로 시작하면
               거부됩니다. 대역을 줄이십시오.
             </p>
           )}
