@@ -33,12 +33,14 @@
 9. **[MVP] Docker Compose 개발환경**
 10. **[MVP] 사용자 관리 API + 화면** — 역할·표시 이름 수정, 비활성화·재활성화, 관리자 비밀번호 재설정(해당 사용자 세션 즉시 폐기), `/users` 화면 1개. 전부 System Administrator 전용이며 변경마다 감사 이벤트를 같은 트랜잭션으로 기록한다. `users.is_active`를 바꿀 API가 없으면 퇴사자 차단이 DB 직접 UPDATE로만 가능해 감사 로그를 우회한다
 
-### Phase 2 이후 (이번 범위 밖, 설계만 고려)
+### Phase 1.5 이후 (이번 범위 밖, 설계만 고려)
 
-- **Phase 2**: CA 공통 인터페이스, ACME / Microsoft AD CS / HashiCorp Vault PKI 커넥터, 프로파일, CSR 생성, 발급 + Prometheus 메트릭 최소셋(`/metrics`) + 오프라인 이미지 번들·체크섬 반입 절차(Phase 3b 이전 완료, Helm보다 선행)
-- **Phase 3**: 센서(원격 수집기) 선행 — **3a**: 격리 세그먼트 원격 스캔용 센서, 아웃바운드 전용 mTLS pull 워커 → **3b**: Linux/Windows 배포 에이전트(단일 Go 바이너리, outbound mTLS), Nginx/IIS/파일 배포, 배포 검증, 롤백
-- **Phase 4**: 갱신 정책·스케줄러·승인 워크플로·자동 배포·재시도·알림 + OpenTelemetry 분산 트레이스 + Helm Chart / Kubernetes·비Docker 설치 경로
-- **Phase 5**: AI 운영 지원(자연어 검색, 위험 설명, 실패 로그 요약, 소유자 후보 추천)
+**Phase 번호는 00-spec 15장 체계가 정본**이며, 사업기획 문서(`docs/TLS_인증서_관리_신규사업_AI_context.md`, v2.1)의 단계 체계(P1 → P1.5 → P2 → P3)와 정합한다. 센서(구 Phase 3a)는 Phase 1의 전제 아키텍처로 이미 구현 완료다.
+
+- **Phase 1.5 — Ownership / Workflow / 커넥터**: 서비스 소유자 지정, 알림 acknowledgement/snooze, 에스컬레이션 정책, 정책 위반 점수, 기간별 리포트, CMDB/ITSM/K8s/LB·WAF 보조 커넥터, WebtoB 설정 파일 read-only 파서(스캔 결과와 대조), Origin/Edge(내/외부) 인증서 이원 관리 설계(동일 FQDN 일치성 검사 — 구현 스키마는 Phase 2 스키마 설계 직전에 SNI·멀티테넌시와 일괄)
+- **Phase 2 — 발급과 갱신 오케스트레이션**: 내부 ACME-compatible RA/게이트웨이 골격 + CA adapter 추상화(ACME / Microsoft AD CS / HashiCorp Vault PKI / 상용 CA), 프로파일·CSR·발급 이력, 계정키·EAB·credential 관리, 갱신 정책·스케줄러·승인 워크플로·자동 발급·재시도·알림(구 Phase 4 흡수) + Prometheus 메트릭 최소셋(`/metrics`). WebtoB·WAF에도 표준 ACME 클라이언트(certbot류) 적용을 먼저 개발·검증하고, 어려우면 하이브리드(불가 장비는 Phase 3 배포 adapter) — 최종 확정은 Phase 2 착수 시 재결정. SNI 엔드포인트 식별자(IP+Port+Protocol+SNI)·Origin/Edge 구현 스키마·멀티테넌시 컬럼은 **역방향 불가급 결정**이라 Phase 2 스키마 설계 직전에 일괄 재론
+- **Phase 3 — 배포 자동화 / Multi-CA**: Linux/Windows 배포 에이전트(단일 Go 바이너리, outbound mTLS), Nginx/Apache/IIS/파일/K8s Secret/WebtoB·WAF deployment adapter(장비별 지원 수준은 capability matrix로 명시 — "WebtoB 자동 교체"는 MVP 약속이 아님), 배포 검증·롤백, 자동 배포(구 Phase 4 흡수), Multi-CA 확대 + OpenTelemetry 분산 트레이스 + Helm Chart / Kubernetes·비Docker 설치 경로
+- **AI 보조 트랙 (Phase 번호 없음)**: AI 운영 지원(자연어 검색, 위험 설명, 실패 로그 요약, 소유자 후보 추천)
 
 ## 비기능 요구사항
 
@@ -70,22 +72,22 @@
 
 - **Backend**: Go, REST API, OpenAPI 3, PostgreSQL, SQL migration, 비동기 작업 큐
 - **Frontend**: React + TypeScript + Next.js
-- **Agent/Sensor**: Go 단일 바이너리 (Windows/Linux) — 센서(원격 수집기)는 Phase 3a, 배포 에이전트는 Phase 3b
-- **배포**: Docker, Docker Compose (Phase 1) / Helm Chart, Kubernetes (Phase 4)
-- **관측성**: 구조화 JSON 로그, Request ID 전파 (Phase 1 구현 완료) / Prometheus Metrics (Phase 2) / OpenTelemetry·Trace ID (Phase 4)
+- **Agent/Sensor**: Go 단일 바이너리 (Windows/Linux) — 센서(원격 수집기)는 Phase 1 전제 아키텍처(구현 완료), 배포 에이전트는 Phase 3
+- **배포**: Docker, Docker Compose (Phase 1) / Helm Chart, Kubernetes (Phase 3)
+- **관측성**: 구조화 JSON 로그, Request ID 전파 (Phase 1 구현 완료) / Prometheus Metrics (Phase 2) / OpenTelemetry·Trace ID (Phase 3)
 
 ## 이번 범위에서 제외 (명시적 제외)
 
-이 목록은 "이번 범위(Phase 1) 밖"이라는 뜻이고, 뒤에 Phase가 적힌 항목은 해당 Phase에서 구현한다. 사용자 관리는 Phase 1 범위로 편입되어 이 목록에서 빠졌다.
+이 목록은 "이번 범위(Phase 1) 밖"이라는 뜻이고, 뒤에 Phase가 적힌 항목은 해당 Phase에서 구현한다. 사용자 관리는 Phase 1 범위로 편입되어 이 목록에서 빠졌고, 센서(원격 수집기)·만료 알림 4채널·오프라인 이미지 번들은 구현 완료되어 빠졌다.
 
-- **Phase 2~5 전체** — CA 커넥터·발급, 원격 수집기(센서)·에이전트·배포·롤백, 자동 갱신·승인 워크플로, AI 기능
-- 정책 엔진 실행(정책 데이터 모델 자리만 확보, 평가 로직은 Phase 4)
+- **Phase 1.5 이후 전체** — 소유자 지정·ack/에스컬레이션·리포트·커넥터·WebtoB 파서(Phase 1.5), CA 커넥터·발급·갱신 오케스트레이션(Phase 2), 배포 에이전트·배포·롤백(Phase 3), AI 기능(별도 트랙)
+- 정책 엔진 실행(정책 데이터 모델 자리만 확보 — 위반 점수 평가는 Phase 1.5, 발급 정책·승인 강제는 Phase 2)
+- SNI 기반 스캔·엔드포인트 식별자 확장(IP+Port+Protocol+SNI), Origin/Edge 구현 스키마, 멀티테넌시 컬럼 — 보류, Phase 2 스키마 설계 직전 일괄 재론(역방향 불가급 결정)
 - Prometheus 메트릭·`/metrics` (Phase 2)
-- 오프라인 이미지 번들·체크섬 반입 절차 (Phase 2~3b, Helm보다 선행)
-- OpenTelemetry 분산 트레이스 (Phase 4)
-- Helm Chart / Kubernetes·비Docker 설치 경로 (Phase 4)
+- OpenTelemetry 분산 트레이스 (Phase 3)
+- Helm Chart / Kubernetes·비Docker 설치 경로 (Phase 3)
 - MFA(TOTP), LDAP/AD/OIDC/SAML 연동
-- 알림(이메일/Webhook)
+- 알림 acknowledgement/snooze·에스컬레이션 (Phase 1.5 — 만료 알림 자체는 구현 완료)
 - 공개 신뢰 CA 사업, Root CA 자체 구현, 암호 알고리즘 자체 구현, HSM 펌웨어/드라이버
 - IoT 프로비저닝, 코드서명 관리, SSH 키 관리, 사용자 인증서 관리
 - 멀티테넌트 SaaS, 모바일 앱, 블록체인, 완전한 PQC 발급

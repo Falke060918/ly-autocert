@@ -568,7 +568,7 @@ MANUAL_INTERVENTION_REQUIRED
 - (job_id, ip, port) 기준으로 멱등하다. 같은 배치를 다시 보내도 결과가 중복되지 않는다.
 - 서버는 기존 upsert 인벤토리 경로를 재사용해 결과를 반영한다.
 
-ACME/SCEP/EST 발급 프로토콜 중계는 Phase 4 이후 후보로만 남긴다.
+ACME 발급 프로토콜 중계는 더 이상 보류 후보가 아니다 — 내부 ACME-compatible RA/게이트웨이가 Phase 2 발급 아키텍처의 골격이다(15장 Phase 2 참조). SCEP/EST 중계는 여전히 후보로만 남긴다.
 
 ---
 
@@ -973,12 +973,12 @@ AI는 아래 기술 스택을 기본값으로 사용한다.
 
 - Docker (Phase 1 구현 완료)
 - Docker Compose (Phase 1 구현 완료)
-- Helm Chart (Phase 4)
-- Kubernetes (Phase 4)
+- Helm Chart (Phase 3)
+- Kubernetes (Phase 3)
 
 ### 관측성
 
-- OpenTelemetry (Phase 4)
+- OpenTelemetry (Phase 3)
 - Prometheus Metrics (Phase 2)
 - 구조화된 JSON 로그 (Phase 1 구현 완료)
 - Trace ID 및 Request ID (Phase 1 구현 완료 — 전 응답 X-Request-ID 전파. Trace ID는 OpenTelemetry 도입 시 연결)
@@ -1054,7 +1054,7 @@ connection_status
 tags
 ```
 
-### Sensor (Phase 3)
+### Sensor (Phase 1 전제 아키텍처 — 구현 완료)
 
 ```text
 id
@@ -1093,7 +1093,7 @@ started_at
 finished_at
 ```
 
-Phase 3 예정 필드: executor_type(server | sensor), sensor_id — 서버 직접 실행과 센서 위임 실행을 구분한다.
+구현 완료 필드: executor_type(server | sensor), sensor_id — 서버 직접 실행과 센서 위임 실행을 구분한다.
 
 ### CertificateAuthority
 
@@ -1322,7 +1322,19 @@ System Administrator 전용 화면이다.
 
 ## 15. 구현 단계
 
-## Phase 1: 인증서 인벤토리
+**Phase 번호는 이 문서의 체계가 정본**이며, 사업기획 문서(`docs/TLS_인증서_관리_신규사업_AI_context.md`, v2.1)의 단계 체계(P1 → P1.5 → P2 → P3)와 정합한다. 두 문서의 번호가 어긋나 보이면 이 장을 기준으로 읽는다.
+
+이전 판의 Phase 3(센서·에이전트)·Phase 4(자동 갱신)·Phase 5(AI) 번호는 폐기한다. 항목이 사라지는 것이 아니라 다음으로 흡수된다.
+
+- 구 Phase 3a(센서) → **Phase 1의 전제 아키텍처** (구현 완료)
+- 구 Phase 3b(에이전트·배포) → **Phase 3**
+- 구 Phase 4(자동 갱신) → **Phase 2** (자동 배포·배포 검증만 Phase 3)
+- 구 Phase 5(AI) → **AI 보조 트랙** (Phase 번호 없음)
+- 관측성 — Prometheus 메트릭은 Phase 2, OpenTelemetry는 Phase 3
+- Helm Chart / Kubernetes 설치 경로 → Phase 3
+- 오프라인 라이선스 → 상용화 준비 트랙 (기존 유지)
+
+## Phase 1: Discovery / Inventory / Alert (인증서 인벤토리)
 
 구현 범위:
 
@@ -1335,8 +1347,10 @@ System Administrator 전용 화면이다.
 - 인증서 인벤토리
 - 인증서 상세 화면
 - 만료일 대시보드
+- 만료 알림(이메일·웹훅·시스로그·알림함 4채널 — 구현 완료)
 - 기본 감사 로그
 - 사용자 관리 API 및 화면(14.11) — 역할·표시 이름 수정, 비활성화·재활성화, 관리자 비밀번호 재설정. 전부 System Administrator 전용이며 변경마다 감사 이벤트를 같은 트랜잭션으로 기록한다.
+- WebtoB·WAF 등 네트워크 장비 대응 — 일반 TLS 엔드포인트로 active scan한다. 벤더/유형 태그 부여는 Phase 1 잔여 작업이다.
 
 완료 조건:
 
@@ -1346,28 +1360,84 @@ System Administrator 전용 화면이다.
 - 동일 인증서가 여러 위치에서 발견되는 경우 하나의 인증서와 여러 위치로 연결된다.
 - 퇴사자 계정을 화면에서 비활성화할 수 있고, 그 즉시 로그인이 차단되며 감사 로그에 남는다.
 
-## Phase 2: CA 연결과 발급
+### 센서(원격 수집기) — Phase 1 전제 아키텍처 (구현 완료)
+
+구 Phase 3a. 격리 세그먼트 수집이 Phase 1 인벤토리의 커버리지 전제이므로 별도 Phase가 아니라 Phase 1의 아키텍처 구성요소로 둔다. 상세는 7.8장.
+
+- 센서 등록(1회용 등록 토큰, 서버는 SHA-256 해시만 저장)
+- 센서 클라이언트 인증서 발급(센서 로컬 키쌍 생성 → CSR)
+- mTLS 통신
+- pull 리스 작업 분배(pending → leased → running → completed/failed)
+- 원격 세그먼트 TLS 스캔 실행(작업 유형 `scan`)
+- Observation 배치 멱등 수집(기존 upsert 인벤토리 경로 재사용)
+- 센서 등록·비활성화·토큰 발급 감사 로그
+
+완료 조건(충족 확인됨):
+
+- 서버가 직접 도달할 수 없는 세그먼트의 인증서가 센서를 통해 인벤토리에 수집된다.
+- 센서는 인바운드 포트 없이 동작한다.
+
+## Phase 1.5: Ownership / Workflow / 커넥터
 
 구현 범위:
 
-- CA 공통 인터페이스
-- ACME 커넥터
+- 서비스 소유자 지정 — 인증서·서버 단위 소유자 관리
+- 알림 acknowledgement / snooze — 만료 알림을 소유자가 확인·보류할 수 있다
+- 알림 에스컬레이션 정책 — 미확인 알림을 상위 수신자로 승격
+- 정책 위반 점수(policy violation score)
+- 기간별 현황 리포트
+- 보조 커넥터 확대 — CMDB, ITSM, Kubernetes, LB/WAF 인벤토리 import
+- WebtoB 설정 파일 read-only 파서 — `http.m` 등에서 SSL/VHOST/인증서 정보를 추출해 active scan 결과와 대조하고, 설정상 인증서와 실제 서비스 인증서의 차이를 탐지한다. 이 단계에서 쓰기·교체는 하지 않는다.
+- Origin/Edge(내부/외부) 인증서 이원 관리 **설계** — 동일 FQDN의 내부(Origin) 인증서와 외부 종단(Edge: WAF/LB/CDN) 인증서를 구분 관리하고 일치성(불일치·만료 시점 차이)을 검사한다. 이 단계에서는 설계까지만 하고, 구현 스키마 변경은 SNI 엔드포인트 식별자·멀티테넌시 컬럼과 함께 Phase 2 스키마 설계 직전에 일괄 결정한다(아래 "Phase 2 스키마 설계 직전 일괄 재론" 참조).
+
+완료 조건:
+
+- 만료 임박 인증서에 소유자가 지정되고, 소유자가 알림을 확인(ack)하거나 미확인 시 에스컬레이션된다.
+- 정책 위반 점수와 기간별 리포트를 조회할 수 있다.
+- WebtoB 설정 파일에서 추출한 인증서 정보가 스캔 결과와 대조되어 차이가 표시된다.
+
+## Phase 2: 발급과 갱신 오케스트레이션
+
+골격은 **내부 ACME-compatible RA/게이트웨이**다(사업기획 문서 15장). certbot·cert-manager 등 표준 ACME 클라이언트가 내부 게이트웨이에 발급을 요청하면, 게이트웨이가 정책·승인·감사를 거쳐 upstream CA(공개 ACME·상용 CA API·Private CA)에 별도의 주문을 수행한다.
+
+자동교체 클라이언트 전략(사용자 확정, 이 순서 그대로 진행):
+
+1. WebtoB·WAF 장비에도 certbot류 **표준 ACME 클라이언트를 쓸 수 있는지 먼저 개발·검증을 시도**한다.
+2. 어려우면 **하이브리드**로 진행한다 — 표준 클라이언트가 붙지 않는 장비는 Phase 3 배포 adapter로 커버한다.
+3. **최종 확정은 Phase 2 착수 시 재결정**한다.
+
+구현 범위:
+
+- 내부 ACME-compatible RA/게이트웨이 — 정책/승인, 계정·EAB·credential 관리, 감사
+- CA 공통 인터페이스(CA adapter 추상화)
+- ACME 커넥터(upstream ACME 주문)
 - Microsoft AD CS 커넥터
 - Vault PKI 커넥터
 - 인증서 프로파일
 - CSR 생성
 - 인증서 발급
 - 발급 이력
+- 갱신 정책·스케줄러 — 만료 기준 자동 갱신 작업 생성 (구 Phase 4 흡수)
+- 승인 워크플로
+- 자동 발급·실패 재시도·갱신 알림 (구 Phase 4 흡수 — 자동 배포·배포 검증은 Phase 3)
 - 관측성 — Prometheus 메트릭 최소셋: `/metrics` 엔드포인트(promhttp) + HTTP 요청 수·지연, 스캔 Job 상태별 카운트, 리스 만료 수, 센서 last_seen 지연, 인증서 만료 구간 게이지
-- 오프라인 이미지 번들·체크섬 반입 절차 — Phase 2에서 시작해 Phase 3b 이전에 완료한다. Helm(Phase 4)보다 선행한다. Compose 고객에게도 폐쇄망 반입 수단이 필수이기 때문이다.
+- 오프라인 이미지 번들·체크섬 반입 절차 — **구현 완료**(`scripts/bundle-offline.sh`·`load-offline.sh`)
 
 완료 조건:
 
 - 등록된 CA의 연결 상태를 확인할 수 있다.
 - UI 또는 API에서 인증서를 발급할 수 있다.
+- 표준 ACME 클라이언트(certbot 등)가 내부 RA/게이트웨이를 통해 인증서를 발급받을 수 있다.
 - 발급된 인증서가 인벤토리에 자동 등록된다.
+- 만료 기준에 따라 자동 갱신 작업이 생성되고, 정책에 따라 승인 또는 자동 진행된다.
 - `/metrics`에서 위 지표를 수집할 수 있다.
-- 인터넷이 없는 고객사에 이미지 번들을 체크섬 검증과 함께 반입해 설치할 수 있다.
+
+### Phase 2 스키마 설계 직전 일괄 재론 (보류 결정)
+
+다음은 **역방향 불가급** 스키마 결정이라 지금 정하지 않고 보류한다. 재론 시점은 **Phase 2 스키마 설계 직전**이고, 멀티테넌시 컬럼(테넌트 스키마 컬럼 + 쿼리 필터 강제 계층)과 **일괄로** 결정한다.
+
+- **SNI 기반 스캔 + 엔드포인트 식별자 확장** — 엔드포인트 유일성 기준을 (IP, Port)에서 (IP, Port, Protocol, SNI)로 확장한다. 같은 IP:PORT 뒤의 SNI virtual host별 복수 인증서를 개별 엔드포인트로 다루기 위한 전제다.
+- **Origin/Edge 이원 관리 구현 스키마** — 설계는 Phase 1.5에서 하고, 스키마 반영은 이 시점에 묶는다.
 
 ## 상용화 준비 트랙 (Phase 2 병렬)
 
@@ -1383,28 +1453,9 @@ Phase 번호를 갖지 않는 독립 트랙이다. Phase 2와 병렬로 진행�
 - 인터넷 연결 없이 지문 반출 → 오프라인 서명 → 반입 → 설치가 가능하다.
 - 라이선스 설치·교체·거부·한도 초과가 감사 로그에 남는다.
 
-## Phase 3: 원격 수집기(센서)·에이전트와 배포
+## Phase 3: 배포 자동화 / Multi-CA
 
-Phase 3a는 Phase 2와 독립적이며 Phase 2보다 먼저 착수할 수 있다.
-
-### Phase 3a: 센서(원격 수집기)
-
-구현 범위:
-
-- 센서 등록(1회용 등록 토큰, 서버는 SHA-256 해시만 저장)
-- 센서 클라이언트 인증서 발급(센서 로컬 키쌍 생성 → CSR)
-- mTLS 통신
-- pull 리스 작업 분배(pending → leased → running → completed/failed)
-- 원격 세그먼트 TLS 스캔 실행(작업 유형 `scan`)
-- Observation 배치 멱등 수집(기존 upsert 인벤토리 경로 재사용)
-- 센서 등록·비활성화·토큰 발급 감사 로그
-
-완료 조건:
-
-- 서버가 직접 도달할 수 없는 세그먼트의 인증서가 센서를 통해 인벤토리에 수집된다.
-- 센서는 인바운드 포트 없이 동작한다.
-
-### Phase 3b: 에이전트와 배포
+구 Phase 3b(에이전트·배포)와 구 Phase 4의 자동 배포·배포 검증을 합친 단계다. 발급(Phase 2)과 배포(Phase 3)는 다른 문제다 — 새 인증서를 발급했다고 서비스가 그것을 쓰게 되는 것이 아니며, 전달 → 바인딩/설정 → reload/재기동 → 사후 검증 → 롤백까지가 이 단계의 범위다.
 
 구현 범위:
 
@@ -1412,11 +1463,16 @@ Phase 3a는 Phase 2와 독립적이며 Phase 2보다 먼저 착수할 수 있다
 - Windows 에이전트
 - 에이전트 등록
 - mTLS 통신
-- Nginx 배포
-- IIS 배포
-- 파일 기반 배포
+- 환경별 deployment adapter — Nginx, Apache, IIS, 파일 기반, Kubernetes Secret
+- WebtoB·WAF 교체 adapter — 설정 validation, reload/재기동 워크플로, maintenance window, rollback, 배포 후 TLS 검증. 장비별 지원 수준은 capability matrix를 따른다(아래 원칙).
+- 자동 배포 — Phase 2 갱신 워크플로에 배포·검증을 연결 (구 Phase 4 흡수)
 - 배포 검증
 - 롤백
+- 상용 CA / Private CA 확대(Multi-CA)
+- 관측성 — OpenTelemetry 분산 트레이스(Trace ID 전파, 스캔·발급·배포 워크플로 스팬)
+- Helm Chart / Kubernetes 매니페스트 및 비Docker 설치 경로
+
+**capability matrix 원칙**: 모든 환경을 동일 수준으로 지원한다고 약속하지 않는다. 플랫폼별 지원 수준(Discover / Inventory Correlation / Issue·Renew / Deploy / Reload·Apply / Verify)을 capability matrix(장비별 지원 수준 표)로 명시해 관리한다. 특히 **"WebtoB 자동 교체"를 MVP 약속으로 잡지 않는다** — 버전·배포 형태·고객 운영 표준에 따라 설정 구조와 재기동 절차가 달라, 고객 환경 인터뷰·PoC로 확인한 뒤 adapter 지원 수준을 확정한다.
 
 완료 조건:
 
@@ -1424,31 +1480,13 @@ Phase 3a는 Phase 2와 독립적이며 Phase 2보다 먼저 착수할 수 있다
 - 기존 인증서를 백업한다.
 - 신규 인증서 배포 후 서비스 인증서를 검사한다.
 - 검증 실패 시 이전 인증서로 복구할 수 있다.
-
-## Phase 4: 자동 갱신
-
-구현 범위:
-
-- 갱신 정책
-- 스케줄러
-- 승인 워크플로
-- 자동 발급
-- 자동 배포
-- 자동 검증
-- 실패 재시도
-- 알림
-- 관측성 — OpenTelemetry 분산 트레이스(Trace ID 전파, 스캔·발급·배포 워크플로 스팬)
-- Helm Chart / Kubernetes 매니페스트 및 비Docker 설치 경로
-
-완료 조건:
-
-- 만료 기준에 따라 자동 갱신 작업이 생성된다.
-- 정책에 따라 승인 또는 자동 진행된다.
-- 갱신, 배포, 검증 과정이 하나의 워크플로로 추적된다.
-- 하나의 갱신 워크플로를 트레이스 하나로 추적할 수 있다.
+- 갱신, 배포, 검증 과정이 하나의 워크플로로 추적되고, 하나의 워크플로를 트레이스 하나로 추적할 수 있다.
 - Kubernetes 환경에 Helm Chart로 설치할 수 있다.
+- capability matrix에 플랫폼별 지원 수준이 명시되어 있다.
 
-## Phase 5: AI 운영 지원
+## AI 보조 트랙 (Phase 번호 없음, Phase 3 이후)
+
+구 Phase 5. 독립 트랙으로 남기며, 실행 경로가 아닌 보조(설명·요약·추천)에만 쓴다.
 
 구현 범위:
 
