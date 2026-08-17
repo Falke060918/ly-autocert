@@ -218,6 +218,18 @@ autocert-sensor enroll \
   --ca-fingerprint <CA fingerprint>
 ```
 
+- **토큰이 프로세스 인자(ps·명령 이력)에 남지 않게 하려면** `--token` 대신 아래 두 경로 중 하나를 쓴다. 0.3절의 설치 스크립트는 자동으로 stdin 경로를 쓴다.
+
+  ```sh
+  # 파일로 (첫 줄만 읽는다 — 파일 권한은 0600으로 좁힌다)
+  autocert-sensor enroll --server https://<서버 주소>:8443 \
+    --token-file /root/enroll-token.txt --ca-fingerprint <CA fingerprint>
+
+  # stdin 파이프로 (--token-file - 또는 토큰 플래그 생략 시 stdin에서 읽는다)
+  autocert-sensor enroll --server https://<서버 주소>:8443 \
+    --ca-fingerprint <CA fingerprint> < /root/enroll-token.txt
+  ```
+
 - `<서버 주소>`는 `SENSOR_ADVERTISED_HOSTS`에 포함된 DNS 이름 또는 IP여야 한다 (3.1절).
 - **포트는 서버 설정을 따른다.** 위 `8443`은 기본값이며, 5.1절 화면의 "enroll 명령 예시"에는 그 서버에 **실제로 설정된 포트**가 이미 들어가 있으므로 그대로 복사해 쓰면 된다 (INSTALL.md 5.5절).
 - 등록 과정: 센서가 로컬에서 키쌍 생성 → CSR 제출(서버 진위는 `--ca-fingerprint` 핀으로 검증) → 클라이언트 인증서(90일 유효) 수령·저장. 개인키는 전송되지 않는다.

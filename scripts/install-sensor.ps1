@@ -750,9 +750,9 @@ function Invoke-Enroll {
     $existing = Get-InstalledSensorId
     if ($existing) { Write-Host "  기존 신원을 덮어쓴다 (센서 ID $existing)." }
 
-    # 토큰은 인자로만 전달하고 어디에도 출력하지 않는다.
-    Write-Host "  실행: $ExePath enroll --server $script:InServer --token *** --ca-fingerprint $script:InFp"
-    & $ExePath enroll --server $script:InServer --token $script:InToken --ca-fingerprint $script:InFp --state-dir $StateDir
+    # 토큰은 stdin으로만 전달한다 — 프로세스 인자(명령 이력·프로세스 목록)에 노출되지 않고, 어디에도 출력하지 않는다.
+    Write-Host "  실행: $ExePath enroll --server $script:InServer --token-file - --ca-fingerprint $script:InFp  (토큰은 stdin)"
+    $script:InToken | & $ExePath enroll --server $script:InServer --token-file - --ca-fingerprint $script:InFp --state-dir $StateDir
     $code = $LASTEXITCODE
     $script:InToken = ''
     if ($code -eq 0) {
