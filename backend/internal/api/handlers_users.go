@@ -46,14 +46,14 @@ func normalizeEmail(raw string) (*string, error) {
 		return nil, nil
 	}
 	if len(v) > maxEmailLen {
-		return nil, fmt.Errorf("email must be at most %d characters", maxEmailLen)
+		return nil, fmt.Errorf("메일 주소는 %d자 이하여야 합니다", maxEmailLen)
 	}
 	if strings.ContainsFunc(v, unicode.IsSpace) {
-		return nil, errors.New("email must not contain spaces")
+		return nil, errors.New("메일 주소에는 공백을 넣을 수 없습니다")
 	}
 	at := strings.IndexByte(v, '@')
 	if at < 1 || at != strings.LastIndexByte(v, '@') || at == len(v)-1 {
-		return nil, errors.New("email must look like local@domain")
+		return nil, errors.New("메일 주소는 local@domain 형식이어야 합니다")
 	}
 	return &v, nil
 }
@@ -90,8 +90,10 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, auth.ErrPasswordTooShort),
 		errors.Is(err, auth.ErrPasswordTooLong),
 		errors.Is(err, auth.ErrPasswordEqidentifier):
-		// 정책 위반 사유만 반환한다. 비밀번호 값은 포함하지 않는다.
-		writeError(w, r, http.StatusBadRequest, "weak_password", err.Error())
+		// 정책 위반 사유만 한글로 반환한다. 원문 에러는 로그에만 남기고,
+		// 어느 쪽에도 비밀번호 값은 포함하지 않는다.
+		slog.Warn("create user rejected: password policy", "error", err.Error())
+		writeError(w, r, http.StatusBadRequest, "weak_password", passwordPolicyMessage(err))
 		return
 	case errors.Is(err, auth.ErrUsernameTaken):
 		writeError(w, r, http.StatusConflict, "username_taken", "username already taken")
@@ -237,6 +239,20 @@ func (s *Server) handleResetUserPassword(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// passwordPolicyMessage는 비밀번호 정책 센티널을 사용자용 한글 메시지로 바꾼다.
+// auth 패키지 원문(영문)은 로그 전용이다. 메시지에 비밀번호 값은 없다.
+func passwordPolicyMessage(err error) string {
+	switch {
+	case errors.Is(err, auth.ErrPasswordTooShort):
+		return fmt.Sprintf("비밀번호는 %d자 이상이어야 합니다", auth.MinPasswordLength)
+	case errors.Is(err, auth.ErrPasswordTooLong):
+		return "비밀번호가 너무 깁니다 (최대 72바이트)"
+	case errors.Is(err, auth.ErrPasswordEqidentifier):
+		return "비밀번호는 사용자 이름과 같을 수 없습니다"
+	}
+	return "비밀번호가 정책에 맞지 않습니다"
+}
+
 // writeUserMutationError는 사용자 변경 API의 공통 오류 매핑이다.
 // 처리했으면(=오류였으면) true를 반환한다. 로그·응답 어디에도 비밀번호는 없다 —
 // auth 계층이 정책 위반 사유만 담은 센티널 에러를 반환하기 때문이다.
@@ -252,7 +268,9 @@ func writeUserMutationError(w http.ResponseWriter, r *http.Request, err error, l
 	case errors.Is(err, auth.ErrPasswordTooShort),
 		errors.Is(err, auth.ErrPasswordTooLong),
 		errors.Is(err, auth.ErrPasswordEqidentifier):
-		writeError(w, r, http.StatusBadRequest, "weak_password", err.Error())
+		// 원문 에러는 로그에만 남긴다. 응답은 한글 정책 메시지다.
+		slog.Warn(logMsg, "error", err.Error())
+		writeError(w, r, http.StatusBadRequest, "weak_password", passwordPolicyMessage(err))
 	case errors.Is(err, auth.ErrSelfDisable):
 		writeError(w, r, http.StatusConflict, "self_disable_forbidden",
 			"you cannot disable your own account")
