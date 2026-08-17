@@ -95,3 +95,7 @@ Fix: namespace the second view's params with a prefix (`srv_`) so nothing carrie
 **A fresh worktree typechecks against a fake `tsc`, and `frontend/AGENTS.md` is not in the repo**
 Cause: with no `node_modules`, `npx tsc` fetches an unrelated package instead of the project's TypeScript; even after `npm install`, Next's generated global types (`LayoutProps` and friends) exist only once `npx next typegen` has run; and `frontend/AGENTS.md` is gitignored with generation off (`agentRules: false`), so a delegation prompt that points at it sends the agent to a file a fresh checkout does not have.
 Fix: `npm install` → `npx next typegen` → `npx tsc --noEmit`, and treat `next build` as the authoritative typecheck. (last recurrence: 2026-08)
+
+**Running the frontend without the Go backend needs zero product-code changes**
+Cause: it looks like the console cannot be exercised without the backend + DB, but the Next rewrites proxy reads the `BACKEND_INTERNAL_URL` env var and passes Set-Cookie through, so a fake backend can stand in for the whole API — login included — with no edits to product code.
+Fix: `node frontend/mock/server.mjs` (:8090, untracked reusable dev tool — do not commit) + `BACKEND_INTERNAL_URL=http://localhost:8090 npx next dev`. (last recurrence: 2026-08)

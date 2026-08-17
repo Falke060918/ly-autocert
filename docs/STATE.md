@@ -13,6 +13,8 @@ INHERIT_AutoCert — 폐쇄망·레거시 환경용 온프레미스 인증서 �
 
 검증: docker `golang:1.25-alpine`+일회용 postgres로 `go build ./...`·`go vet ./...`·변경 패키지(api·sensorgw·cmd/sensor) 테스트 전부 통과. frontend는 이번 머지에 코드 변경 없음(package.json 버전만).
 
+**UI 점검 세션 추가분(2026-08-17)** — 목업(가짜 백엔드, `frontend/mock/server.mjs` untracked)으로 콘솔 실물 확인 후 UI 수정 4건 완료·push(df2d1e4·34b3161·0a47361): 보기 탭 라벨 "도메인별/서버별/기관별", 기관별 CA 트리 가로형(좌 루트→우 말단), 대시보드 만료 임박 폭 확대·행 20건, 3섹션 높이 통일 `lg:h-[30rem]`. 목업 기동법은 GOTCHAS에 등재.
+
 ### 버전
 `VERSION`·compose 태그·CHANGELOG·`frontend/package.json`(+lock) 모두 **1.2.0**. 최신 마이그레이션 **0022**.
 
