@@ -1,11 +1,15 @@
 "use client";
 
 /**
- * 발급 기관 뷰 — 인벤토리를 CA 관점으로 뒤집어 본다.
+ * 발급 기관(기관별) 뷰 — 인벤토리를 CA 관점으로 뒤집어 본다.
  *
  * 화면이 답해야 하는 질문은 하나다: **"이 루트가 곧 만료되는데 뭘 다시 발급해야
  * 하나."** 그래서 왼쪽은 계층(누가 누구를 발급했나), 오른쪽은 그 답(계열 전체의
  * 재발급 대상·만료 시점·배포 지점)이다.
+ *
+ * 트리는 **가로(좌→우)** 로 편다 — 루트 CA가 왼쪽, 중간 CA가 가운데, 말단
+ * 인증서가 오른쪽이고, 부모-자식은 연결선(가로 스텁 + 세로 트렁크)으로 잇는다.
+ * 체인의 방향(발급 흐름)이 읽는 방향과 일치해 전체 구조가 한눈에 보인다.
  *
  * ⚠ 트리는 **N계층**이다. 루트→중간 2단을 가정하고 children을 한 번만 펴면
  * 손자 CA와 그 아래 리프가 통째로 사라진다 — 렌더는 반드시 재귀다.
@@ -31,6 +35,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ExpiryDdayBadge } from "@/components/cert-badges";
 import { sortCANodesByExpiry } from "@/lib/ca-expiry";
 import {
+  type CALeafPreview,
   type IssuerAggregationResponse,
   type IssuerCANode,
 } from "@/lib/issuers";
@@ -86,7 +91,7 @@ export function IssuersView({
     return (
       <Alert>
         <AlertDescription>
-          발급 기관 집계를 불러오지 못했습니다. 잠시 후 다시 시도하거나 목록
+          발급 기관 집계를 불러오지 못했습니다. 잠시 후 다시 시도하거나 도메인별
           탭에서 인증서를 확인하십시오.
         </AlertDescription>
       </Alert>
@@ -113,8 +118,8 @@ export function IssuersView({
       <div className="min-w-0 space-y-2">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <span className="text-[13px] text-muted-foreground">
-            발급 기관을 누르면 그 가지 전체가 강조되고 오른쪽에 영향 범위가
-            나옵니다.
+            왼쪽이 루트 CA, 오른쪽 끝이 말단 인증서입니다. 발급 기관을 누르면 그
+            가지 전체가 강조되고 오른쪽에 영향 범위가 나옵니다.
           </span>
           {collapsibleKeys.length > 0 && (
             <Button
@@ -130,18 +135,21 @@ export function IssuersView({
           )}
         </div>
 
-        <Card className="gap-0 overflow-hidden py-0">
-          {roots.map((root) => (
-            <CANodeBranch
-              key={nodeKey(root)}
-              node={root}
-              collapsed={collapsed}
-              onToggle={toggle}
-              selectedKey={selectedKey}
-              onSelect={setSelectedKey}
-              inBranch={false}
-            />
-          ))}
+        {/* 가로 트리라 폭이 화면을 넘을 수 있다 — 카드 안에서만 가로 스크롤한다. */}
+        <Card className="gap-0 overflow-x-auto py-0">
+          <div className="min-w-max space-y-5 p-4">
+            {roots.map((root) => (
+              <CATreeBranch
+                key={nodeKey(root)}
+                node={root}
+                collapsed={collapsed}
+                onToggle={toggle}
+                selectedKey={selectedKey}
+                onSelect={setSelectedKey}
+                inBranch={false}
+              />
+            ))}
+          </div>
         </Card>
 
         {agg.unmatched_leaf_count > 0 && (
@@ -162,10 +170,15 @@ export function IssuersView({
 }
 
 /**
- * CA 노드 1개 + 그 아래 리프 미리보기 + 하위 CA — **재귀**로 편다.
+ * CA 노드 1개 + 오른쪽으로 이어지는 하위 CA·리프 미리보기 — **재귀**로 편다.
  * `inBranch`는 "선택된 노드의 자손인가"이고 강조 표시가 이 값으로 내려간다.
+ *
+ * 배치는 flex 한 줄이다: [노드 카드] ─ [자식 세로 묶음]. 각 자식 행은 자기
+ * 세로 중앙으로 들어오는 가로 스텁을 갖고, 형제 사이는 세로 트렁크로 잇는다.
+ * `items-center`가 부모 카드를 자식 묶음의 세로 중앙에 두므로 스텁·트렁크가
+ * 항상 만난다.
  */
-function CANodeBranch({
+function CATreeBranch({
   node,
   collapsed,
   onToggle,
@@ -187,65 +200,110 @@ function CANodeBranch({
   const hasBody = node.children.length > 0 || node.leaf_preview.length > 0;
   const open = hasBody && !collapsed.has(key);
 
+  // 오른쪽 열의 행들 — 체인을 잇는 하위 CA를 먼저, 말단(리프)을 그 아래에.
+  const rows: { key: string; el: React.ReactNode }[] = [];
+  if (open) {
+    for (const child of node.children) {
+      rows.push({
+        key: nodeKey(child),
+        el: (
+          <CATreeBranch
+            node={child}
+            collapsed={collapsed}
+            onToggle={onToggle}
+            selectedKey={selectedKey}
+            onSelect={onSelect}
+            inBranch={branch}
+          />
+        ),
+      });
+    }
+    for (const leaf of node.leaf_preview) {
+      rows.push({ key: leaf.id, el: <LeafItem leaf={leaf} branch={branch} /> });
+    }
+    const rest = node.leaf_count - node.leaf_preview.length;
+    if (rest > 0 && node.certificate_id) {
+      rows.push({
+        key: "__more__",
+        el: (
+          <Link
+            href={issuedByListHref(node.certificate_id)}
+            className="text-[11px] whitespace-nowrap text-primary underline underline-offset-2"
+          >
+            리프 {rest.toLocaleString()}건 더 — 전체 보기 (
+            {node.leaf_count.toLocaleString()}건)
+          </Link>
+        ),
+      });
+    }
+  }
+
   return (
-    <div
-      className={cn(
-        // 가지 강조는 색이 아니라 배경 농도로 낸다 — 상태 3색(danger/warn/ok)은
-        // 인증서 상태 전용이라 "선택됨"에 쓰지 않는다.
-        branch && "bg-primary/[0.04]",
-      )}
-    >
-      <CANodeRow
+    <div className="flex min-w-0 items-center">
+      <CANodeCard
         node={node}
-        depth={node.depth}
         open={open}
         hasBody={hasBody}
         isSelected={isSelected}
+        branch={branch}
         onToggle={() => onToggle(key)}
         onSelect={() => onSelect(key)}
       />
-      {open && (
+      {rows.length > 0 && (
         <>
-          {node.leaf_preview.length > 0 && (
-            <LeafPreviewList node={node} depth={node.depth} />
-          )}
-          {node.children.map((child) => (
-            <CANodeBranch
-              key={nodeKey(child)}
-              node={child}
-              collapsed={collapsed}
-              onToggle={onToggle}
-              selectedKey={selectedKey}
-              onSelect={onSelect}
-              inBranch={branch}
-            />
-          ))}
+          {/* 부모 카드 → 트렁크 가로 스텁. 카드 세로 중앙에서 나간다. */}
+          <span aria-hidden className="h-px w-5 shrink-0 bg-border" />
+          <ul className="flex flex-col">
+            {rows.map((row, i) => (
+              <li key={row.key} className="relative flex items-center py-1 pl-5">
+                {/* 트렁크 → 이 행 세로 중앙으로 들어오는 가로 스텁. */}
+                <span
+                  aria-hidden
+                  className="absolute top-1/2 left-0 h-px w-5 bg-border"
+                />
+                {/*
+                  세로 트렁크 — 행마다 제 구간을 그린다. 행 사이 간격을 li의
+                  py로 잡았으므로(마진·gap 아님) 구간이 끊기지 않고 이어진다.
+                  첫 행은 중앙→아래, 막 행은 위→중앙, 가운데 행은 전체다.
+                */}
+                {rows.length > 1 && (
+                  <span
+                    aria-hidden
+                    className={cn(
+                      "absolute left-0 w-px bg-border",
+                      i === 0
+                        ? "top-1/2 bottom-0"
+                        : i === rows.length - 1
+                          ? "top-0 bottom-1/2"
+                          : "top-0 bottom-0",
+                    )}
+                  />
+                )}
+                {row.el}
+              </li>
+            ))}
+          </ul>
         </>
       )}
     </div>
   );
 }
 
-/** 들여쓰기 — 깊이가 깊어져도 내용 폭이 남도록 한 단계를 좁게 잡는다. */
-function indent(depth: number): React.CSSProperties {
-  return { paddingLeft: `${0.75 + depth * 1.15}rem` };
-}
-
-/** CA 노드 1행. 펼침 버튼과 선택 버튼은 형제다(버튼 중첩은 유효하지 않다). */
-function CANodeRow({
+/** CA 노드 카드 1장. 펼침 버튼과 선택 버튼은 형제다(버튼 중첩은 유효하지 않다). */
+function CANodeCard({
   node,
-  depth,
   open,
   hasBody,
   isSelected,
+  branch,
   onToggle,
   onSelect,
 }: {
   node: IssuerCANode;
-  depth: number;
   open: boolean;
   hasBody: boolean;
   isSelected: boolean;
+  branch: boolean;
   onToggle: () => void;
   onSelect: () => void;
 }) {
@@ -254,15 +312,66 @@ function CANodeRow({
 
   return (
     <div
-      style={indent(depth)}
       className={cn(
-        // 행 구분선은 모든 행에 둔다 — `last:`로 지우면 자식이 없는 노드(가지 div의
-        // 유일한 자식)만 선이 사라져 목록이 들쭉날쭉해진다.
-        "flex min-w-0 items-center gap-1.5 border-b py-2 pr-3",
-        isSelected && "bg-primary/10",
+        // 가지 강조는 색이 아니라 배경 농도로 낸다 — 상태 3색(danger/warn/ok)은
+        // 인증서 상태 전용이라 "선택됨"에 쓰지 않는다.
+        "flex w-52 shrink-0 items-start gap-1 rounded-lg border py-2 pr-1.5 pl-3",
+        branch ? "border-primary/40 bg-primary/[0.04]" : "bg-card",
+        isSelected && "border-primary bg-primary/10",
       )}
     >
-      {hasBody ? (
+      <button
+        type="button"
+        aria-pressed={isSelected}
+        className="min-w-0 flex-1 rounded-sm text-left focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+        onClick={onSelect}
+        title={
+          node.stored
+            ? node.subject_dn
+            : `${node.subject_dn} — 인벤토리에 없는 상위 인증서입니다. 체인 정보로만 확인되었습니다.`
+        }
+      >
+        <span
+          className={cn(
+            "block truncate font-mono text-xs",
+            node.depth === 0 ? "font-semibold" : "font-medium",
+            !node.stored && "text-muted-foreground",
+          )}
+        >
+          {label}
+        </span>
+        {node.organization && node.organization !== label && (
+          <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+            {node.organization}
+          </span>
+        )}
+        <span className="mt-1 flex flex-wrap items-center gap-1">
+          <Badge variant="outline" className="text-muted-foreground">
+            {tierLabel(node)}
+          </Badge>
+          {/*
+            CA의 남은 일수. 임계 구간은 인증서 만료 배지와 같은 dday 하나에서 나온다.
+            미보유 상위 CA는 만료일을 모르므로 배지가 아예 나오지 않는다.
+          */}
+          <ExpiryDdayBadge notAfter={node.not_after} />
+          {!node.stored && (
+            <Badge variant="outline" className="text-muted-foreground/70">
+              미보유
+            </Badge>
+          )}
+        </span>
+        {/*
+          "직접 발급"과 "하위 포함"을 나눠 적는다 — 목록으로 넘어가는 issued_by는
+          직계 1단계라 합산 하나만 적으면 노드 건수와 목록 건수가 어긋나 보인다.
+        */}
+        <span className="mt-1 block font-mono text-[11px] text-muted-foreground tabular-nums">
+          {node.children.length > 0
+            ? `직접 ${node.leaf_count.toLocaleString()} · 하위 포함 ${node.subtree_leaf_count.toLocaleString()}`
+            : `리프 ${node.leaf_count.toLocaleString()}건`}
+        </span>
+      </button>
+
+      {hasBody && (
         <button
           type="button"
           aria-expanded={open}
@@ -272,109 +381,35 @@ function CANodeRow({
         >
           <Chevron aria-hidden className="size-3.5" />
         </button>
-      ) : (
-        <span aria-hidden className="size-[1.125rem] shrink-0" />
       )}
-
-      <button
-        type="button"
-        aria-pressed={isSelected}
-        className="flex min-w-0 flex-1 items-center gap-3 rounded-sm py-0.5 text-left focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
-        onClick={onSelect}
-      >
-        <span className="min-w-0 flex-1">
-          <span className="flex flex-wrap items-center gap-1.5">
-            <span
-              className={cn(
-                "truncate font-mono text-xs",
-                depth === 0 ? "font-semibold" : "font-medium",
-                !node.stored && "text-muted-foreground",
-              )}
-            >
-              {label}
-            </span>
-            <Badge variant="outline" className="text-muted-foreground">
-              {tierLabel(node)}
-            </Badge>
-            {/*
-              CA의 남은 일수. 임계 구간은 인증서 만료 배지와 같은 dday 하나에서 나온다.
-              미보유 상위 CA는 만료일을 모르므로 배지가 아예 나오지 않는다.
-            */}
-            <ExpiryDdayBadge notAfter={node.not_after} />
-            {!node.stored && (
-              <Badge variant="outline" className="text-muted-foreground/70">
-                미보유
-              </Badge>
-            )}
-          </span>
-          {node.organization && node.organization !== label && (
-            <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-              {node.organization}
-            </span>
-          )}
-          {!node.stored && (
-            <span className="mt-0.5 block text-xs text-muted-foreground/70">
-              인벤토리에 없는 상위 인증서입니다. 체인 정보로만 확인되었습니다.
-            </span>
-          )}
-        </span>
-        {/*
-          "직접 발급"과 "하위 포함"을 나눠 적는다 — 목록으로 넘어가는 issued_by는
-          직계 1단계라 합산 하나만 적으면 노드 건수와 목록 건수가 어긋나 보인다.
-        */}
-        <span className="shrink-0 font-mono text-xs text-muted-foreground tabular-nums">
-          {node.children.length > 0
-            ? `직접 ${node.leaf_count.toLocaleString()} · 하위 포함 ${node.subtree_leaf_count.toLocaleString()}`
-            : `리프 ${node.leaf_count.toLocaleString()}건`}
-        </span>
-      </button>
     </div>
   );
 }
 
-/**
- * 노드가 직접 발급한 리프 미리보기(최대 5건, 만료 임박순).
- * leaf_count가 미리보기보다 많으면 나머지는 목록 화면으로 넘긴다.
- */
-function LeafPreviewList({
-  node,
-  depth,
+/** 말단(리프) 인증서 1건 — 트리 오른쪽 끝에 서는 칩. 누르면 상세로 간다. */
+function LeafItem({
+  leaf,
+  branch,
 }: {
-  node: IssuerCANode;
-  depth: number;
+  leaf: CALeafPreview;
+  branch: boolean;
 }) {
-  const rest = node.leaf_count - node.leaf_preview.length;
   return (
-    <div style={indent(depth + 1)} className="border-b pr-3">
-      <ul className="py-1">
-        {node.leaf_preview.map((leaf) => (
-          <li key={leaf.id} className="flex items-center gap-2 py-0.5">
-            <span
-              aria-hidden
-              className="shrink-0 font-mono text-[10px] text-muted-foreground/40"
-            >
-              └
-            </span>
-            <Link
-              href={`/certificates/${leaf.id}`}
-              className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground hover:text-foreground hover:underline"
-              title={leaf.subject_dn}
-            >
-              {leaf.common_name || dnCommonName(leaf.subject_dn)}
-            </Link>
-            <ExpiryDdayBadge notAfter={leaf.not_after} className="shrink-0" />
-          </li>
-        ))}
-      </ul>
-      {rest > 0 && node.certificate_id && (
-        <Link
-          href={issuedByListHref(node.certificate_id)}
-          className="mb-1 ml-4 inline-block text-[11px] text-primary underline underline-offset-2"
-        >
-          전체 보기 ({node.leaf_count.toLocaleString()}건)
-        </Link>
+    <span
+      className={cn(
+        "flex w-48 min-w-0 items-center gap-2 rounded-md px-2.5 py-1.5",
+        branch ? "bg-primary/[0.07]" : "bg-secondary/50",
       )}
-    </div>
+    >
+      <Link
+        href={`/certificates/${leaf.id}`}
+        className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+        title={leaf.subject_dn}
+      >
+        {leaf.common_name || dnCommonName(leaf.subject_dn)}
+      </Link>
+      <ExpiryDdayBadge notAfter={leaf.not_after} className="shrink-0" />
+    </span>
   );
 }
 
