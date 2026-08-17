@@ -34,7 +34,7 @@ services:
     # 이미지 이름·태그를 고정한다. 태그를 compose 프로젝트명에 맡기면 오프라인 반입
     # (docker save/load) 때 어떤 이미지를 담고 적재했는지 특정할 수 없다.
     # 버전 기본값은 루트 VERSION 파일과 같아야 한다(scripts/bundle-offline.sh가 검사한다).
-    image: ${AUTOCERT_IMAGE_PREFIX:-inherit-autocert}/backend:${AUTOCERT_VERSION:-1.1.0}
+    image: ${AUTOCERT_IMAGE_PREFIX:-inherit-autocert}/backend:${AUTOCERT_VERSION:-1.2.0}
     build: ./backend
     ports:
       # "호스트:컨테이너". 호스트 포트만 바꾸는 것이 가장 안전하다 —
@@ -131,7 +131,7 @@ services:
         condition: service_healthy
 
   frontend:
-    image: ${AUTOCERT_IMAGE_PREFIX:-inherit-autocert}/frontend:${AUTOCERT_VERSION:-1.1.0}
+    image: ${AUTOCERT_IMAGE_PREFIX:-inherit-autocert}/frontend:${AUTOCERT_VERSION:-1.2.0}
     build:
       context: ./frontend
       args:
