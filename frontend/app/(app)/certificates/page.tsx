@@ -312,18 +312,21 @@ function CertificatesBody() {
         건수와 화면 액션을 탭과 같은 줄에 얹어 세로를 한 줄도 더 쓰지 않는다.
       */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <Tabs
-          value={view}
-          onValueChange={(v) =>
-            setQuery({ view: v === "list" ? null : v }, false)
-          }
-        >
-          <TabsList>
-            <TabsTrigger value="list">목록</TabsTrigger>
-            <TabsTrigger value="servers">서버</TabsTrigger>
-            <TabsTrigger value="issuers">발급 기관</TabsTrigger>
-          </TabsList>
-        </Tabs>
+        <div className="flex items-center gap-2">
+          <span className="text-[13px] text-muted-foreground">보기 방식:</span>
+          <Tabs
+            value={view}
+            onValueChange={(v) =>
+              setQuery({ view: v === "list" ? null : v }, false)
+            }
+          >
+            <TabsList>
+              <TabsTrigger value="list">도메인별</TabsTrigger>
+              <TabsTrigger value="servers">서버별</TabsTrigger>
+              <TabsTrigger value="issuers">기관별</TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </div>
         {view === "list" && data && (
           <span className="text-[13px] text-muted-foreground">
             조건에 맞는 인증서 {data.total.toLocaleString()}건
