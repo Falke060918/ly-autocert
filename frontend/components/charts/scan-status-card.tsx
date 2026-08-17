@@ -92,8 +92,10 @@ export function ScanStatusCard() {
   }, []);
 
   return (
-    <Card className="gap-0 overflow-hidden py-0">
-      <div className="flex items-center gap-2 border-b px-4 py-3">
+    // 높이는 대시보드 이웃 섹션과 통일(lg:h-[30rem]) — 줄이 넘치면 목록만
+    // 스크롤하고 하단 요약 줄은 카드 바닥에 남는다.
+    <Card className="gap-0 overflow-hidden py-0 lg:h-[30rem]">
+      <div className="flex shrink-0 items-center gap-2 border-b px-4 py-3">
         <h2 className="text-sm font-semibold tracking-tight">스캔 현황</h2>
         <Button asChild variant="ghost" size="sm" className="ml-auto">
           <Link href="/settings/scans">스캔 설정</Link>
@@ -202,7 +204,7 @@ function CardBody({
 
   if (!schedules && !jobs && !rescan) {
     return (
-      <div className="px-4 py-10 text-center">
+      <div className="flex flex-1 flex-col justify-center px-4 py-10 text-center">
         <p className="text-sm font-medium">스캔 현황을 불러오지 못했습니다</p>
         <p className="mt-1 text-xs text-muted-foreground">
           Discovery 화면에서 다시 확인하십시오.
@@ -231,7 +233,8 @@ function CardBody({
 
   return (
     <>
-      <div className="px-4 py-1">
+      {/* flex-1 — 남는 세로를 이 목록이 갖고, 넘치면 여기서만 스크롤한다. */}
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-1">
         {rows.map((item) => (
           <ScheduleRow
             key={item.id}

@@ -117,12 +117,16 @@ export function IssuerDistributionCard() {
   }, []);
 
   return (
-    <Card className="gap-0 overflow-hidden py-0">
-      <div className="flex items-center gap-2 border-b px-4 py-3">
+    // 높이는 대시보드 이웃 섹션과 통일(lg:h-[30rem]) — 기관 수가 많아 목록이
+    // 넘치면 카드 안에서만 스크롤한다.
+    <Card className="gap-0 overflow-hidden py-0 lg:h-[30rem]">
+      <div className="flex shrink-0 items-center gap-2 border-b px-4 py-3">
         <h2 className="text-sm font-semibold tracking-tight">발급기관 분포</h2>
         <span className="text-xs text-muted-foreground">issuer O= 기준</span>
       </div>
-      <CardBody state={state} />
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <CardBody state={state} />
+      </div>
     </Card>
   );
 }
@@ -136,9 +140,11 @@ function CardBody({ state }: { state: State }) {
       </div>
     );
   }
+  // 빈 상태 2종은 카드 높이가 고정이라 세로 중앙에 세운다(h-full은 스크롤
+  // 래퍼가 flex-1로 확정 높이를 가질 때만 효과가 있다 — 모바일에선 자연 높이).
   if (state.status === "unavailable") {
     return (
-      <div className="px-4 py-10 text-center">
+      <div className="flex h-full flex-col justify-center px-4 py-10 text-center">
         <p className="text-sm font-medium">집계 준비 중</p>
         <p className="mt-1 text-xs text-muted-foreground">
           발급기관 집계가 아직 제공되지 않습니다. 서버 업데이트 후 표시됩니다.
@@ -148,7 +154,7 @@ function CardBody({ state }: { state: State }) {
   }
   if (state.slices.length === 0) {
     return (
-      <div className="px-4 py-10 text-center">
+      <div className="flex h-full flex-col justify-center px-4 py-10 text-center">
         <p className="text-sm font-medium">표시할 분포가 없습니다</p>
         <p className="mt-1 text-xs text-muted-foreground">
           인증서가 등록되면 발급기관별 분포가 표시됩니다.

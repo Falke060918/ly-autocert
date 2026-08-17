@@ -127,9 +127,10 @@ function DashboardBody({ data }: { data: DashboardData }) {
   const s = data.summary;
   // 30일 임박 표 — 히어로용 90일 목록(만료 임박순)에서 파생한다.
   // dday().days는 백엔드 필터의 floor(epoch/86400)와 같은 값이다 (lib/format.ts).
+  // 섹션 높이가 고정되고 표가 내부 스크롤이라 상한은 DOM 안전장치(20건)만 둔다.
   const expiring = data.horizon
     .filter((c) => dday(c.not_after).days <= 30)
-    .slice(0, 8);
+    .slice(0, 20);
 
   return (
     <>
@@ -137,11 +138,16 @@ function DashboardBody({ data }: { data: DashboardData }) {
 
       <KpiBand summary={s} />
 
-      <div className="grid items-start gap-4 lg:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_320px_320px]">
-        <Card className="gap-0 overflow-hidden py-0 lg:col-span-2 xl:col-span-1">
-          <div className="flex items-center gap-2 border-b px-4 py-3">
+      {/*
+        세 섹션은 같은 행에서 높이를 lg:h-[30rem]으로 통일한다 — 넘치는 내용은
+        각 섹션 안에서 스크롤한다(문서 스크롤은 그대로 둔다, GOTCHAS 참조).
+        만료 임박 표가 가로 스크롤 없이 들어가도록 옆 두 카드는 300px로 잡는다.
+      */}
+      <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_300px_300px]">
+        <Card className="gap-0 overflow-hidden py-0 lg:col-span-2 lg:h-[30rem] xl:col-span-1">
+          <div className="flex shrink-0 items-center gap-2 border-b px-4 py-3">
             <h2 className="text-sm font-semibold tracking-tight">만료 임박 인증서</h2>
-            <span className="text-xs text-muted-foreground">30일 이내 · 상위 8건</span>
+            <span className="text-xs text-muted-foreground">30일 이내 · 임박순</span>
             <Button asChild variant="outline" size="sm" className="ml-auto">
               <Link href="/certificates?expires_within_days=30">
                 전체 {s.expiring_30d}건 보기
@@ -153,45 +159,48 @@ function DashboardBody({ data }: { data: DashboardData }) {
               30일 이내에 만료되는 인증서가 없습니다.
             </p>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Common Name</TableHead>
-                  <TableHead>만료일</TableHead>
-                  <TableHead>남은 일수</TableHead>
-                  <TableHead>발급자</TableHead>
-                  <TableHead>상태</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {expiring.map((c) => (
-                  <TableRow key={c.id}>
-                    <TableCell>
-                      <Link
-                        href={`/certificates/${c.id}`}
-                        className="font-mono text-xs font-medium hover:underline hover:underline-offset-3"
-                      >
-                        {c.common_name || dnCommonName(c.subject_dn)}
-                      </Link>
-                    </TableCell>
-                    <TableCell className="font-mono text-xs tabular-nums">
-                      {formatDate(c.not_after)}
-                    </TableCell>
-                    <TableCell>
-                      <DdayText notAfter={c.not_after} />
-                    </TableCell>
-                    <TableCell className="text-[13px]">
-                      {isSelfSigned(c.subject_dn, c.issuer_dn)
-                        ? "자체 서명"
-                        : (c.issuer_organization ?? dnCommonName(c.issuer_dn))}
-                    </TableCell>
-                    <TableCell>
-                      <CertStatusBadge status={c.status} notAfter={c.not_after} />
-                    </TableCell>
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <Table>
+                <TableHeader className="sticky top-0 z-10 bg-card">
+                  <TableRow>
+                    <TableHead>Common Name</TableHead>
+                    {/* 만료일과 남은 일수는 한 열로 합친다 — 폭을 아껴 가로 스크롤을 없앤다. */}
+                    <TableHead>만료</TableHead>
+                    <TableHead>발급자</TableHead>
+                    <TableHead>상태</TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {expiring.map((c) => (
+                    <TableRow key={c.id}>
+                      <TableCell className="max-w-56">
+                        <Link
+                          href={`/certificates/${c.id}`}
+                          className="block truncate font-mono text-xs font-medium hover:underline hover:underline-offset-3"
+                          title={c.common_name || dnCommonName(c.subject_dn)}
+                        >
+                          {c.common_name || dnCommonName(c.subject_dn)}
+                        </Link>
+                      </TableCell>
+                      <TableCell>
+                        <span className="font-mono text-xs tabular-nums">
+                          {formatDate(c.not_after)}
+                        </span>{" "}
+                        <DdayText notAfter={c.not_after} />
+                      </TableCell>
+                      <TableCell className="max-w-40 truncate text-[13px]">
+                        {isSelfSigned(c.subject_dn, c.issuer_dn)
+                          ? "자체 서명"
+                          : (c.issuer_organization ?? dnCommonName(c.issuer_dn))}
+                      </TableCell>
+                      <TableCell>
+                        <CertStatusBadge status={c.status} notAfter={c.not_after} />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
           )}
         </Card>
 
@@ -303,10 +312,10 @@ function DashboardSkeleton() {
           <Skeleton key={i} className="h-[70px] rounded-none first:rounded-l-lg last:rounded-r-lg" />
         ))}
       </div>
-      <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_320px_320px]">
-        <Skeleton className="h-80 rounded-lg lg:col-span-2 xl:col-span-1" />
-        <Skeleton className="h-80 rounded-lg" />
-        <Skeleton className="h-80 rounded-lg" />
+      <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_300px_300px]">
+        <Skeleton className="h-80 rounded-lg lg:col-span-2 lg:h-[30rem] xl:col-span-1" />
+        <Skeleton className="h-80 rounded-lg lg:h-[30rem]" />
+        <Skeleton className="h-80 rounded-lg lg:h-[30rem]" />
       </div>
       <Skeleton className="h-56 rounded-lg" />
     </div>
