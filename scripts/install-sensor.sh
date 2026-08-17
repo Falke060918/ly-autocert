@@ -755,11 +755,11 @@ run_enroll() {
 	if existing=$(installed_sensor_id); then
 		say "  기존 신원을 덮어쓴다 (센서 ID $existing)."
 	fi
-	# 토큰은 인자로만 전달하고 어디에도 출력하지 않는다.
-	say "  실행: $INSTALL_PATH enroll --server $in_server --token *** --ca-fingerprint $in_fp"
-	if "$INSTALL_PATH" enroll \
+	# 토큰은 stdin으로만 전달한다 — 프로세스 인자(ps)에 노출되지 않고, 어디에도 출력하지 않는다.
+	say "  실행: $INSTALL_PATH enroll --server $in_server --token-file - --ca-fingerprint $in_fp  (토큰은 stdin)"
+	if printf '%s\n' "$in_token" | "$INSTALL_PATH" enroll \
 		--server "$in_server" \
-		--token "$in_token" \
+		--token-file - \
 		--ca-fingerprint "$in_fp" \
 		--state-dir "$state_dir"; then
 		in_token=''

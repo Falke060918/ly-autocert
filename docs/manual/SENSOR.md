@@ -218,6 +218,18 @@ autocert-sensor enroll \
   --ca-fingerprint <CA fingerprint>
 ```
 
+- **토큰이 프로세스 인자(ps·명령 이력)에 남지 않게 하려면** `--token` 대신 아래 두 경로 중 하나를 쓴다. 0.3절의 설치 스크립트는 자동으로 stdin 경로를 쓴다.
+
+  ```sh
+  # 파일로 (첫 줄만 읽는다 — 파일 권한은 0600으로 좁힌다)
+  autocert-sensor enroll --server https://<서버 주소>:8443 \
+    --token-file /root/enroll-token.txt --ca-fingerprint <CA fingerprint>
+
+  # stdin 파이프로 (--token-file - 또는 토큰 플래그 생략 시 stdin에서 읽는다)
+  autocert-sensor enroll --server https://<서버 주소>:8443 \
+    --ca-fingerprint <CA fingerprint> < /root/enroll-token.txt
+  ```
+
 - `<서버 주소>`는 `SENSOR_ADVERTISED_HOSTS`에 포함된 DNS 이름 또는 IP여야 한다 (3.1절).
 - **포트는 서버 설정을 따른다.** 위 `8443`은 기본값이며, 5.1절 화면의 "enroll 명령 예시"에는 그 서버에 **실제로 설정된 포트**가 이미 들어가 있으므로 그대로 복사해 쓰면 된다 (INSTALL.md 5.5절).
 - 등록 과정: 센서가 로컬에서 키쌍 생성 → CSR 제출(서버 진위는 `--ca-fingerprint` 핀으로 검증) → 클라이언트 인증서(90일 유효) 수령·저장. 개인키는 전송되지 않는다.
@@ -329,6 +341,7 @@ schtasks /Run /TN "AutocertSensor"
 | `autocert-sensor --version`이 `dev`를 출력 | 버전을 새기지 않고 직접 빌드한 바이너리다 | 정식 센서 패키지의 바이너리로 교체한다 (8장). 서버와의 버전 스큐는 8.1절 |
 | enroll이 `server certificate chain does not match --ca-fingerprint` | 지문 오입력, 또는 다른 서버/재구축된 서버에 접속 | 웹 콘솔에서 발급받은 CA fingerprint를 다시 확인. 서버를 재구축(DB 초기화)했다면 CA가 바뀌었으므로 센서를 새로 등록 |
 | enroll이 401 (`invalid_token`) | 등록 토큰 무효·이미 사용됨·**만료(24시간)** | [센서] 화면에서 해당 대기 센서를 비활성화(토큰 회수)하고 새로 등록해 새 토큰 발급 |
+| enroll이 429 (`rate_limited`) | 등록 요청 속도 제한 — 짧은 시간에 등록 시도가 몰렸다(여러 대 동시 설치·재시도 루프) | 몇 초 뒤 재시도한다. 반복되면 같은 서버로 향하는 등록 시도가 또 있는지 확인 |
 | **웹 콘솔·8080은 멀쩡한데 8443만 안 열림** (로그 `sensor gateway disabled: startup failed — check SENSOR_ADVERTISED_HOSTS …`) | `SENSOR_CA_ENC_KEY`는 설정했는데 `SENSOR_ADVERTISED_HOSTS`가 비어 있음 — 서버 인증서에 넣을 SAN이 없다. 게이트웨이만 비활성화되고 코어 API는 계속 뜨므로 화면에는 증상이 없다 | `SENSOR_ADVERTISED_HOSTS`에 센서가 접속할 실제 주소를 넣고 backend 재기동 (3.1절). 센서를 쓰지 않을 거라면 `SENSOR_CA_ENC_KEY`도 함께 지운다 |
 | 로그에 `sensor gateway disabled: invalid sensor configuration` | `SENSOR_CA_ENC_KEY` 형식 오류 — hex 64자(32바이트)가 아님 | `openssl rand -hex 32`로 다시 생성해 넣고 재기동 (3.1절). 이미 센서를 등록한 뒤라면 기존 키를 되찾아야 한다 — 값을 바꾸면 기존 CA를 복호화할 수 없다 |
 | enroll/run 연결 거부 (connection refused) | ① `SENSOR_CA_ENC_KEY` 미설정 — 8443 리스너 자체가 없음 ② 센서 설정 오류로 게이트웨이만 비활성화됨(위 두 행) ③ 방화벽 차단 | backend 로그에서 `sensor gateway listening` 유무부터 확인 — 없으면 `sensor gateway disabled …` 경고 문구로 원인을 가른다 → `.env`의 센서 변수 2종을 세트로 확인 후 재기동 (3.1절) → 센서→서버 8443 아웃바운드 방화벽 확인 (3.2절) |

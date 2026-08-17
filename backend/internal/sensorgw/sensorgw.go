@@ -23,6 +23,8 @@ import (
 	"net/http"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/audit"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/sensorca"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/store"
@@ -37,15 +39,25 @@ const sensorCACommonName = "INHERIT AutoCert Sensor CA"
 // serverCertCommonName은 게이트웨이 mTLS 리스너 인증서의 CN이다.
 const serverCertCommonName = "INHERIT AutoCert Sensor Gateway"
 
+// enrollRatePerSec·enrollBurst는 비인증 enroll 경로의 요청 속도 상한이다
+// (discovery.RateLimiter와 같은 golang.org/x/time/rate 토큰 버킷 재사용).
+// 등록은 센서당 1회의 드문 작업이라 정상 운용(설치 스크립트·수동 등록·소규모 동시
+// 설치)은 버스트 안에서 끝나고, 1회용 토큰 무차별 대입만 이 상한에 걸린다.
+const (
+	enrollRatePerSec = 1
+	enrollBurst      = 5
+)
+
 // Gateway는 센서 게이트웨이의 라우터와 의존성(store·감사 기록기·센서 CA)을 묶는다.
 // routes는 등록된 "METHOD /path" 패턴 전체다 — OpenAPI 명세 정합 테스트가
 // 이 목록과 api/sensor-openapi.yaml을 대조한다 (openapi_conformance_test.go).
 type Gateway struct {
-	mux    *http.ServeMux
-	st     *store.Store
-	rec    *audit.Recorder
-	ca     *sensorca.CA
-	routes []string
+	mux       *http.ServeMux
+	st        *store.Store
+	rec       *audit.Recorder
+	ca        *sensorca.CA
+	routes    []string
+	enrollLim *rate.Limiter // 비인증 enroll 경로 전용 (limitEnroll)
 }
 
 // New는 센서 CA를 store에서 로드(없으면 생성·봉인 저장)한 뒤 라우트가 등록된
@@ -61,10 +73,14 @@ func New(ctx context.Context, st *store.Store, rec *audit.Recorder, sealKey []by
 // newGateway는 라우트를 등록한 Gateway를 만든다. 핸들러를 호출하지 않는 한
 // 의존성은 nil이어도 안전하다 — 정합 테스트가 라우트 목록만 뽑을 때 쓴다.
 func newGateway(st *store.Store, rec *audit.Recorder, ca *sensorca.CA) *Gateway {
-	g := &Gateway{mux: http.NewServeMux(), st: st, rec: rec, ca: ca}
+	g := &Gateway{
+		mux: http.NewServeMux(), st: st, rec: rec, ca: ca,
+		enrollLim: rate.NewLimiter(rate.Limit(enrollRatePerSec), enrollBurst),
+	}
 
-	// 비인증 라우트: 최초 등록뿐이다 — 1회용 토큰이 인증을 대신한다.
-	g.public("POST /sensor/v1/enroll", g.handleEnroll)
+	// 비인증 라우트: 최초 등록뿐이다 — 1회용 토큰이 인증을 대신하고,
+	// 인증서 검증이 없는 만큼 요청 속도 제한(limitEnroll)을 앞에 세운다.
+	g.public("POST /sensor/v1/enroll", g.limitEnroll(g.handleEnroll))
 
 	// 인증 라우트: 검증된 클라이언트 인증서 + store 대조 (requireSensor).
 	g.authenticated("POST /sensor/v1/renew", g.handleRenew)

@@ -77,6 +77,23 @@ func withRequestLog(next http.Handler) http.Handler {
 	})
 }
 
+// limitEnroll은 비인증 enroll 경로의 토큰 버킷 게이트다. 상한을 넘긴 요청은
+// 429로 즉시 거절한다 — Wait으로 붙잡으면 연결이 쌓여 오히려 소진 공격 표면이 된다.
+// 거절은 요청 로그(withRequestLog, 상태 429)로만 남고 감사 이벤트는 만들지 않는다:
+// 초과 요청 수는 상한이 없어 건당 감사가 감사 로그 폭주(해시 체인 advisory lock
+// 경합)로 이어진다. 토큰 값은 어디에도 싣지 않는다 (보안 하드 규칙 3).
+func (g *Gateway) limitEnroll(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !g.enrollLim.Allow() {
+			w.Header().Set("Retry-After", "1")
+			writeError(w, r, http.StatusTooManyRequests, "rate_limited",
+				"등록 요청이 너무 잦습니다. 잠시 후 다시 시도하십시오.")
+			return
+		}
+		next(w, r)
+	}
+}
+
 // requireSensor는 mTLS 신원 확인 미들웨어다. 핸드셰이크에서 센서 CA로 검증된
 // 클라이언트 인증서의 SHA-256 fingerprint를 요청마다 store와 대조한다
 // (status='active'만 통과 — 비활성화 즉시 차단, 보안 하드 규칙 6).
