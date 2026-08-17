@@ -58,8 +58,10 @@ func (s *Server) handleCreateInitialAdmin(w http.ResponseWriter, r *http.Request
 	case errors.Is(err, auth.ErrPasswordTooShort),
 		errors.Is(err, auth.ErrPasswordTooLong),
 		errors.Is(err, auth.ErrPasswordEqidentifier):
-		// 정책 위반 사유만 반환한다. 비밀번호 값은 포함하지 않는다.
-		writeError(w, r, http.StatusBadRequest, "weak_password", err.Error())
+		// 정책 위반 사유만 한글로 반환한다. 원문 에러는 로그에만 남기고,
+		// 어느 쪽에도 비밀번호 값은 포함하지 않는다.
+		slog.Warn("create initial admin rejected: password policy", "error", err.Error())
+		writeError(w, r, http.StatusBadRequest, "weak_password", passwordPolicyMessage(err))
 		return
 	case err != nil:
 		slog.Error("create initial admin failed", "error", err.Error())

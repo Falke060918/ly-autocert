@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -23,11 +24,18 @@ import (
 // errorCode는 오류 응답 본문의 error.code를 뽑는다.
 func errorCode(t *testing.T, resp *http.Response) string {
 	t.Helper()
+	code, _ := errorCodeMessage(t, resp)
+	return code
+}
+
+// errorCodeMessage는 오류 응답 본문의 error.code와 error.message를 함께 뽑는다.
+func errorCodeMessage(t *testing.T, resp *http.Response) (string, string) {
+	t.Helper()
 	var body errorResponse
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode error body: %v", err)
 	}
-	return body.Error.Code
+	return body.Error.Code, body.Error.Message
 }
 
 // decodeUser는 사용자 응답 본문을 디코드한다.
@@ -211,8 +219,11 @@ func TestUserManagementAPI(t *testing.T) {
 			map[string]string{"password": "short"})
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("weak password reset = %d, want 400", resp.StatusCode)
-		} else if code := errorCode(t, resp); code != "weak_password" {
+		} else if code, msg := errorCodeMessage(t, resp); code != "weak_password" {
 			t.Errorf("weak password code = %q, want weak_password", code)
+		} else if want := fmt.Sprintf("비밀번호는 %d자 이상이어야 합니다", auth.MinPasswordLength); msg != want {
+			// 사용자 메시지는 한글 정책 문구다 — auth 원문(영문)이 새면 회귀다.
+			t.Errorf("weak password message = %q, want %q", msg, want)
 		}
 
 		resp = env.do(t, http.MethodPost, "/api/v1/users/"+viewer.ID+"/password", adminToken,
@@ -425,13 +436,13 @@ func TestUserEmailAPI(t *testing.T) {
 
 	t.Run("create rejects a malformed email and unknown fields", func(t *testing.T) {
 		cases := []struct {
-			name, email, wantCode string
+			name, email, wantCode, wantMsg string
 		}{
-			{"no at sign", "em-nobody.example.test", "invalid_email"},
-			{"empty local part", "@example.test", "invalid_email"},
-			{"empty domain part", "em-nobody@", "invalid_email"},
-			{"two at signs", "a@b@example.test", "invalid_email"},
-			{"inner space", "em nobody@example.test", "invalid_email"},
+			{"no at sign", "em-nobody.example.test", "invalid_email", "메일 주소는 local@domain 형식이어야 합니다"},
+			{"empty local part", "@example.test", "invalid_email", "메일 주소는 local@domain 형식이어야 합니다"},
+			{"empty domain part", "em-nobody@", "invalid_email", "메일 주소는 local@domain 형식이어야 합니다"},
+			{"two at signs", "a@b@example.test", "invalid_email", "메일 주소는 local@domain 형식이어야 합니다"},
+			{"inner space", "em nobody@example.test", "invalid_email", "메일 주소에는 공백을 넣을 수 없습니다"},
 		}
 		for _, c := range cases {
 			resp := env.do(t, http.MethodPost, "/api/v1/users", adminToken, map[string]any{
@@ -442,8 +453,11 @@ func TestUserEmailAPI(t *testing.T) {
 				t.Errorf("%s: create = %d, want 400", c.name, resp.StatusCode)
 				continue
 			}
-			if code := errorCode(t, resp); code != c.wantCode {
+			if code, msg := errorCodeMessage(t, resp); code != c.wantCode {
 				t.Errorf("%s: code = %q, want %q", c.name, code, c.wantCode)
+			} else if msg != c.wantMsg {
+				// 사용자 메시지는 한글이다 — 영문 원문이 새면 회귀다.
+				t.Errorf("%s: message = %q, want %q", c.name, msg, c.wantMsg)
 			}
 		}
 		// 오타 난 필드는 조용히 버리지 않는다.
