@@ -43,6 +43,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "429":
+          description: >
+            등록 요청 속도 초과 (rate_limited) — 비인증 경로라 토큰 무차별 대입을
+            막기 위해 서버 전역 토큰 버킷이 걸려 있다. Retry-After 헤더(초) 후 재시도.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /sensor/v1/renew:
     post:
       summary: 클라이언트 인증서 갱신 (새 CSR → fingerprint 원자 교체)
