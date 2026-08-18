@@ -95,7 +95,7 @@ claude
 ```
 
 첫 실행에서 폴더 신뢰 확인(trust dialog)을 수락해야 `settings.json`의 권한 allowlist가 적용된다.
-이어서 `/kickoff "아이디어 한 줄"` 을 입력하면 질문→기획→목표→목업→이슈 생성까지 진행된다.
+이어서 `/kickoff "아이디어 한 줄"` 을 입력하면 질문→기획→목표→목업 승인까지 진행된다. 구현을 시작하려면 그다음 `/architect`로 기술계획을 승인받는다 — 스캐폴딩·이슈 생성은 거기서 이뤄진다.
 
 랜딩페이지·마케팅 사이트 성격이면 목업 단계에서 scroll-world(스크롤 동기화 몰입형 랜딩) 사용 여부를 물어본다.
 쓸 생각이면 미리 `/plugin install scroll-world@scroll-world` 와 ffmpeg·Python3+Pillow, Higgsfield CLI 인증·크레딧을 준비해 둔다. 없으면 정적 HTML 목업으로 자동 폴백한다.

@@ -89,6 +89,18 @@ case "$mode" in
     mb='🚀 모드: 프로젝트 (초기화 완료)\n → 제품을 개발하는 저장소. 새 아이디어는 /kickoff로 시작' ;;
 esac
 
+# ARCHITECT-PENDING safety net — kickoff finished (docs/02-goals.md exists) but
+# the tech-design gate has not run (/architect writes docs/03-architecture.md).
+# Cross-session backstop: /architect otherwise only surfaces in the
+# kickoff-closing turn, so once that turn scrolls off or /clear runs there is
+# nothing left to catch "mockup approved but tech design skipped". Fires only in
+# PROJECT mode (a real, initialized product repo) — never in the template
+# original (TEMPLATE) or a not-yet-initialized derived project (SETUP_PENDING).
+ap=
+if [ "$mode" = PROJECT ] && [ -f "$d/docs/02-goals.md" ] && [ ! -f "$d/docs/03-architecture.md" ]; then
+  ap='⚠ ARCHITECT-PENDING: 목업까지 승인됐지만 기술설계(/architect)가 아직이다. 구현 전에 /architect를 먼저 진행한다.\n\n'
+fi
+
 # Banner title — banner-only derivation (NOT a detection signal; see SYNC
 # NOTE): origin repo name, else the project directory name (backslashes
 # normalized first so basename also works on Windows-form paths). Same
@@ -132,6 +144,7 @@ fi
 # characters break box alignment). Plain text, no markdown.
 msg='── ✦ '"$title"' ✦ ─────────────────────\n'
 msg=$msg$mb'\n\n'
+msg=$msg$ap
 msg=$msg'📖 사용법\n'
 msg=$msg' ▸ 메인 세션은 오케스트레이터 — 직접 구현하지 않고 서브에이전트에 위임\n'
 msg=$msg' ▸ /kickoff  새 프로젝트 기획 (아이디어→목표→목업→이슈)\n'

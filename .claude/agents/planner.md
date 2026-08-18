@@ -17,5 +17,13 @@ Return format (markdown, concise):
 3. List of affected files
 4. Risks and alternatives (only if any)
 5. Parallel units — steps grouped into independently implementable units (disjoint files per unit) + merge order; if unsplittable, "single unit" + one-line reason
+6. Architecture (required for technical/architecture design tasks, e.g. from `/architect`; omit for small-scope plans):
+   - Architecture decisions and rationale
+   - Alternatives considered — at least 2, with pros/cons and cost each, and why the recommendation wins
+   - Irreversible decisions
+   - Data & API contracts
+   - Auth/security boundaries
+   - Deployment approach
+   - Choices requiring user approval
 
 Avoid over-design. Prefer the simplest design that satisfies the success criteria in the goals (02-goals.md).

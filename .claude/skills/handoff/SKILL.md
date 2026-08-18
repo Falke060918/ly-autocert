@@ -17,7 +17,7 @@ Collect transfer candidates from two places (MAP is already updated at explorati
 - Items in the **current** docs/STATE.md 특이사항 section that are "still true next week"
 
 If there are candidates, apply the 4-condition entry gate below **first** to drop non-qualifying ones, then present the survivors all at once via AskUserQuestion (multiSelect) and transfer **the selected items as-is** to GOTCHAS — no post-selection culling. If more than 4 survive, split into multiple questions (AskUserQuestion holds max 4 options each). If there are no candidates (or none pass the gate), skip this confirmation.
-**If there are no candidates and no `MAP-STALE`/`KB-OVER-LIMIT` warning either, skip this entire step.** If `KB-OVER-LIMIT` appeared, first identify **which** file is over its cap — the marker does not say: STATE > 150 / MAP > 120 / GOTCHAS > 100 lines. GOTCHAS/MAP overflows are handled in their subsections below; a STATE overflow is handled by the 150-line cap in step 2. If `docs/GOTCHAS.md` does not exist, create it at that point (do not pre-create an empty file). Do not create MAP here — if absent, leave it absent; it appears at the next explorer exploration.
+**If there are no candidates and no `MAP-STALE`/`KB-OVER-LIMIT` warning either, skip this entire step.** If `KB-OVER-LIMIT` appeared, first identify **which** file is over its cap — the marker does not say: STATE > 150 / MAP > 120 / GOTCHAS > 100 lines. GOTCHAS/MAP overflows are handled in their subsections below; a STATE overflow is handled by the size budget in step 2. If `docs/GOTCHAS.md` does not exist, create it at that point (do not pre-create an empty file). Do not create MAP here — if absent, leave it absent; it appears at the next explorer exploration.
 
 ### GOTCHAS.md (cap: 20 entries / 100 lines)
 Add an entry only when **all** 4 conditions hold:
@@ -58,7 +58,14 @@ History stays in git, so delete boldly.
 
 ## 2. State save — docs/STATE.md
 
-**Overwrite the whole** of docs/STATE.md in the format below. Keep it at 150 lines or fewer, deleting old content boldly. (History stays in git, so don't worry.) STATE.md content is written in Korean — the user reads it.
+**Overwrite the whole** of docs/STATE.md in the format below, deleting old content boldly. (History stays in git, so don't worry.) STATE.md content is written in Korean — the user reads it.
+
+**Budget STATE.md by size, not by line count.** It is `@`-imported into every session's main context, so what costs is bytes, not lines. Target **6 KB or less (roughly 1,500 tokens)** and 150 lines as a hard ceiling. Dense Korean prose blows the byte budget long before the line cap trips — a 60-line STATE.md measured ~10.7 KB / ~3,200 tokens. Check the actual size (`wc -c docs/STATE.md`) before committing; if it is over, cut. Note the session-start `KB-OVER-LIMIT` marker still counts lines only, so it will not warn you here.
+
+Cut by moving content out rather than by trimming words:
+- **Structure / file-role / reference material** — a per-file "what this is for" catalog does not belong in STATE.md. It goes to `docs/MAP.md`, or in this template repo (which keeps no MAP.md) to `docs/TEMPLATE-NOTES.md`. Update that file in the same commit; do **not** re-add a `## 주요 파일` section to STATE.md.
+- **Recurrence-prone traps** — `docs/GOTCHAS.md`.
+- **Absolute paths / machine-only commands** — `docs/MACHINE.md` (git-untracked).
 
 ```markdown
 # STATE — 마지막 갱신: <오늘 날짜>
@@ -75,12 +82,12 @@ History stays in git, so delete boldly.
 
 ## 이번 세션 특이사항
 - <이번 세션에만 해당하는 미해결 이슈·진행 중 결정>
-
-## 주요 파일
-- <경로>: <역할>
 ```
 
-Recurrence-prone traps go into `docs/GOTCHAS.md`, not here. Structure/commands/conventions go into `docs/MAP.md`.
+These four sections are the whole file — do not append others. Anything that is still true next week is not state; route it to MAP/TEMPLATE-NOTES/GOTCHAS as listed above.
+
+### Kickoff/architect plan docs — docs/01-plan.md, docs/02-goals.md, docs/03-architecture.md (only if they exist)
+If this work unit changed the feature direction, scope, goals, or technical design, update `docs/01-plan.md` / `docs/02-goals.md` / `docs/03-architecture.md` **in the same commit** as STATE.md — plan docs must not rot while STATE.md moves on. Only touch the parts the change invalidated; do not rewrite the whole file. If a file does not exist (e.g. this template repo, or a repo that never ran `/kickoff` or `/architect`), do nothing — do not create it here.
 
 If the main session is in orchestrator mode (no write tools): write the full new STATE.md text and delegate to implementer with "overwrite docs/STATE.md with this content, commit, then push all unpushed commits".
 

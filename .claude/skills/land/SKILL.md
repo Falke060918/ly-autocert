@@ -11,6 +11,24 @@ User-facing communication is in Korean.
 
 This skill does **not** touch `docs/STATE.md` — that belongs to `/handoff`. Order is `/land` first, then `/handoff` if the session is wrapping up.
 
+## Reviewer gate — comes before everything else
+Before any of the four steps runs, check the **verdict file, not session memory**: reviewer records every completed verification in `.claude/review/last-verdict.md` (local-only, gitignored) with 일시, 대상 브랜치/커밋, 판정(pass/fail), 근거. The gate opens only when **all three** hold:
+1. the file exists,
+2. its 판정 is pass,
+3. its 대상 commit matches the HEAD of the branch(es) being landed (compare against `git rev-parse --short <branch>`).
+- If the file is missing, the 판정 is fail, or the 대상 commit differs (the branch moved after the review), **stop `/land` here**. Delegate reviewer on the work unit first, and resume the steps below only after a fresh pass verdict for the current commit is in the file. A reviewer run you merely remember from this session but that left no matching verdict file does not count, and an implementer's own "done" report never does.
+- If reviewer reports failures, loop: delegate the fixes to implementer → re-delegate reviewer → repeat until the file shows pass on the current commit. Only that unblocks merge, issue close, and push.
+- Never skip this gate to save a round trip — landing an unverified unit is exactly the failure mode this gate exists for.
+
+## Product acceptance — after the reviewer gate, before any merge
+The reviewer gate checks the code; this step checks the **product**. Run it once the gate has passed, before step 1:
+1. **Exercise the core user journey end to end, for real.** For a web UI that means browser verification — delegate to the webapp-testing skill or a reviewer with browser access; for a CLI/API, run the actual commands/calls a user would.
+2. **Report the outcome against `docs/02-goals.md`** — which goals and success criteria the landed unit meets, misses, or partially meets.
+3. **List known limitations and follow-up work** in the same report — nothing discovered here should live only in the session scrollback.
+4. **Get the user's explicit sign-off via AskUserQuestion.** Only after approval do merge, issue close, and push proceed; if the user declines, treat it like a failed review — fix, re-verify, re-ask.
+
+Exception: a one-off fix or a small batch of changes that does not affect the product journey may skip this acceptance step — say so in one line.
+
 ## 0. Preconditions
 - The merge target is **the branch this session is on**, not `main`. Confirm with `git branch --show-current` and merge into that. Never switch branches to land.
 - Commit the session's own pending changes **first**. An isolated worktree branches from the session HEAD at creation time (`worktree.baseRef: "head"`), so uncommitted session work was never carried into it and a merge onto a dirty tree either fails or buries it. `git status --short` must be clean before step 1.

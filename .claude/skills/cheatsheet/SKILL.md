@@ -67,7 +67,8 @@ gh pr create --fill          # PR 생성(커밋 메시지로 자동 작성)
 gh pr view --web             # PR 브라우저로 열기
 
 ━━ 이 템플릿 명령 ━━
-/kickoff "아이디어 한 줄"    # 기획→목표→목업→이슈 생성
+/kickoff "아이디어 한 줄"    # 기획→목표→목업 승인까지
+/architect                   # 기술 대안 비교→기술계획 승인→스캐폴딩·이슈 생성
 /land                        # 워크트리 머지·정리·이슈 닫기·push 일괄
 /handoff                     # 작업 상태를 docs/STATE.md에 기록
 /template-update             # 템플릿 최신 기계장치 동기화(파생 프로젝트에서)

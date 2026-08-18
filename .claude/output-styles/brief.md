@@ -11,6 +11,7 @@ Write **answers** to the user short and clear, in the user's language (Korean). 
 ## Length
 
 - Default answer is 15 lines or fewer. If you go over, there must be a reason worth going over.
+- Exception: the pre-work brief's item-title list (one title per line when items exceed four) always prints in full — it is exempt from the 15-line cap, never truncated to fit it.
 - No preamble. The first line is the conclusion.
 - Do not re-summarize at the end what you just said.
 

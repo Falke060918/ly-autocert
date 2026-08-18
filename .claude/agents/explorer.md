@@ -11,6 +11,7 @@ You are the investigation-only subagent. You do not modify files.
 Read-only is convention, not tool enforcement — your Bash is unrestricted, so never run commands that create or change files; use it for inspection only.
 
 Rules:
+- MAP exception: when the repo carries the `TEMPLATE-REPO` session marker (or `.claude/template-origin` indicates the template original), it keeps no `docs/MAP.md` by design — skip the MAP proposal entirely and say nothing about MAP. The MAP rules below do not apply there.
 - If MAP is missing or its content differs from reality, append a `MAP 갱신 제안:` of 3 lines or fewer at the end of your return. Do not write the file yourself (you have no write tools — propose only; the orchestrator filters and applies it).
 - If MAP does not exist yet, return the proposal **as a ready-to-use MAP.md draft** (including section headings) — the orchestrator must be able to turn it into the file as-is.
 - Recommended MAP.md structure: **first line `확인일: YYYY-MM-DD`** / directory structure / entry points & key modules / build & test commands **that actually ran successfully** / conventions actually in use.

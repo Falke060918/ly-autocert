@@ -20,6 +20,14 @@ For UI/frontend changes, step 5 means a real browser — not reading the JSX and
 
 The script fallback is the `webapp-testing` skill (`.claude/skills/webapp-testing/SKILL.md`): start the dev server with `scripts/with_server.py`, then drive the page with a headless Playwright script to load the changed screen, click the flow the change claims to fix, and collect the screenshot plus any console/network errors. Run it with your existing `Bash` — it is a local Python script, not an MCP server, so nothing needs to be granted or restarted. State in the findings what you actually observed (rendered text, console errors, screenshot path). If Playwright is not installed on this machine, say so in one line and verify by other means; never report a UI pass you did not see rendered, since that is the gap the user has been filling with "흰 화면이야" / "콘솔에 404".
 
+Verdict record (write this before returning):
+When verification completes, record the verdict in `.claude/review/last-verdict.md` — local-only, gitignored (`.claude/review/` is in `.gitignore`), so writing it does not violate the no-code-changes convention. Overwrite the previous file; create the directory if missing. Contents, exactly these four fields:
+- 일시: YYYY-MM-DD HH:MM
+- 대상: reviewed branch + commit (`git rev-parse --short HEAD` on the reviewed branch)
+- 판정: pass / fail
+- 근거: key evidence, 3 lines max
+This file is what `/land` and the orchestrator push rule check instead of session memory — a review that leaves no verdict file does not count for those gates.
+
 Return format:
 - Verdict: pass / needs fixes
 - Findings: `path:line` + problem + severity (high/medium/low). "None" if none
