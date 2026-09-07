@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/agentwire"
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/deploysign"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/domain"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/sensorca"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/store"
@@ -20,14 +21,15 @@ import (
 )
 
 type Gateway struct {
-	st  *store.Store
-	ca  *sensorca.CA
-	key []byte
-	mux *http.ServeMux
-	lim *rate.Limiter
+	st     *store.Store
+	ca     *sensorca.CA
+	key    []byte
+	mux    *http.ServeMux
+	lim    *rate.Limiter
+	signer *deploysign.Signer
 }
 
-func New(ctx context.Context, st *store.Store, caKey, key []byte) (*Gateway, error) {
+func New(ctx context.Context, st *store.Store, caKey, key []byte, signer *deploysign.Signer) (*Gateway, error) {
 	rec, e := st.LoadSensorCA(ctx)
 	if e != nil {
 		return nil, e
@@ -41,7 +43,9 @@ func New(ctx context.Context, st *store.Store, caKey, key []byte) (*Gateway, err
 	if e != nil {
 		return nil, e
 	}
-	return newGateway(st, ca, key), nil
+	g := newGateway(st, ca, key)
+	g.signer = signer
+	return g, nil
 }
 
 func newGateway(st *store.Store, ca *sensorca.CA, key []byte) *Gateway {
@@ -109,7 +113,6 @@ func (g *Gateway) auth(h func(http.ResponseWriter, *http.Request, *domain.Agent)
 			failure(w, 400)
 			return
 		}
-		_ = g.st.TouchAgentLastSeen(r.Context(), a.ID)
 		h(w, r, a)
 	}
 }
@@ -158,10 +161,25 @@ func (g *Gateway) renew(w http.ResponseWriter, r *http.Request, a *domain.Agent)
 	reply(w, 200, map[string]string{"client_cert_pem": string(cert)})
 }
 func (g *Gateway) heartbeat(w http.ResponseWriter, r *http.Request, a *domain.Agent) {
+	if e := g.st.HeartbeatAgent(r.Context(), a.ID, requestMeta(r)); e != nil {
+		failure(w, 500)
+		return
+	}
 	reply(w, 204, nil)
 }
+func requestMeta(r *http.Request) store.IssuanceActor {
+	v := r.Header.Get("X-Request-ID")
+	if len(v) > 128 {
+		v = ""
+	}
+	return store.IssuanceActor{RequestID: &v}
+}
 func (g *Gateway) lease(w http.ResponseWriter, r *http.Request, a *domain.Agent) {
-	l, e := g.st.LeaseDeployJob(r.Context(), a.ID)
+	if g.signer == nil {
+		failure(w, 503)
+		return
+	}
+	l, e := g.st.LeaseDeployJob(r.Context(), a.ID, func(l agentwire.Lease) (agentwire.SignedLease, error) { return g.signer.Sign(l, time.Now()) }, requestMeta(r))
 	if errors.Is(e, sql.ErrNoRows) {
 		reply(w, 204, nil)
 		return
@@ -185,7 +203,7 @@ func (g *Gateway) touch(w http.ResponseWriter, r *http.Request, a *domain.Agent,
 	if token == "" {
 		return
 	}
-	if e := g.st.TouchDeployJob(r.Context(), a.ID, r.PathValue("id"), token, action); e != nil {
+	if e := g.st.TouchDeployJob(r.Context(), a.ID, r.PathValue("id"), token, action, requestMeta(r)); e != nil {
 		failure(w, 409)
 		return
 	}

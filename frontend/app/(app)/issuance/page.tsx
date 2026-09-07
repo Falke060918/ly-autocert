@@ -34,10 +34,10 @@ export default function Page() {
       </div>
       <Notice text={error} />
       <label className="flex max-w-sm items-center gap-3 text-sm">
-        상태
+        <span className="shrink-0 whitespace-nowrap">상태</span>
         <select
           aria-label="주문 상태"
-          className={inputClass}
+          className={`${inputClass} min-w-0`}
           value={status}
           onChange={(e) => {
             setStatus(e.target.value);
@@ -72,14 +72,14 @@ export default function Page() {
                     {o.spec.dns_names.join(", ")}
                   </Link>
                 </td>
-                <td className="p-3">
-                  {STATUS[o.status]}
+                <td className="min-w-40 p-3">
+                  <span className="whitespace-nowrap">{STATUS[o.status]}</span>
                   {[
                     "approval_pending",
                     "awaiting_validation",
                     "manual_required",
                   ].includes(o.status) && (
-                    <span className="ml-2 rounded border px-2 py-0.5">
+                    <span className="ml-2 inline-block whitespace-nowrap rounded border px-2 py-0.5">
                       조치 필요
                     </span>
                   )}

@@ -36,9 +36,6 @@ export default function Page() {
   return (
     <div className="max-w-4xl space-y-5">
       <h1 className="text-2xl font-semibold">배포 에이전트</h1>
-      <p className="text-sm text-muted-foreground">
-        Linux nginx·Apache 서버에 설치하는 배포 전용 에이전트입니다.
-      </p>
       <Notice text={action.message || error} />
       <Panel title="에이전트 등록">
         <form
@@ -86,7 +83,7 @@ export default function Page() {
             >
               토큰 복사
             </Button>
-            <pre className="overflow-x-auto rounded bg-muted p-3 text-xs">{`sudo autocert-agent enroll --server https://SERVER:${enrollment.gateway_port} --token-file /root/agent-token --ca-fingerprint ${enrollment.ca_fingerprint}`}</pre>
+            <pre className="overflow-x-auto rounded bg-muted p-3 text-xs">{`sudo autocert-agent enroll --server https://SERVER:${enrollment.gateway_port} --token-file /root/agent-token --ca-fingerprint ${enrollment.ca_fingerprint} --identity-key-file /etc/autocert-agent/identity.env --job-signing-public-key-file /etc/autocert-agent/job-signing.pub`}</pre>
             <p className="text-xs text-muted-foreground">
               SERVER를 관리 서버 주소로 바꾸세요. 설치·실행 방법:
               docs/manual/AGENT.md

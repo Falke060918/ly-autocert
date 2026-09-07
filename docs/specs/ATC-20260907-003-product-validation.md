@@ -142,3 +142,25 @@ status unit: ATC-20260907-003-A, note: 알림 테스트 날짜 독립성 수정.
 검증 환경: Docker daemon/이미지를 실제 확인하고 가능하면 golang:1.25-alpine+postgres:16-alpine 전용 네트워크·전용 일회용 DB로 전체 Go 테스트를 돌려라. 이번 작업이 만든 리소스만 정리. 불가하면 승인 범위의 로컬 임시 Go/DB 실행 대안을 찾되 설정/권한 우회 금지. frontend npm test/lint/build를 실행하고 .agents/skills/webapp-testing/SKILL.md에 따라 실제 브라우저로 로그인 및 발급 목록·상세·설정·에이전트·배포 사용자 경로를 확인하라. 임시 fake API가 필요하면 OS 임시 디렉터리 본인 소유 하위 경로에 두고 어떤 범위가 fake인지 분명히 기록. 운영 API는 호출하지 않는다. 스킬의 우회성 명령 제안보다 상위 권한 지침 우선.
 커밋: A notify 수정은 메시지에 ATC-20260907-003-A를 넣고, B 제품/스펙 정리는 ATC-20260907-003-B를 넣어 의미별 로컬 커밋을 남겨라. 명시 경로만 stage하고 공유 파일의 다른 변경이 섞이지 않았는지 검사한다. 커밋 직후 git show --stat으로 남의 파일이 딸려왔는지 확인하라. 혼입 시 남의 커밋을 되감지 말고 부모에게 보고하며 사용자 변경을 보존한다. 규칙·프롬프트 파일은 이번 범위가 아니므로 편집하지 않는다. .codex/review local-only 판정은 커밋하지 않는다.
 배관: /Users/markus/Dev/INHERIT_AutoCert/.codex/tmp/ATC-20260907-003-A/ 및 .../.codex/tmp/ATC-20260907-003-B/를 각각 사용. A summary.md와 B summary.md에 정확한 변경 파일, 커밋 full SHA, 실행 명령/종료코드/로그 경로, 미검증 한계, 이전 코드 백업 경로를 남겨라. 브라우저 스크립트·스크린샷은 OS 임시 디렉터리의 본인 전용 폴더에 두고 보고서에서 링크한다. status/handoff/verdict 규약과 constitution·관련 safety/frontend/fonts 규칙을 읽고 따른다. 스펙에 확인 필요 마커가 없는지 확인하고 시작. Do not return full file contents; return only the list of changed files plus a key summary.
+# 위임장 ATC-20260907-003-B 보안 보완
+
+이미 승인됨 — 확인 질문 없이 완료까지. 사용자 기준 원문: "1,2,3 진행해."(알림 테스트 수정, 기존 발급·배포 제품 검증·로컬 커밋, 실환경 확인), "일단 그 진행문구 작업은 다음에 이어서하고, 프로젝트 작업하던거 이어서해." 최신 API 파일 제공은 .codex/tmp/live-ca-api-003/summary.md와 커밋 fa13c07018e993b7388b09dbeeca841e0a15b6d1에서 로그인·상품 조회/계약 수정만 완료했으며 실제 발급은 하지 않았다.
+status unit: ATC-20260907-003-B, note: 발급·배포 보안 보완. 3자 검토 대상. 역할/runtime/constitution/관련 안전 규칙을 읽고 실행하라. 당신은 혼자 작업하지 않으므로 다른 사용자의 템플릿/제품 수정과 타인 커밋을 되돌리지 마라. 공유 체크아웃 단일 코드 작성·커밋 담당이다. 시작 기준 main fa13c07018e993b7388b09dbeeca841e0a15b6d1과 현재 HEAD를 확인하고 타인 진전은 보존. 필수 참조 docs/design/security-plan-003.md 및 .codex/review/ATC-20260907-003-B-design.verdict.md는 로컬 파일이며 설계 사전 검사 PASS다.
+첫 단계: docs/specs/ATC-20260907-003-product-validation.md에 이 최종 위임장 본문을 '위임장 ATC-20260907-003-B 보안 보완'으로 보존하고 확정 실행 범위를 별도 절에 작성한 뒤 해당 절의 확인 필요 마커 0을 검사한다. 전체 설계에 있는 미답 웹서버 키는 범위 밖의 보류이므로 없애거나 승인으로 간주하지 마라.
+성공 기준: 통과한 security-plan-003의 1~4 및 최초 공급→재시작 계약을 구현한다. (1) app_id를 secret과 함께 암호화 저장·API 비노출·편집 시 기존 유지·기존행 명시적 이행/원자성. (2) lease/start/job heartbeat/agent heartbeat 상태와 감사 동일 트랜잭션, middleware 무감사 상태갱신 제거, material running 이후만 허용. (3) 별도 봉인 Ed25519 signer, 외부 공급 신뢰 공개키 핀, payload 전체 서명·엄격 형식/시간/agent검증, 디스크 journal·잠금으로 재시작 replay 차단, 서명 실패 tx rollback, unsigned fallback 금지. (4) agent PKCS8 개인키 AESGCM 봉인, state 밖 별도 root 전용 identity.env 공급·초기화/명시적 이행 구현, installer와 CLI 등록/재시작까지 연결. 설계의 위협 경계·실제 실행 구분을 유지하라. 같은 B UI 두 파일의 최소 정리도 당신이 순차 수행: issuance/page.tsx 상태 라벨 nowrap/모바일 상태 셀 읽힘, agents/page.tsx 고정 부제 제거. 다른 UI 체계 변경 금지.
+소유권: 설계 표의 backend API/store/schema/agentwire/agent/deploysign/config/cmd 및 해당 테스트, scripts/install-agent.sh, frontend/lib/issuance.ts·settings/issuance/page.tsx·issuance/page.tsx·agents/page.tsx, 제품 OpenAPI/07 design/manual AGENT와 001 스펙의 정정 부록 및003 스펙. 001의 옛 mTLS 대체 위임은 역사로 보존하고 원래 요구와 달랐음을 부록으로 바로잡는다. C의 upstream 계약 파일은 수정하지 말 것. backend 공유 계약이 강하게 결합되고 UI 수정은 소규모라 한 담당이 통합하며 추가 worker를 띄우지 않는다.
+하지 말 것: 웹서버 적용/임시/백업 개인키의 평문 예외 승인 또는 대체 설계 선택, 실제 키 생성·운영 데이터 이행·운영 서비스 변경·실CA 주문/발급/추가 조회·DNS/실배포, apiinfo.txt 읽기/출력/커밋, 템플릿·실행기·전역설정·mock/server.mjs 변경, 원격 push. 웹서버 미답은 전체B 완료를 막지만 확정된 4개 보완은 진행한다. 신규 운영 공급자를 가정하지 말고 설계의 기존 systemd EnvironmentFile 최소안을 따른다.
+검증: 먼저 중요한 실패/거부 회귀를 만들고 구현. 전용 임시 PostgreSQL의 전체 Go -p 1 -count=1 ./..., build/vet, agent linux amd64/arm64 빌드, frontend test/lint/build, installer 격리 검증과 실제 브라우저 375/768/1440px 설정 편집·발급·agent 경로를 검증. DB audit 실패 rollback/동시start, 필드 변조/다른핀/agent/만료/재시작 replay, appid 이행 실패/재실행, identity 원본 보존/크래시 재실행/키 불일치, 새 agent 프로세스 두 번으로 같은 신원 복원 등 meaningful evidence 필수. webapp-testing 스킬 적용. fake 증거를 실CA/systemd/nginx 성공으로 보고하지 말고 미실행은 구별. 본인 테스트 자원만 정리.
+배관: .codex/tmp/security-repair-003/ 전용 scratchpad와 summary.md에 파일/테스트 명령/결과/한계/백업/커밋 full SHA를 기록. status/handoff-protocol 준수. 명시 파일만 stage, ATC-20260907-003-B 포함 로컬 커밋. 커밋 직후 git show --stat으로 혼입 확인. 전체add/stash/reset/clean 금지, 남의 커밋 되감기 금지. 판정 파일은 부모의 독립 검사관 몫이므로 자가 pass 금지.
+실패 판정 반성 원문:
+1. 무엇이 요구와 달랐나: 에이전트 mTLS 개인키가 헌장의 저장 암호화 요구와 달리 평문 PKCS#8로 저장됐다.
+2. 왜 그렇게 됐다고 보나: 파일 권한 제한을 저장 암호화와 동일한 보호로 취급했으며 해당 키의 예외 승인을 기록하지 않았다.
+3. 다음 시도는 무엇을 다르게 해야 하나: 에이전트 키의 저장 암호화·키 해제 방식을 구현하거나 정확한 키 범위의 명시적 예외 승인을 확보하고 저장 및 재기동 회귀를 검증해야 한다.
+1. 무엇이 요구와 달랐나: 작업 서명, app_id 암호화, 로컬 개인키 저장 규칙, 변경 API 감사 요구가 충족되지 않았다.
+2. 왜 그렇게 됐다고 보나: mTLS·파일 권한·종료 이벤트와 기존 테스트 성공을 각각 서명·암호화·전 단계 감사의 충분한 증거로 취급했다.
+3. 다음 시도는 무엇을 다르게 해야 하나: 명시된 요구대로 구현·회귀 검증하고, 필요한 보안 예외는 승인된 요구 본문에 먼저 확정한 뒤 그 경계로 재검토한다.
+Do not return full file contents; return only the list of changed files plus a key summary.
+
+## B 보안 보완 확정 실행 범위
+
+security-plan-003의 1~4와 최초 공급·재시작 계약: app_id 봉인·명시적 전진 이행, 상태 변경과 감사 원자성, Ed25519 개별 작업 서명·관리자 핀·재전송 차단, agent 신원 봉인·별도 identity.env·명시적 이행을 구현하고 가상 데이터로 검증한다. 발급 상태 라벨과 모바일 상태 셀, agent 고정 부제를 최소 수정한다. 웹서버 키 정책 결정·실제 운영 키 생성·운영 이행·실CA 호출·실배포·템플릿 수정·push는 제외한다. 미답 웹서버 정책은 별도 설계의 보류로 유지하며 이 실행 범위의 완료를 전체 B 보안 완료로 바꾸지 않는다.

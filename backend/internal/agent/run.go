@@ -3,16 +3,16 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"runtime"
 	"time"
 
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/agentwire"
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/deploysign"
 )
 
 func (c *Client) request(ctx context.Context, method, path, token string, in, out any) (int, error) {
@@ -49,22 +49,23 @@ func (c *Client) request(ctx context.Context, method, path, token string, in, ou
 }
 
 // Run is Linux-only and serializes the host's deployment process using an
-// exclusive state lock. A stale lock after a crash requires operator inspection.
-func Run(ctx context.Context, server, dir string, allowed []string) error {
+// advisory file lock. The durable replay journal survives process termination.
+func Run(ctx context.Context, server, dir string, allowed []string, wrappingKey []byte, pub ed25519.PublicKey) error {
 	if runtime.GOOS != "linux" {
 		return errors.New("배포 실행은 Linux만 지원합니다")
 	}
-	id, e := LoadIdentity(dir)
+	if len(pub) != ed25519.PublicKeySize {
+		return errKeySource
+	}
+	unlock, e := lockState(dir)
 	if e != nil {
 		return e
 	}
-	lock := filepath.Join(dir, "run.lock")
-	f, e := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	defer unlock()
+	id, e := LoadIdentity(dir, wrappingKey)
 	if e != nil {
-		return errors.New("에이전트 실행 잠금이 있습니다. 기존 프로세스와 서비스 상태를 확인하세요")
+		return e
 	}
-	f.Close()
-	defer os.Remove(lock)
 	c, e := NewClient(server, id)
 	if e != nil {
 		return e
@@ -97,9 +98,13 @@ func Run(ctx context.Context, server, dir string, allowed []string) error {
 			}
 		}
 		_, _ = c.request(ctx, "POST", "/agent/v1/heartbeat", "", nil, nil)
-		var l agentwire.Lease
-		status, e := c.request(ctx, "POST", pathLease, "", nil, &l)
+		var signed agentwire.SignedLease
+		status, e := c.request(ctx, "POST", pathLease, "", nil, &signed)
 		if e == nil && status != 204 {
+			l, e := acceptLease(dir, pub, signed, id.AgentID, time.Now())
+			if e != nil {
+				return e
+			}
 			if e = c.execute(ctx, d, l); e != nil {
 				return e
 			}
@@ -110,6 +115,16 @@ func Run(ctx context.Context, server, dir string, allowed []string) error {
 		case <-ticker.C:
 		}
 	}
+}
+func acceptLease(dir string, pub ed25519.PublicKey, signed agentwire.SignedLease, id string, now time.Time) (agentwire.Lease, error) {
+	l, e := deploysign.Verify(pub, signed, id, now)
+	if e != nil {
+		return l, e
+	}
+	if e = consumeLease(dir, l); e != nil {
+		return agentwire.Lease{}, e
+	}
+	return l, nil
 }
 func (c *Client) execute(ctx context.Context, d Deployer, l agentwire.Lease) error {
 	if _, e := c.request(ctx, "POST", pathJob(l.JobID, "start"), l.LeaseToken, nil, nil); e != nil {

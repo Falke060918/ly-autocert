@@ -178,7 +178,10 @@ func (s *Store) ListDeployJobs(ctx context.Context, orderID string) ([]DeployJob
 	}
 	return out, rows.Err()
 }
-func (s *Store) LeaseDeployJob(ctx context.Context, agentID string) (*agentwire.Lease, error) {
+func (s *Store) LeaseDeployJob(ctx context.Context, agentID string, sign func(agentwire.Lease) (agentwire.SignedLease, error), meta ...IssuanceActor) (*agentwire.SignedLease, error) {
+	if sign == nil {
+		return nil, errors.New("deployment signer is unavailable")
+	}
 	tx, e := s.db.BeginTx(ctx, nil)
 	if e != nil {
 		return nil, e
@@ -199,9 +202,16 @@ func (s *Store) LeaseDeployJob(ctx context.Context, agentID string) (*agentwire.
 	if e = json.Unmarshal(b, &l.Target); e != nil {
 		return nil, e
 	}
-	return &l, tx.Commit()
+	signed, e := sign(l)
+	if e != nil {
+		return nil, e
+	}
+	if e = deployStageAudit(ctx, tx, agentID, l.JobID, "lease", "pending", "leased", l.ExpiresAt, meta); e != nil {
+		return nil, e
+	}
+	return &signed, tx.Commit()
 }
-func (s *Store) TouchDeployJob(ctx context.Context, agentID, id, token, action string) error {
+func (s *Store) TouchDeployJob(ctx context.Context, agentID, id, token, action string, meta ...IssuanceActor) error {
 	status := "running"
 	condition := "running"
 	if action == "start" {
@@ -209,18 +219,34 @@ func (s *Store) TouchDeployJob(ctx context.Context, agentID, id, token, action s
 	} else if action != "heartbeat" {
 		return ErrIssuanceConflict
 	}
-	res, e := s.db.ExecContext(ctx, `UPDATE deploy_jobs SET status=$5,leased_until=now()+interval '90 seconds' WHERE id=$1::uuid AND agent_id=$2::uuid AND lease_token=$3::uuid AND leased_until>now() AND status=$4`, id, agentID, token, condition, status)
+	tx, e := s.db.BeginTx(ctx, nil)
 	if e != nil {
 		return e
 	}
-	n, e := res.RowsAffected()
-	if e != nil {
+	defer tx.Rollback()
+	var active string
+	if e = tx.QueryRowContext(ctx, `SELECT id FROM agents WHERE id=$1::uuid AND status='active' FOR SHARE`, agentID).Scan(&active); e != nil {
 		return e
 	}
-	if n != 1 {
+	var expires time.Time
+	e = tx.QueryRowContext(ctx, `UPDATE deploy_jobs SET status=$5,leased_until=now()+interval '90 seconds' WHERE id=$1::uuid AND agent_id=$2::uuid AND lease_token=$3::uuid AND leased_until>now() AND status=$4 RETURNING leased_until`, id, agentID, token, condition, status).Scan(&expires)
+	if errors.Is(e, sql.ErrNoRows) {
 		return ErrIssuanceConflict
 	}
-	return nil
+	if e != nil {
+		return e
+	}
+	if e = deployStageAudit(ctx, tx, agentID, id, action, condition, status, expires, meta); e != nil {
+		return e
+	}
+	return tx.Commit()
+}
+func deployStageAudit(ctx context.Context, tx *sql.Tx, agentID, id, action, before, after string, expires time.Time, meta []IssuanceActor) error {
+	var a IssuanceActor
+	if len(meta) > 0 {
+		a = meta[0]
+	}
+	return audit.Insert(ctx, tx, audit.Event{Type: "deploy.job." + action, TargetType: "deploy_job", TargetID: &id, RequestID: a.RequestID, SourceIP: a.SourceIP, Before: map[string]string{"status": before}, After: map[string]any{"agent_id": agentID, "status": after, "expires_at": expires}, Result: domain.AuditSuccess})
 }
 func (s *Store) DeploymentMaterial(ctx context.Context, agentID, id, token string, key []byte) (*agentwire.Material, error) {
 	tx, e := s.db.BeginTx(ctx, nil)
@@ -231,7 +257,7 @@ func (s *Store) DeploymentMaterial(ctx context.Context, agentID, id, token strin
 	var m agentwire.Material
 	var cipher, nonce []byte
 	var orderID string
-	e = tx.QueryRowContext(ctx, `SELECT o.id,o.cert_pem,o.chain_pem,k.key_sealed,k.key_nonce FROM deploy_jobs j JOIN issuance_orders o ON o.id=j.order_id JOIN issuance_private_keys k ON k.order_id=o.id JOIN agents a ON a.id=j.agent_id WHERE j.id=$1::uuid AND j.agent_id=$2::uuid AND j.lease_token=$3::uuid AND j.status IN ('leased','running') AND j.leased_until>now() AND a.status='active' FOR SHARE OF j,a`, id, agentID, token).Scan(&orderID, &m.CertPEM, &m.ChainPEM, &cipher, &nonce)
+	e = tx.QueryRowContext(ctx, `SELECT o.id,o.cert_pem,o.chain_pem,k.key_sealed,k.key_nonce FROM deploy_jobs j JOIN issuance_orders o ON o.id=j.order_id JOIN issuance_private_keys k ON k.order_id=o.id JOIN agents a ON a.id=j.agent_id WHERE j.id=$1::uuid AND j.agent_id=$2::uuid AND j.lease_token=$3::uuid AND j.status='running' AND j.leased_until>now() AND a.status='active' FOR SHARE OF j,a`, id, agentID, token).Scan(&orderID, &m.CertPEM, &m.ChainPEM, &cipher, &nonce)
 	if e != nil {
 		return nil, e
 	}

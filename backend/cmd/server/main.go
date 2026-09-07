@@ -17,6 +17,7 @@ import (
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/auth"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/config"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/db"
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/deploysign"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/issuance"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/sensorca"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/sensorgw"
@@ -197,7 +198,15 @@ func run(logger *slog.Logger) error {
 			if err != nil {
 				return nil, nil, err
 			}
-			ag, err := agentgw.New(ctx, st, cfg.SensorCAEncKey, cfg.IssuanceEncKey)
+			var signer *deploysign.Signer
+			if cfg.DeploySigningKeyFile != "" {
+				signer, err = deploysign.Load(cfg.DeploySigningKeyFile, cfg.IssuanceEncKey)
+				if err != nil {
+					logger.Error("deployment signer unavailable; job leasing disabled")
+					signer = nil
+				}
+			}
+			ag, err := agentgw.New(ctx, st, cfg.SensorCAEncKey, cfg.IssuanceEncKey, signer)
 			if err != nil {
 				return nil, nil, err
 			}

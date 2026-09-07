@@ -138,15 +138,22 @@ func (s *Server) saveCA(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, 400, "invalid_request", e.Error())
 		return
 	}
-	if strings.TrimSpace(in.Name) == "" || len(in.Name) > 200 || len(in.AppID) != 16 || (in.Secret != "" && len(in.Secret) != 32) || (id == "" && in.Secret == "") {
+	if strings.TrimSpace(in.Name) == "" || len(in.Name) > 200 || (in.AppID != "" && len(in.AppID) != 16) || (id == "" && in.AppID == "") || (in.Secret != "" && len(in.Secret) != 32) || (id == "" && in.Secret == "") {
 		writeError(w, r, 400, "invalid_request", "연결 이름·App ID(16자)·Secret(32자)을 확인하세요")
 		return
 	}
-	c := store.CAConnection{ID: id, Name: strings.TrimSpace(in.Name), BaseURL: strings.TrimRight(in.BaseURL, "/"), AppID: in.AppID, Subscriber: in.Subscriber, Active: true}
+	c := store.CAConnection{ID: id, Name: strings.TrimSpace(in.Name), BaseURL: strings.TrimRight(in.BaseURL, "/"), Subscriber: in.Subscriber, Active: true}
 	if in.Active != nil {
 		c.Active = *in.Active
 	}
 	var e error
+	if in.AppID != "" {
+		c.AppID, c.AppIDNonce, e = sensorca.Seal(s.issuance.Key, []byte(in.AppID))
+		if e != nil {
+			issuanceError(w, r, e)
+			return
+		}
+	}
 	if in.Secret != "" {
 		c.Secret, c.Nonce, e = sensorca.Seal(s.issuance.Key, []byte(in.Secret))
 		if e != nil {

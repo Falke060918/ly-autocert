@@ -9,7 +9,6 @@ package agent
 import (
 	"crypto/ecdsa"
 	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
@@ -20,10 +19,10 @@ import (
 
 // 상태 디렉토리 파일 이름. 개인키가 있으므로 디렉토리 0700, 파일 0600을 유지한다.
 const (
-	fileKey        = "key.pem"    // 에이전트 개인키 (PKCS#8 PEM) — 절대 전송·로그 금지
-	fileClientCert = "client.pem" // mTLS 클라이언트 인증서 (PEM)
-	fileCACert     = "ca.pem"     // 서버 검증용 CA 인증서 (PEM)
-	fileAgentID    = "agent_id"   // 서버가 발급한 에이전트 ID
+	fileKey        = "identity.sealed" // AES-GCM sealed PKCS#8 DER
+	fileClientCert = "client.pem"      // mTLS 클라이언트 인증서 (PEM)
+	fileCACert     = "ca.pem"          // 서버 검증용 CA 인증서 (PEM)
+	fileAgentID    = "agent_id"        // 서버가 발급한 에이전트 ID
 )
 
 const (
@@ -46,8 +45,8 @@ func DefaultStateDir() string {
 }
 
 // SaveEnrollment는 등록 결과(개인키·클라이언트 인증서·CA·에이전트 ID)를 상태 디렉토리에 저장한다.
-// 디렉토리는 0700, 파일은 0600이다. 재등록 시 기존 상태를 덮어쓴다.
-func SaveEnrollment(dir, agentID string, key *ecdsa.PrivateKey, clientCertPEM, caCertPEM []byte) error {
+// 디렉토리는 0700, 파일은 0600이다. 호출자인 Enroll이 기존 신원 덮어쓰기를 거부한다.
+func SaveEnrollment(dir, agentID string, key *ecdsa.PrivateKey, clientCertPEM, caCertPEM, wrappingKey []byte) error {
 	if agentID == "" {
 		return errors.New("agent: agent id is required")
 	}
@@ -58,7 +57,11 @@ func SaveEnrollment(dir, agentID string, key *ecdsa.PrivateKey, clientCertPEM, c
 	if err != nil {
 		return errors.New("agent: marshal private key failed")
 	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: pemTypePrivateKey, Bytes: keyDER})
+	defer clear(keyDER)
+	keyPEM, err := sealIdentity(wrappingKey, keyDER, agentID)
+	if err != nil {
+		return err
+	}
 
 	// 키를 먼저 쓴다 — 인증서만 있고 키가 없는 상태보다 그 반대가 복구하기 쉽다.
 	if err := writeFileAtomic(filepath.Join(dir, fileKey), keyPEM, filePerm); err != nil {
@@ -80,16 +83,31 @@ func ReplaceClientCert(dir string, clientCertPEM []byte) error {
 }
 
 // LoadIdentity는 상태 디렉토리에서 에이전트 신원(키·인증서·CA·ID)을 복원한다.
-func LoadIdentity(dir string) (*Identity, error) {
-	keyPEM, err := os.ReadFile(filepath.Join(dir, fileKey))
+func LoadIdentity(dir string, wrappingKey []byte) (*Identity, error) {
+	if err := ensureStateDir(dir); err != nil {
+		return nil, err
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "key.pem")); !os.IsNotExist(err) {
+		return nil, errors.New("agent: legacy identity requires explicit migrate-identity")
+	}
+	idBytes, err := readStateFile(dir, fileAgentID)
+	if err != nil {
+		return nil, err
+	}
+	agentID := strings.TrimSpace(string(idBytes))
+	if agentID == "" {
+		return nil, errors.New("agent: missing agent id")
+	}
+	keyPEM, err := readStateFile(dir, fileKey)
 	if err != nil {
 		return nil, fmt.Errorf("agent: state not found in %s — run 'enroll' first", dir)
 	}
-	block, _ := pem.Decode(keyPEM)
-	if block == nil || block.Type != pemTypePrivateKey {
-		return nil, errors.New("agent: key file is not a private key PEM block")
+	der, err := openIdentity(wrappingKey, keyPEM, agentID)
+	if err != nil {
+		return nil, err
 	}
-	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	defer clear(der)
+	parsed, err := x509.ParsePKCS8PrivateKey(der)
 	if err != nil {
 		return nil, errors.New("agent: parse private key failed")
 	}
@@ -98,7 +116,7 @@ func LoadIdentity(dir string) (*Identity, error) {
 		return nil, errors.New("agent: private key is not an ECDSA key")
 	}
 
-	certPEM, err := os.ReadFile(filepath.Join(dir, fileClientCert))
+	certPEM, err := readStateFile(dir, fileClientCert)
 	if err != nil {
 		return nil, errors.New("agent: client certificate file missing — run 'enroll' first")
 	}
@@ -107,22 +125,13 @@ func LoadIdentity(dir string) (*Identity, error) {
 		return nil, err
 	}
 
-	caPEM, err := os.ReadFile(filepath.Join(dir, fileCACert))
+	caPEM, err := readStateFile(dir, fileCACert)
 	if err != nil {
 		return nil, errors.New("agent: ca certificate file missing — run 'enroll' first")
 	}
 	caPool := x509.NewCertPool()
 	if !caPool.AppendCertsFromPEM(caPEM) {
 		return nil, errors.New("agent: ca certificate file contains no valid certificate")
-	}
-
-	idBytes, err := os.ReadFile(filepath.Join(dir, fileAgentID))
-	if err != nil {
-		return nil, errors.New("agent: agent_id file missing — run 'enroll' first")
-	}
-	agentID := strings.TrimSpace(string(idBytes))
-	if agentID == "" {
-		return nil, errors.New("agent: agent_id file is empty")
 	}
 
 	id := &Identity{AgentID: agentID, key: key, caPool: caPool}
@@ -132,10 +141,17 @@ func LoadIdentity(dir string) (*Identity, error) {
 
 // ensureStateDir는 상태 디렉토리를 0700으로 만든다. 이미 있으면 권한을 조인다.
 func ensureStateDir(dir string) error {
+	if noSymlinks(dir) != nil {
+		return errKeySource
+	}
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		return fmt.Errorf("agent: create state dir: %w", err)
 	}
 	// MkdirAll은 기존 디렉토리 권한을 바꾸지 않는다. (Windows에서는 chmod가 제한적 — best effort)
+	st, e := os.Stat(dir)
+	if e != nil || !owned(st) {
+		return errKeySource
+	}
 	if err := os.Chmod(dir, dirPerm); err != nil {
 		return fmt.Errorf("agent: chmod state dir: %w", err)
 	}
@@ -144,18 +160,38 @@ func ensureStateDir(dir string) error {
 
 // writeFileAtomic은 임시 파일에 쓰고 rename으로 원자 교체한다.
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, perm); err != nil {
-		return fmt.Errorf("agent: write %s: %w", filepath.Base(path), err)
+	if noSymlinks(path) != nil {
+		return errKeySource
 	}
-	// WriteFile의 perm은 파일 생성 시에만 적용된다 — 재사용된 임시 파일도 0600을 보장한다.
-	if err := os.Chmod(tmp, perm); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("agent: chmod %s: %w", filepath.Base(path), err)
+	f, e := os.CreateTemp(filepath.Dir(path), ".sealed-*")
+	if e != nil {
+		return e
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("agent: replace %s: %w", filepath.Base(path), err)
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if e = f.Chmod(perm); e == nil {
+		_, e = f.Write(data)
 	}
-	return nil
+	if e == nil {
+		e = f.Sync()
+	}
+	ce := f.Close()
+	if e != nil {
+		return e
+	}
+	if ce != nil {
+		return ce
+	}
+	if e = os.Rename(tmp, path); e != nil {
+		return e
+	}
+	return syncDir(filepath.Dir(path))
+}
+func readStateFile(dir, name string) ([]byte, error) {
+	path := filepath.Join(dir, name)
+	st, e := os.Lstat(path)
+	if e != nil || !st.Mode().IsRegular() || !owned(st) || st.Mode().Perm() != 0600 || st.Size() > 65536 {
+		return nil, errors.New("agent: invalid state file")
+	}
+	return os.ReadFile(path)
 }

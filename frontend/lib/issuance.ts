@@ -27,7 +27,7 @@ export interface CAConnection {
   id: string;
   name: string;
   base_url: string;
-  app_id: string;
+  app_id_configured: boolean;
   subscriber: Subscriber;
   active: boolean;
   secret_configured: boolean;

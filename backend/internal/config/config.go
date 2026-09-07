@@ -17,7 +17,8 @@ import (
 
 // Config는 서버 기동에 필요한 설정값이다.
 type Config struct {
-	IssuanceEncKey []byte
+	IssuanceEncKey       []byte
+	DeploySigningKeyFile string
 	// HTTPAddr은 HTTP 리슨 주소다. 예: ":8080"
 	HTTPAddr string
 	// DatabaseURL은 PostgreSQL 접속 DSN이다.
@@ -253,6 +254,7 @@ func Load() (Config, error) {
 	cfg := Config{
 		HTTPAddr:               getenv("HTTP_ADDR", ":8080"),
 		DatabaseURL:            os.Getenv("DATABASE_URL"),
+		DeploySigningKeyFile:   strings.TrimSpace(os.Getenv("DEPLOY_SIGNING_KEY_FILE")),
 		BootstrapAdminUsername: getenv("BOOTSTRAP_ADMIN_USERNAME", "admin"),
 		BootstrapAdminPassword: os.Getenv("BOOTSTRAP_ADMIN_PASSWORD"),
 	}

@@ -22,29 +22,32 @@ func issuanceAudit(ctx context.Context, tx *sql.Tx, kind, id string, a IssuanceA
 }
 
 type CAConnection struct {
-	ID               string              `json:"id"`
-	Name             string              `json:"name"`
-	BaseURL          string              `json:"base_url"`
-	AppID            string              `json:"app_id"`
-	Subscriber       upstream.Subscriber `json:"subscriber"`
-	Active           bool                `json:"active"`
-	SecretConfigured bool                `json:"secret_configured"`
-	Secret, Nonce    []byte              `json:"-"`
+	ID                string              `json:"id"`
+	Name              string              `json:"name"`
+	BaseURL           string              `json:"base_url"`
+	AppIDConfigured   bool                `json:"app_id_configured"`
+	AppID, AppIDNonce []byte              `json:"-"`
+	LegacyAppID       bool                `json:"-"`
+	Subscriber        upstream.Subscriber `json:"subscriber"`
+	Active            bool                `json:"active"`
+	SecretConfigured  bool                `json:"secret_configured"`
+	Secret, Nonce     []byte              `json:"-"`
 }
 
 func scanCA(row rowScanner) (*CAConnection, error) {
 	var c CAConnection
 	var sub []byte
-	e := row.Scan(&c.ID, &c.Name, &c.BaseURL, &c.AppID, &sub, &c.Active, &c.Secret, &c.Nonce)
+	e := row.Scan(&c.ID, &c.Name, &c.BaseURL, &c.AppID, &c.AppIDNonce, &c.LegacyAppID, &sub, &c.Active, &c.Secret, &c.Nonce)
 	if e != nil {
 		return nil, e
 	}
 	e = json.Unmarshal(sub, &c.Subscriber)
 	c.SecretConfigured = len(c.Secret) > 0
+	c.AppIDConfigured = len(c.AppID) > 0 || c.LegacyAppID
 	return &c, e
 }
 
-const caCols = `id,name,base_url,app_id,subscriber,active,secret_sealed,secret_nonce`
+const caCols = `id,name,base_url,app_id_sealed,app_id_nonce,(app_id IS NOT NULL),subscriber,active,secret_sealed,secret_nonce`
 
 func (s *Store) GetCAConnection(ctx context.Context, id string) (*CAConnection, error) {
 	return scanCA(s.db.QueryRowContext(ctx, `SELECT `+caCols+` FROM ca_connections WHERE id=$1::uuid`, id))
@@ -74,11 +77,14 @@ func (s *Store) SaveCAConnection(ctx context.Context, c CAConnection, a Issuance
 	sub, _ := json.Marshal(c.Subscriber)
 	kind := "ca_connection.create"
 	if c.ID == "" {
-		e = tx.QueryRowContext(ctx, `INSERT INTO ca_connections(name,base_url,app_id,subscriber,active,secret_sealed,secret_nonce) VALUES($1,$2,$3,$4::jsonb,$5,$6,$7) RETURNING id`, c.Name, c.BaseURL, c.AppID, string(sub), c.Active, c.Secret, c.Nonce).Scan(&c.ID)
+		if len(c.AppID) == 0 {
+			return nil, ErrIssuanceConflict
+		}
+		e = tx.QueryRowContext(ctx, `INSERT INTO ca_connections(name,base_url,app_id_sealed,subscriber,active,secret_sealed,secret_nonce,app_id_nonce) VALUES($1,$2,$3,$4::jsonb,$5,$6,$7,$8) RETURNING id`, c.Name, c.BaseURL, c.AppID, string(sub), c.Active, c.Secret, c.Nonce, c.AppIDNonce).Scan(&c.ID)
 	} else {
 		kind = "ca_connection.update"
 		var id string
-		e = tx.QueryRowContext(ctx, `UPDATE ca_connections SET name=$2,base_url=$3,app_id=$4,subscriber=$5::jsonb,active=$6,secret_sealed=coalesce($7::bytea,secret_sealed),secret_nonce=coalesce($8::bytea,secret_nonce),updated_at=now() WHERE id=$1::uuid RETURNING id`, c.ID, c.Name, c.BaseURL, c.AppID, string(sub), c.Active, c.Secret, c.Nonce).Scan(&id)
+		e = tx.QueryRowContext(ctx, `UPDATE ca_connections SET name=$2,base_url=$3,app_id=NULL,app_id_sealed=coalesce($4::bytea,app_id_sealed),app_id_nonce=coalesce($9::bytea,app_id_nonce),subscriber=$5::jsonb,active=$6,secret_sealed=coalesce($7::bytea,secret_sealed),secret_nonce=coalesce($8::bytea,secret_nonce),updated_at=now() WHERE id=$1::uuid AND app_id IS NULL RETURNING id`, c.ID, c.Name, c.BaseURL, c.AppID, string(sub), c.Active, c.Secret, c.Nonce, c.AppIDNonce).Scan(&id)
 	}
 	if e != nil {
 		return nil, e

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -48,6 +49,9 @@ func TestIssuanceAPISecretAndRoleBoundaries(t *testing.T) {
 	if res.StatusCode != 201 {
 		t.Fatalf("create CA HTTP %d: %s", res.StatusCode, b)
 	}
+	if strings.Contains(string(b), hex.EncodeToString(appBytes)) || strings.Contains(string(b), `"app_id"`) {
+		t.Fatal("CA response disclosed app id")
+	}
 	if strings.Contains(string(b), secret) || strings.Contains(string(b), "secret_sealed") {
 		t.Fatal("CA response disclosed secret")
 	}
@@ -58,6 +62,23 @@ func TestIssuanceAPISecretAndRoleBoundaries(t *testing.T) {
 		t.Fatal(e)
 	}
 	t.Cleanup(func() { env.pool.Exec(`DELETE FROM ca_connections WHERE id=$1::uuid`, out.Connection.ID) })
+	var appSealed, appNonce []byte
+	var plain *string
+	if e := env.pool.QueryRow(`SELECT app_id,app_id_sealed,app_id_nonce FROM ca_connections WHERE id=$1::uuid`, out.Connection.ID).Scan(&plain, &appSealed, &appNonce); e != nil || plain != nil || len(appSealed) != 32 || len(appNonce) != 12 {
+		t.Fatal("app id not sealed", e)
+	}
+	body["app_id"] = ""
+	body["secret"] = ""
+	rp := env.do(t, "PATCH", "/api/v1/ca-connections/"+out.Connection.ID, tokens[domain.RolePKIAdministrator], body)
+	rp.Body.Close()
+	if rp.StatusCode != 200 {
+		t.Fatal("blank credential update failed", rp.StatusCode)
+	}
+	var kept []byte
+	env.pool.QueryRow(`SELECT app_id_sealed FROM ca_connections WHERE id=$1::uuid`, out.Connection.ID).Scan(&kept)
+	if !bytes.Equal(kept, appSealed) {
+		t.Fatal("blank update replaced app id")
+	}
 	for _, role := range []domain.Role{domain.RoleViewer, domain.RoleSecurityAdministrator} {
 		for _, path := range []string{"/api/v1/ca-connections", "/api/v1/agents/tokens", "/api/v1/issuance/orders", "/api/v1/deployment/targets"} {
 			r := env.do(t, "POST", path, tokens[role], map[string]any{})

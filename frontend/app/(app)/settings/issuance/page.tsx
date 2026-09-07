@@ -50,7 +50,7 @@ export default function Page() {
   const fields: [keyof typeof empty, string, string?][] = [
     ["name", "연결 이름"],
     ["base_url", "CA API 주소", "url"],
-    ["app_id", "App ID"],
+    ["app_id", editing ? "App ID (비우면 기존 유지)" : "App ID", "password"],
     ["secret", editing ? "Secret (비우면 기존 유지)" : "Secret", "password"],
     ["subscriberID", "기존 가입자 ID (신규 가입자는 비움)", "number"],
     ["contactID", "기존 담당자 ID (신규 담당자는 비움)", "number"],
@@ -78,7 +78,7 @@ export default function Page() {
                 {c.name} · {c.active ? "활성" : "비활성"}
               </p>
               <p className="text-sm text-muted-foreground break-all">
-                {c.base_url} · Secret {c.secret_configured ? "설정됨" : "없음"}
+                {c.base_url} · App ID {c.app_id_configured ? "설정됨" : "없음"} · Secret {c.secret_configured ? "설정됨" : "없음"}
               </p>
             </div>
             <div className="flex gap-2">
@@ -92,7 +92,7 @@ export default function Page() {
                     ...empty,
                     name: c.name,
                     base_url: c.base_url,
-                    app_id: c.app_id,
+                    app_id: "",
                     subscriberID: s.existing_subscriber_id
                       ? String(s.existing_subscriber_id)
                       : "",
@@ -197,12 +197,12 @@ export default function Page() {
                 <input
                   type={type ?? "text"}
                   className={inputClass}
-                  autoComplete={k === "secret" ? "new-password" : "off"}
+                  autoComplete={k === "secret" || k === "app_id" ? "new-password" : "off"}
                   value={form[k]}
                   min={type === "number" ? 1 : undefined}
                   required={
-                    ["name", "base_url", "app_id"].includes(k) ||
-                    (k === "secret" && !editing)
+                    ["name", "base_url"].includes(k) ||
+                    (["secret", "app_id"].includes(k) && !editing)
                   }
                   onChange={(e) => set(k, e.target.value)}
                 />

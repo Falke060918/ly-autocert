@@ -3,6 +3,7 @@ package agentgw
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
@@ -64,11 +65,12 @@ func TestEnrollMTLSAndSensorIsolation(t *testing.T) {
 	}
 	defer pool.Exec(`DELETE FROM agents WHERE id=$1::uuid`, ag.ID)
 	dir := t.TempDir()
-	id, e := agent.Enroll(ctx, agent.EnrollOptions{ServerURL: srv.URL, StateDir: dir, Token: token, CAFingerprint: certFP(ca.CertPEM())})
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	id, e := agent.Enroll(ctx, agent.EnrollOptions{ServerURL: srv.URL, StateDir: dir, Token: token, CAFingerprint: certFP(ca.CertPEM()), IdentityKey: key, JobSigningPublicKey: pub})
 	if e != nil || id != ag.ID {
 		t.Fatal("agent enrollment", e)
 	}
-	identity, e := agent.LoadIdentity(dir)
+	identity, e := agent.LoadIdentity(dir, key)
 	if e != nil {
 		t.Fatal(e)
 	}

@@ -217,14 +217,21 @@ func (s *Store) GetActiveAgentByFingerprint(ctx context.Context, fingerprint str
 	return sn, nil
 }
 
-// TouchAgentLastSeen은 last_seen_at을 갱신한다. 하트비트·요청마다 불리는
-// best-effort 텔레메트리라 호출부는 실패를 무시해도 된다 (updated_at은 건드리지 않는다).
-func (s *Store) TouchAgentLastSeen(ctx context.Context, agentID string) error {
-	if _, err := s.db.ExecContext(ctx,
-		`UPDATE agents SET last_seen_at = now() WHERE id = $1::uuid`, agentID); err != nil {
-		return fmt.Errorf("store: touch agent last seen: %w", err)
+// HeartbeatAgent updates liveness and records the authenticated agent atomically.
+func (s *Store) HeartbeatAgent(ctx context.Context, agentID string, a IssuanceActor) error {
+	tx, e := s.db.BeginTx(ctx, nil)
+	if e != nil {
+		return e
 	}
-	return nil
+	defer tx.Rollback()
+	var seen time.Time
+	if e = tx.QueryRowContext(ctx, `UPDATE agents SET last_seen_at=now() WHERE id=$1::uuid AND status='active' RETURNING last_seen_at`, agentID).Scan(&seen); e != nil {
+		return e
+	}
+	if e = audit.Insert(ctx, tx, audit.Event{Type: "agent.heartbeat", TargetType: "agent", TargetID: &agentID, RequestID: a.RequestID, SourceIP: a.SourceIP, After: map[string]any{"agent_id": agentID, "last_seen_at": seen}, Result: domain.AuditSuccess}); e != nil {
+		return e
+	}
+	return tx.Commit()
 }
 
 // RenewAgentInput은 클라이언트 인증서 갱신(fingerprint 교체) 요청이다.

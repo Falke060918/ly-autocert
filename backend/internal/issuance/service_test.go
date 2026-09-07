@@ -156,7 +156,11 @@ func integration(t *testing.T) (*sql.DB, *Service, *store.CAConnection, *fakeCA)
 	if e != nil {
 		t.Fatal(e)
 	}
-	c, e := st.SaveCAConnection(context.Background(), store.CAConnection{Name: t.Name(), BaseURL: "https://ca.example.test/api", AppID: base64.RawURLEncoding.EncodeToString(randomBytes(t, 12)), Secret: secret, Nonce: nonce, Active: true, Subscriber: upstream.Subscriber{ExistingID: 1, Contact: upstream.Contact{ExistingID: 1}}}, store.IssuanceActor{})
+	app, appNonce, e := sensorca.Seal(svc.Key, []byte(base64.RawURLEncoding.EncodeToString(randomBytes(t, 12))))
+	if e != nil {
+		t.Fatal(e)
+	}
+	c, e := st.SaveCAConnection(context.Background(), store.CAConnection{Name: t.Name(), BaseURL: "https://ca.example.test/api", AppID: app, AppIDNonce: appNonce, Secret: secret, Nonce: nonce, Active: true, Subscriber: upstream.Subscriber{ExistingID: 1, Contact: upstream.Contact{ExistingID: 1}}}, store.IssuanceActor{})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -242,7 +246,12 @@ func TestIssuanceToDeploymentLeaseMaterialAndAudit(t *testing.T) {
 	if _, e = s.Store.CreateDeployJob(ctx, o.ID, target.ID, a); e == nil {
 		t.Fatal("duplicate target job")
 	}
-	l, e := s.Store.LeaseDeployJob(ctx, ag.ID)
+	assertLeaseRollbacks(t, s, ag.ID, j.ID)
+	var pending string
+	if e = pool.QueryRow(`SELECT status FROM deploy_jobs WHERE id=$1::uuid AND lease_token IS NULL`, j.ID).Scan(&pending); e != nil || pending != "pending" {
+		t.Fatal("failed lease changed state", e)
+	}
+	l, e := leaseForTest(s.Store, ctx, ag.ID)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -253,6 +262,41 @@ func TestIssuanceToDeploymentLeaseMaterialAndAudit(t *testing.T) {
 	if _, e = s.Store.DeploymentMaterial(ctx, "00000000-0000-0000-0000-000000000000", j.ID, l.LeaseToken, s.Key); e == nil {
 		t.Fatal("foreign agent obtained material")
 	}
+	if _, e = s.Store.DeploymentMaterial(ctx, ag.ID, j.ID, l.LeaseToken, s.Key); e == nil {
+		t.Fatal("material before start")
+	}
+	assertConcurrentStart(t, s, ag.ID, j.ID, l.LeaseToken)
+	var before, after time.Time
+	pool.QueryRow(`SELECT leased_until FROM deploy_jobs WHERE id=$1::uuid`, j.ID).Scan(&before)
+	badIP := "invalid-test-ip"
+	if e = s.Store.TouchDeployJob(ctx, ag.ID, j.ID, l.LeaseToken, "heartbeat", store.IssuanceActor{SourceIP: &badIP}); e == nil {
+		t.Fatal("heartbeat audit failure accepted")
+	}
+	pool.QueryRow(`SELECT leased_until FROM deploy_jobs WHERE id=$1::uuid`, j.ID).Scan(&after)
+	if !before.Equal(after) {
+		t.Fatal("failed heartbeat extended lease")
+	}
+	if e = s.Store.TouchDeployJob(ctx, ag.ID, j.ID, l.LeaseToken, "heartbeat"); e != nil {
+		t.Fatal(e)
+	}
+	if e = s.Store.HeartbeatAgent(ctx, ag.ID, store.IssuanceActor{SourceIP: &badIP}); e == nil {
+		t.Fatal("agent heartbeat audit failure accepted")
+	}
+	var seen *time.Time
+	pool.QueryRow(`SELECT last_seen_at FROM agents WHERE id=$1::uuid`, ag.ID).Scan(&seen)
+	if seen != nil {
+		t.Fatal("failed heartbeat updated agent")
+	}
+	if e = s.Store.HeartbeatAgent(ctx, ag.ID, store.IssuanceActor{}); e != nil {
+		t.Fatal(e)
+	}
+	for _, kind := range []string{"deploy.job.lease", "deploy.job.start", "deploy.job.heartbeat"} {
+		var n int
+		pool.QueryRow(`SELECT count(*) FROM audit_events WHERE target_id=$1 AND event_type=$2`, j.ID, kind).Scan(&n)
+		if n != 1 {
+			t.Fatalf("%s audit count %d", kind, n)
+		}
+	}
 	m, e := s.Store.DeploymentMaterial(ctx, ag.ID, j.ID, l.LeaseToken, s.Key)
 	if e != nil || m.KeyPEM == "" {
 		t.Fatal("material release", e)
@@ -261,8 +305,8 @@ func TestIssuanceToDeploymentLeaseMaterialAndAudit(t *testing.T) {
 	if e = pool.QueryRow(`SELECT count(*) FROM audit_events WHERE event_type='issuance.key.release' AND target_id=$1::text`, j.ID).Scan(&count); e != nil || count != 1 {
 		t.Fatalf("missing material audit %d %v", count, e)
 	}
-	if e = s.Store.TouchDeployJob(ctx, ag.ID, j.ID, l.LeaseToken, "start"); e != nil {
-		t.Fatal(e)
+	if e = s.Store.TouchDeployJob(ctx, ag.ID, j.ID, l.LeaseToken, "start"); e == nil {
+		t.Fatal("duplicate start")
 	}
 	result := agentwire.Result{Status: "completed", ObservedFingerprint: l.ExpectedFingerprint, LeaseToken: l.LeaseToken, Steps: []agentwire.Step{{Name: "verify", OK: true}}}
 	if e = s.Store.CompleteDeployJob(ctx, ag.ID, j.ID, result); e != nil {
@@ -282,7 +326,7 @@ func TestIssuanceToDeploymentLeaseMaterialAndAudit(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	l, e = s.Store.LeaseDeployJob(ctx, ag.ID)
+	l, e = leaseForTest(s.Store, ctx, ag.ID)
 	if e != nil {
 		t.Fatal(e)
 	}

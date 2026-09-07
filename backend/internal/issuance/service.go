@@ -47,7 +47,11 @@ func (s *Service) Connector(ctx context.Context, id string) (upstream.Connector,
 	}
 	sum := sha256.New()
 	sum.Write([]byte(c.BaseURL))
-	sum.Write([]byte(c.AppID))
+	if c.LegacyAppID || len(c.AppID) == 0 {
+		return nil, nil, errors.New("CA 자격증명 이행이 필요합니다")
+	}
+	sum.Write(c.AppID)
+	sum.Write(c.AppIDNonce)
 	sum.Write(c.Secret)
 	sum.Write(c.Nonce)
 	cacheKey := id + hex.EncodeToString(sum.Sum(nil))
@@ -61,7 +65,12 @@ func (s *Service) Connector(ctx context.Context, id string) (upstream.Connector,
 		return nil, nil, errors.New("CA 자격증명 복호화 실패")
 	}
 	defer clear(secret)
-	client, e := s.connect(c.BaseURL, c.AppID, string(secret))
+	appID, e := sensorca.Open(s.Key, c.AppID, c.AppIDNonce)
+	if e != nil {
+		return nil, nil, errors.New("CA 자격증명 복호화 실패")
+	}
+	defer clear(appID)
+	client, e := s.connect(c.BaseURL, string(appID), string(secret))
 	if e != nil {
 		return nil, nil, e
 	}

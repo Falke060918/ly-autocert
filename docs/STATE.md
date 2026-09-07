@@ -1,31 +1,29 @@
 # STATE — 마지막 갱신: 2026-09-07
 
 ## 프로젝트
-INHERIT_AutoCert — 폐쇄망·레거시 환경용 온프레미스 인증서 라이프사이클 관리(CLM) 플랫폼. (명세: docs/00-spec.md / 기획: docs/01-plan.md / 로드맵: docs/ROADMAP.md)
+INHERIT_AutoCert — 폐쇄망·레거시 환경용 온프레미스 인증서 라이프사이클 관리 플랫폼. 명세는 docs/00-spec.md, 승인 발급·배포 범위는 docs/specs/ATC-20260907-001-auto-issuance.md와 003-product-validation.md를 따른다.
 
 ## 현재 상태
-**ATC-20260907-001(자동발급·갱신·배포) 설계 확정, Wave1 구현은 사용자 중단으로 미완.**
-- 설계 정본 `docs/design/07-auto-issuance.md`(04→05→07 재번호, dba784b). 설계 사전 검사 pass — 판정 `.claude/review/ATC-20260907-001-design.verdict.md`(로컬 전용, gitignore).
-- 위임장 A·B 원문은 스펙 `docs/specs/ATC-20260907-001-auto-issuance.md`의 '## 위임장' 절에 보관 — 재발사 시 그대로 쓴다.
-- **Wave1 A·B를 워크트리 격리로 발사, 사용자 중단 지시("중단 후 진행상황/계획 저장 후 커밋/푸시") 이후 둘 다 자체 완주 — 실측 확인.** A(ATC-20260907-001-A)는 브랜치 `worktree-agent-a8b297ced2e6a5c51`에 커밋 `ef8f528`(rebase 최신, 미push·미머지), 테스트 통과(기존 notify 4건 시한폭탄 실패 제외). B(ATC-20260907-001-B)는 브랜치 `worktree-agent-a3436f048497ac777`에 커밋 `27bae5d`(미push·미머지), 테스트 통과(기존 notify 실패 제외) — deploy_jobs는 설계 우선 규칙에 따라 미구현(D 단위 몫).
-- 발견 큐 결정 3건: ACME 표준 접수구 **보류** / Prometheus 메트릭 최소셋 **보류** / `.claude/rules/` 부재는 템플릿 동기화로 **복구 완료**(54be393, CLAUDE.md 프로젝트 절·.gitattributes 커스터마이즈는 백업 복원).
-- learn 수신함에 3건 들어옴: `docs/learn/2026-09-07-sync-gitattributes.md` · `docs/learn/2026-09-07-notify-fixture-clock.md` · `docs/learn/2026-09-07-npx-deny.md` — 다음 유인 세션 `/learn` 대상.
-- 확정 결정 6건(정본은 스펙): ACME 게이트웨이 먼저 / 배포는 별도 에이전트 신설(센서 확장 아님) / 발급 승인은 정책 스위치(신규 승인 기본 ON, 갱신 자동) / 키는 우리가 생성+CSR 제출 / 크리덴셜(app_id/secret)은 관리 페이지 입력·암호화 저장 / 배포 대상 nginx+Apache 먼저.
-- 사전 조사 3건 로컬 보관(untracked): `.claude/tmp/autoissue/{api-docs,codebase,sensor-deploy}/summary.md`.
-- 릴리스 1.2.0(VERSION·compose 태그·CHANGELOG·frontend/package.json 4곳 동기), 최신 마이그레이션 0022.
-- **P1.5 분해안은 그대로 승인 대기**(planner 산출): 9단위, Wave1 병렬(U8·U7a·U1·U2·U3·U4·U5) → Wave2 U6·U7b. 착수 전 결정 1건: 소유자 후보 디렉토리 API 공개 범위(현 system_administrator 전용). 상세는 git의 d2cb7e5 시점 STATE.
+- 승인된 C·D와 필요한 CA 설정·agent 기반은 구현되어 있다. E 자동 갱신·재배포는 미구현이며 이번 작업에 포함하지 않는다. 릴리스 표기는 1.2.0을 유지한다.
+- 003-A 알림 테스트 날짜 의존 4건은 수정 후 통과했다. 고정 테스트 시계를 사용하며 실제 메시지 생성 시계는 유지한다. 근거: 30e3db5, .codex/tmp/ATC-20260907-003-A/summary.md.
+- 003-B 기존 제품 검증·커밋은 958416d에서 완료했으나 독립 검토는 사용자판 pass·위임장판 fail·스펙판 fail이었다. 기능 검증 통과를 보안 완료로 해석하지 않는다.
+- B 보완: app_id·secret 봉인 및 API 설정 여부만 반환, 0027 스키마와 명시적 app_id 이행, lease/start/heartbeat 변경·감사 원자성, 독립 Ed25519 작업 서명·관리자 공개키 핀·재전송 journal, agent 신원 봉인·별도 identity.env 공급/명시적 이행을 구현했다. installer·CLI·매뉴얼로 최초 공급→등록→재시작을 연결했다. 근거: docs/design/security-plan-003.md, docs/manual/AGENT.md, .codex/tmp/security-repair-003/summary.md.
+- 보완 구현자의 임시 PostgreSQL 전체 Go 검사와 프런트 테스트·lint·build는 통과했다. 독립 3자 재검토는 별도로 필요하다. 두 새 테스트 프로세스로 같은 신원 복원과 replay 거부를 확인했으며 실제 systemd·nginx 운영 실행의 증거가 아니다.
+- 웹서버 적용·임시·백업 개인키 저장 예외 또는 대체 해제 방식은 미답이다. agent 신원 봉인과 분리된 결정이며 전체 B 보안 완료·실배포는 남아 있다.
+- 003-C: 사용자가 제공한 데모 API 문서·계정으로 기존 Go 커넥터의 로그인 200·상품 조회 200/5개를 확인했다. API URL은 TLS Manager 데모 문서와 일치한다. 실제 주문·인증서 발급·다운로드·DNS 변경·배포는 하지 않았다. 와일드카드 DCV 정규화·중복/충돌 및 신규 organization 담당자 계약은 fa13c07에서 수정했다. 근거: .codex/tmp/live-ca-api-003/summary.md 및 implementation.md. 독립 검토 결과는 .codex/review/의 C 판정을 대조한다.
+- apiinfo.txt는 로컬 비밀 입력이다. 내용·계정·토큰은 보고서와 Git에 넣지 않는다. 현재 검증은 API 로직 구현 목적이며 시험 도메인과 실제 Linux 대상은 제공되지 않았다.
+- 기존 001의 mTLS가 개별 작업 서명을 대체한다는 위임은 원래 성공 기준과 달랐다. 과거 기록을 지우지 않고 001 스펙 정정 부록과 07 설계·AGENT 매뉴얼로 바로잡았다.
 
-## 다음 할 일 (우선순위 순)
-1. **Wave1 A·B 후속** — A·B 두 단위 3자 검토 배치(각 단위 판정 3장, 2/3 pass) → land(워크트리 머지)·push → C(발급 파이프라인+UI) 착수. 대상 커밋 A `ef8f528` / B `27bae5d`. 이후 D(배포 실행) → E(자동 갱신·재배포) 순.
-2. **notify 테스트 픽스처 시계 의존 수정 단위** — 픽스처 not_after가 2026-09-01 고정이라 2026-09-02부터 4건 상시 실패. 별도 수정 단위 필요(`docs/learn/2026-09-07-notify-fixture-clock.md`).
-3. **E2E 실검증 준비** — 사용자 제공 데모 계정(app_id/secret) 필요. A 단위 완성 후 관리 페이지에 입력받는 흐름.
-4. **CLAUDE.md '범위 통제 — Phase 1만' 절 문구 갱신** — P2+P3 승인과 어긋남(스펙이 이김).
-5. **P1.5 트랙** — 사용자 승인 + U1 권한 결정 후 Wave1 7단위 병렬 위임.
-6. **보류 2건** — 오프라인 라이선스 선행 결정 논의(설계 docs/design/03-license.md 완료, `backend/cmd/licensegen` 미작성) / dangling docker volume 정리(도커 기동 시).
-7. **P2 스키마 설계 직전 일괄 재론 묶음** — 멀티테넌시 컬럼(옵션 B)·SNI 엔드포인트 식별자(현 스캐너 SNI 미전송)·Origin/Edge 스키마. 개별 선행 착수 금지, 착수 전 planner 비용 산정.
-8. **잔여 갭 유지분** — docker compose 실기동 검증 미수행 / `.env.example` 키 추가는 사용자 수작업 / Windows 메인 서버 미지원(센서만) / DB `sslmode=disable` / Windows 센서 개인키 NTFS ACL 미보호 / STARTTLS 미지원 / 감사 로그 조회 UI 부재 / 재스캔·취소 actor 미기록 / 웹 콘솔 enroll 명령 예시 `--token-file` 형 전환 검토.
+## 다음 할 일
+1. 보안 보완 커밋을 독립 3자로 재검토하고 실제 변경 HEAD와 판정을 대조한다. 테스트 통과·문서의 다음 할 일은 새 작업 승인 근거가 아니다.
+2. 웹서버 키 저장 경계를 사용자에게 확인한다. 질문 버튼이 이 세션에서 보이지 않았으므로 필수 질문을 평문 진행 안내 속에 묻히게 하지 않는다. 응답 없음은 승인이 아니다.
+3. 도메인·Linux 시험 대상·운영 키 공급이 준비되고 해당 범위가 승인되면 실발급→배포→reload·롤백을 검증한다. 현재 데모 로그인 성공만으로 무료 발급·검증 생략을 추정하지 않는다.
+4. 템플릿 개선과 Orca/상태표시줄 진행 문구는 사용자가 보류했다. 후보는 docs/learn/2026-09-07-template-improvements.md 한 파일의 11항목에 모았다. 알림·검사/훅·대기 간격·질문 UI 문제를 별도 승인 없이 실행기 설정 변경으로 확대하지 않는다.
+5. E 자동 갱신·재배포, P1.5 9단위 분해안 및 소유자 디렉토리 공개 범위, 오프라인 라이선스, P2 멀티테넌시·SNI·Origin/Edge는 기존 보류를 유지한다. 선행 착수하지 않는다.
 
 ## 이번 세션 특이사항
-- `.claude/identity`에 `notion:` 키 없음 — Notion 미러는 키 설정 전까지 전부 건너뜀. 유인 세션에서 페이지 ID 1회 질문 대상.
-- 사업 문서(`docs/TLS_인증서_관리_신규사업_AI_context.md`)는 원본 보존 — 수정 금지. 펜타 WAPPLES는 공개 문서만으로 일반화 금지(고객 PoC 항목은 사업 문서 11장). WebtoB는 고객 PoC 확인 6건 선행.
-- Phase 번호는 00-spec 15장 새 체계가 정본. 릴리스류 커밋은 author 확인(워크트리 환경에 따라 로컬 git 계정이 갈린 전례).
+- 실제 API 계정 제공 전 검증은 가짜 CA·httptest·가짜 API였으며 실제 인증서 발급 성공이 아니었다. 이후 실API 증거와 구분한다.
+- 내부 collaboration agent는 실제 사용했으나 별도 Orca agent 터미널·worktree가 생성되었다고 보고하지 않는다. 글로벌 Codex status_line 설정은 적용하지 않았으며 사용자가 해당 표시 작업을 보류했다.
+- 템플릿 이관의 기존 사용자 diff는 별도 보존한다. validator·hook 가정 문제와 macOS sync self-update·gitattributes 보존 문제는 개선 후보로 남았고 제품 검증으로 해결됐다고 주장하지 않는다.
+- 사업 문서 docs/TLS_인증서_관리_신규사업_AI_context.md는 원본 보존한다. WebtoB·WAPPLES 고객 PoC 전제를 일반화하지 않는다.
+- Notion 외부 반영은 이번 범위에 없다. 실제 운영 서비스·데이터 이행·키 생성은 실행하지 않는다.

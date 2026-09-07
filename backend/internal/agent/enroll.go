@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -21,16 +22,31 @@ import (
 
 // EnrollOptions는 enroll 서브커맨드 입력이다.
 type EnrollOptions struct {
-	ServerURL     string // https://host:port
-	Token         string // 1회용 등록 토큰 — 로그·에러에 넣지 않는다
-	CAFingerprint string // 서버 CA 인증서 SHA-256 지문 (hex, 콜론 허용)
-	StateDir      string
+	ServerURL           string // https://host:port
+	Token               string // 1회용 등록 토큰 — 로그·에러에 넣지 않는다
+	CAFingerprint       string // 서버 CA 인증서 SHA-256 지문 (hex, 콜론 허용)
+	StateDir            string
+	IdentityKey         []byte
+	JobSigningPublicKey []byte
 }
 
 // Enroll은 에이전트를 서버에 등록한다: 로컬 ECDSA P-256 키 생성(전송 금지) → CSR 제출
 // (서버 신뢰는 --ca-fingerprint 핀으로만 판단) → 발급된 클라이언트 인증서·CA를 상태
 // 디렉토리에 저장. 성공 시 서버가 발급한 에이전트 ID를 반환한다.
 func Enroll(ctx context.Context, opts EnrollOptions) (agentID string, err error) {
+	if len(opts.IdentityKey) != 32 || len(opts.JobSigningPublicKey) != 32 {
+		return "", errKeySource
+	}
+	unlock, err := lockState(opts.StateDir)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	for _, name := range []string{fileKey, "key.pem", fileAgentID} {
+		if _, e := os.Lstat(filepath.Join(opts.StateDir, name)); !os.IsNotExist(e) {
+			return "", errors.New("agent: existing identity cannot be overwritten")
+		}
+	}
 	pin, err := parseFingerprint(opts.CAFingerprint)
 	if err != nil {
 		return "", err
@@ -80,11 +96,11 @@ func Enroll(ctx context.Context, opts EnrollOptions) (agentID string, err error)
 	if _, err := clientCertForKey([]byte(resp.ClientCertPEM), key); err != nil {
 		return "", err
 	}
-	if err := SaveEnrollment(opts.StateDir, resp.AgentID, key, []byte(resp.ClientCertPEM), []byte(resp.CACertPEM)); err != nil {
+	if err := SaveEnrollment(opts.StateDir, resp.AgentID, key, []byte(resp.ClientCertPEM), []byte(resp.CACertPEM), opts.IdentityKey); err != nil {
 		return "", err
 	}
 	// 저장본이 온전한지 즉시 복원 검사한다 (ca.pem 파싱 포함).
-	if _, err := LoadIdentity(opts.StateDir); err != nil {
+	if _, err := LoadIdentity(opts.StateDir, opts.IdentityKey); err != nil {
 		return "", err
 	}
 	return resp.AgentID, nil

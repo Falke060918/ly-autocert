@@ -80,6 +80,13 @@ type Lease struct {
 	ExpiresAt           time.Time `json:"lease_expires_at"`
 }
 
+// SignedLease carries exact signed bytes. The trusted public key is supplied
+// by the administrator separately, never taken from a gateway response.
+type SignedLease struct {
+	Payload   []byte `json:"payload"`
+	Signature []byte `json:"signature"`
+}
+
 func Fingerprint(s string) bool {
 	b, e := hex.DecodeString(s)
 	return e == nil && len(b) == 32 && s == strings.ToLower(s)
