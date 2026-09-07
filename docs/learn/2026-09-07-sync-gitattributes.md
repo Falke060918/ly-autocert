@@ -1,0 +1,1 @@
+GOTCHA 후보: scripts/sync-manifest.sh는 .gitattributes를 템플릿 소유로 취급하는데 이 저장소는 거기에 고객 반입 번들용 export-ignore 목록과 *.ps1 eol=crlf를 커스터마이즈해 둬서 동기화마다 백업 복원이 필요했다(2026-09-07 실측, 커밋 54be393). 대안: customizable 목록에 .gitattributes 추가 또는 커스터마이즈를 다른 파일로 이전. /learn에서 처리할 것.
