@@ -33,9 +33,11 @@
 9. **[MVP] Docker Compose 개발환경**
 10. **[MVP] 사용자 관리 API + 화면** — 역할·표시 이름 수정, 비활성화·재활성화, 관리자 비밀번호 재설정(해당 사용자 세션 즉시 폐기), `/users` 화면 1개. 전부 System Administrator 전용이며 변경마다 감사 이벤트를 같은 트랜잭션으로 기록한다. `users.is_active`를 바꿀 API가 없으면 퇴사자 차단이 DB 직접 UPDATE로만 가능해 감사 로그를 우회한다
 
-### Phase 1.5 이후 (이번 범위 밖, 설계만 고려)
+### Phase 1.5 이후
 
 **Phase 번호는 00-spec 15장 체계가 정본**이며, 사업기획 문서(`docs/TLS_인증서_관리_신규사업_AI_context.md`, v2.1)의 단계 체계(P1 → P1.5 → P2 → P3)와 정합한다. 센서(구 Phase 3a)는 Phase 1의 전제 아키텍처로 이미 구현 완료다.
+
+**2026-09-07 사용자 승인으로 Phase 2(자동발급·갱신)와 Phase 3의 배포 자동화가 범위에 편입됐다** — 확정 범위·결정은 `docs/specs/ATC-20260907-001-auto-issuance.md`가 정본이다. Phase 1.5는 여전히 승인 대기 상태로 남는다.
 
 - **Phase 1.5 — Ownership / Workflow / 커넥터**: 서비스 소유자 지정, 알림 acknowledgement/snooze, 에스컬레이션 정책, 정책 위반 점수, 기간별 리포트, CMDB/ITSM/K8s/LB·WAF 보조 커넥터, WebtoB 설정 파일 read-only 파서(스캔 결과와 대조), Origin/Edge(내/외부) 인증서 이원 관리 설계(동일 FQDN 일치성 검사 — 구현 스키마는 Phase 2 스키마 설계 직전에 SNI·멀티테넌시와 일괄)
 - **Phase 2 — 발급과 갱신 오케스트레이션**: 내부 ACME-compatible RA/게이트웨이 골격 + CA adapter 추상화(ACME / Microsoft AD CS / HashiCorp Vault PKI / 상용 CA), 프로파일·CSR·발급 이력, 계정키·EAB·credential 관리, 갱신 정책·스케줄러·승인 워크플로·자동 발급·재시도·알림(구 Phase 4 흡수) + Prometheus 메트릭 최소셋(`/metrics`). WebtoB·WAF에도 표준 ACME 클라이언트(certbot류) 적용을 먼저 개발·검증하고, 어려우면 하이브리드(불가 장비는 Phase 3 배포 adapter) — 최종 확정은 Phase 2 착수 시 재결정. SNI 엔드포인트 식별자(IP+Port+Protocol+SNI)·Origin/Edge 구현 스키마·멀티테넌시 컬럼은 **역방향 불가급 결정**이라 Phase 2 스키마 설계 직전에 일괄 재론

@@ -84,13 +84,9 @@ Fix: keep the document as the scroll container, pin the sidebar/topbar with `pos
 Cause: with Secure set on HTTP the API returns 200 with Set-Cookie and only the browser drops it, so the screen bounces back to /login while every server log says success; HSTS removes the "proceed anyway" escape hatch for a self-signed cert and the pin outlives the config change (max-age).
 Fix: flip the reverse proxy and `SESSION_COOKIE_SECURE` together; enable HSTS only after the customer's own trusted certificate is installed. (last recurrence: 2026-08)
 
-**`page_size` over 200 is a 400, and every local check stays green**
-Cause: every list endpoint caps `page_size` at 200; the dashboard asked for 500 inside a `Promise.all`, so one rejected fetch took the whole screen down to an error alert — tsc, lint, unit tests and `next build` all pass because the limit lives on the server.
-Fix: keep bulk reads at ≤200 or loop pages with a hard page ceiling (dashboard expiry horizon: 200 × 3 pages). (last recurrence: 2026-08)
-
-**Two views sharing one set of URL query params (sort/filter/page) turn a view switch into a 400**
-Cause: the list view and the server view have different sort-key whitelists, so a `sort` value that is only valid in one of them leaks into the other when the URL survives the switch, and the server rejects the request.
-Fix: namespace the second view's params with a prefix (`srv_`) so nothing carries over; share a param only when both views actually accept the same value set. (last recurrence: 2026-08)
+**List API validation lives on the server, so every local check stays green while the UI 400s — `page_size` > 200, and sort keys leaking across views**
+Cause: every list endpoint caps `page_size` at 200 and each view has its own sort-key whitelist; a 500-row dashboard fetch inside `Promise.all` or a `sort` value surviving a view switch both draw a 400 that tsc, lint, unit tests and `next build` cannot see.
+Fix: keep bulk reads at ≤200 or loop pages with a hard ceiling (dashboard expiry horizon: 200 × 3 pages); namespace the second view's URL params with a prefix (`srv_`) so nothing carries over. (last recurrence: 2026-08)
 
 **A fresh worktree typechecks against a fake `tsc`, and `frontend/AGENTS.md` is not in the repo**
 Cause: with no `node_modules`, `npx tsc` fetches an unrelated package instead of the project's TypeScript; even after `npm install`, Next's generated global types (`LayoutProps` and friends) exist only once `npx next typegen` has run; and `frontend/AGENTS.md` is gitignored with generation off (`agentRules: false`), so a delegation prompt that points at it sends the agent to a file a fresh checkout does not have.
