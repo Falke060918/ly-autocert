@@ -65,6 +65,10 @@ type CertExpiryFacts struct {
 
 // BuildCertExpiryMessage는 만료 임박/만료 알림 메시지를 만든다.
 func BuildCertExpiryMessage(f CertExpiryFacts) Message {
+	return buildCertExpiryMessageAt(f, time.Now())
+}
+
+func buildCertExpiryMessageAt(f CertExpiryFacts, now time.Time) Message {
 	cn := scrubSensitive(f.CommonName)
 	env := scrubSensitive(f.Environment)
 	owner := scrubSensitive(f.OwnerDisplay)
@@ -75,7 +79,6 @@ func BuildCertExpiryMessage(f CertExpiryFacts) Message {
 	// DaysRemaining은 탐지 쿼리의 floor(잔여 초/86400)이라 잔여 12시간이면 0이 되는데,
 	// 부호로 판정하면 아직 유효한 인증서에 "만료되었습니다"가 나간다.
 	// 경계는 탐지 쿼리(not_after >= now() = 임박 / not_after < now() = 만료)와 같다.
-	now := time.Now()
 	expired := now.After(f.NotAfter)
 	// CA는 제목 앞에서 구분한다 — 사건 종류를 나누면 기존 정책·웹훅 수신 측이
 	// 새 종류를 모르는 채 CA 만료를 통째로 놓친다(사건은 그대로, 표기만 다르다).

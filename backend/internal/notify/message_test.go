@@ -7,6 +7,10 @@ import (
 	"time"
 )
 
+func testExpiryNow() time.Time {
+	return time.Date(2026, 8, 9, 1, 2, 3, 0, time.UTC)
+}
+
 func testFacts() CertExpiryFacts {
 	return CertExpiryFacts{
 		CertificateID: "11111111-2222-3333-4444-555555555555",
@@ -21,7 +25,7 @@ func testFacts() CertExpiryFacts {
 }
 
 func TestBuildCertExpiryMessage(t *testing.T) {
-	m := BuildCertExpiryMessage(testFacts())
+	m := buildCertExpiryMessageAt(testFacts(), testExpiryNow())
 
 	if !strings.Contains(m.Title, "D-23") || !strings.Contains(m.Title, "app.example.test") {
 		t.Errorf("title mismatch: %q", m.Title)
@@ -54,7 +58,7 @@ func TestBuildCertExpiryMessage(t *testing.T) {
 func TestBuildCertExpiryMessageMarksCA(t *testing.T) {
 	f := testFacts()
 	f.IsCA = true
-	m := BuildCertExpiryMessage(f)
+	m := buildCertExpiryMessageAt(f, testExpiryNow())
 
 	if !strings.Contains(m.Title, "발급 기관") {
 		t.Errorf("CA title must say so: %q", m.Title)
@@ -70,7 +74,7 @@ func TestBuildCertExpiryMessageMarksCA(t *testing.T) {
 	}
 
 	// 리프는 CA 문구가 붙지 않고, is_ca 키는 그래도 실린다(수신 측이 키 존재로 판정하지 않게).
-	leaf := BuildCertExpiryMessage(testFacts())
+	leaf := buildCertExpiryMessageAt(testFacts(), testExpiryNow())
 	if strings.Contains(leaf.Title, "발급 기관") || strings.Contains(leaf.TextBody, "하위 인증서") {
 		t.Errorf("leaf message must not carry CA wording: %q\n%s", leaf.Title, leaf.TextBody)
 	}
@@ -84,7 +88,7 @@ func TestBuildCertExpiryMessageOmitsEmptyOptionalFields(t *testing.T) {
 	f.Environment = ""
 	f.OwnerDisplay = ""
 	f.DeepLink = "" // NOTIFY_BASE_URL 미설정
-	m := BuildCertExpiryMessage(f)
+	m := buildCertExpiryMessageAt(f, testExpiryNow())
 
 	for _, unwanted := range []string{"환경:", "담당자:", "상세 보기:"} {
 		if strings.Contains(m.TextBody, unwanted) {
@@ -112,7 +116,7 @@ func TestBuildCertExpiryMessageSeverity(t *testing.T) {
 	for _, tc := range cases {
 		f := testFacts()
 		f.DaysRemaining = tc.days
-		m := BuildCertExpiryMessage(f)
+		m := buildCertExpiryMessageAt(f, testExpiryNow())
 		if m.Severity != tc.want {
 			t.Errorf("days=%d severity = %q, want %q", tc.days, m.Severity, tc.want)
 		}
@@ -124,10 +128,10 @@ func TestBuildCertExpiryMessageSeverity(t *testing.T) {
 // 부호로 판정하면 아직 유효한 인증서에 "만료되었습니다"가 나간다.
 func TestBuildCertExpiryMessageStillValidWithinLastDay(t *testing.T) {
 	f := testFacts()
-	f.NotAfter = time.Now().Add(12 * time.Hour)
+	f.NotAfter = testExpiryNow().Add(12 * time.Hour)
 	f.DaysRemaining = 0 // floor(0.5) — 탐지 쿼리가 주는 값
 
-	m := BuildCertExpiryMessage(f)
+	m := buildCertExpiryMessageAt(f, testExpiryNow())
 
 	if m.EventID != EventCertExpiring {
 		t.Errorf("event id = %q, want %q", m.EventID, EventCertExpiring)
@@ -157,10 +161,10 @@ func TestBuildCertExpiryMessageElapsedMatchesRealElapsed(t *testing.T) {
 	}
 	for _, tc := range cases {
 		f := testFacts()
-		f.NotAfter = time.Now().Add(-tc.since)
+		f.NotAfter = testExpiryNow().Add(-tc.since)
 		f.DaysRemaining = tc.days
 
-		m := BuildCertExpiryMessage(f)
+		m := buildCertExpiryMessageAt(f, testExpiryNow())
 
 		if m.EventID != EventCertExpired {
 			t.Errorf("%s: event id = %q, want %q", tc.name, m.EventID, EventCertExpired)
@@ -187,7 +191,7 @@ func TestBuildCertExpiryMessageNeverCarriesPEM(t *testing.T) {
 	f.CommonName = "app.example.test\n" + dummyPEM
 	f.OwnerDisplay = dummyPEM
 	f.Environment = "-----BEGIN PRIVATE KEY-----"
-	m := BuildCertExpiryMessage(f)
+	m := buildCertExpiryMessageAt(f, testExpiryNow())
 
 	encoded, err := json.Marshal(m)
 	if err != nil {
@@ -211,5 +215,36 @@ func TestScrubSensitiveLeavesPlainTextUntouched(t *testing.T) {
 	in := "app.example.test — 정상 문자열"
 	if got := scrubSensitive(in); got != in {
 		t.Errorf("scrubSensitive(%q) = %q, want unchanged", in, got)
+	}
+}
+
+func TestBuildCertExpiryMessageAtExpiryBoundary(t *testing.T) {
+	now := testExpiryNow()
+	cases := []struct {
+		name    string
+		offset  time.Duration
+		want    string
+		expired bool
+	}{
+		{"just before expiry", time.Nanosecond, EventCertExpiring, false},
+		{"at expiry", 0, EventCertExpiring, false},
+		{"just after expiry", -time.Nanosecond, EventCertExpired, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := testFacts()
+			f.NotAfter = now.Add(tc.offset)
+			f.DaysRemaining = 0
+			m := buildCertExpiryMessageAt(f, now)
+			if m.EventID != tc.want || m.Data["event"] != tc.want {
+				t.Errorf("event = %q, data event = %v, want %q", m.EventID, m.Data["event"], tc.want)
+			}
+			if strings.Contains(m.TextBody, "만료되었습니다") != tc.expired {
+				t.Errorf("expired wording mismatch: %q", m.TextBody)
+			}
+			if strings.Contains(m.Title, "D-0") == tc.expired {
+				t.Errorf("expiry title mismatch: %q", m.Title)
+			}
+		})
 	}
 }

@@ -214,7 +214,7 @@ func TestEmailSendOverSTARTTLS(t *testing.T) {
 		t.Fatalf("channel must be enabled: %s", reason)
 	}
 
-	m := BuildCertExpiryMessage(testFacts())
+	m := buildCertExpiryMessageAt(testFacts(), testExpiryNow())
 	m.Recipient = "ops@example.test"
 	if err := n.Send(context.Background(), m); err != nil {
 		t.Fatalf("Send: %v", err)

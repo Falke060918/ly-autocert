@@ -52,7 +52,7 @@ func TestWebhookSendSuccessAndPayload(t *testing.T) {
 	}
 	n.nowOverride = func() time.Time { return time.Date(2026, 8, 9, 1, 2, 3, 0, time.UTC) }
 
-	m := BuildCertExpiryMessage(testFacts())
+	m := buildCertExpiryMessageAt(testFacts(), testExpiryNow())
 	if err := n.Send(context.Background(), m); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
