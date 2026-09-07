@@ -7,16 +7,16 @@ INHERIT_AutoCert — 폐쇄망·레거시 환경용 온프레미스 인증서 �
 **ATC-20260907-001(자동발급·갱신·배포) 설계 확정, Wave1 구현은 사용자 중단으로 미완.**
 - 설계 정본 `docs/design/07-auto-issuance.md`(04→05→07 재번호, dba784b). 설계 사전 검사 pass — 판정 `.claude/review/ATC-20260907-001-design.verdict.md`(로컬 전용, gitignore).
 - 위임장 A·B 원문은 스펙 `docs/specs/ATC-20260907-001-auto-issuance.md`의 '## 위임장' 절에 보관 — 재발사 시 그대로 쓴다.
-- **Wave1 A·B를 워크트리 격리로 발사, 사용자 중단 지시("중단 후 진행상황/계획 저장 후 커밋/푸시") 이후 실측이 갈렸다.** A(ATC-20260907-001-A)는 중단 지시 후 자체 완주 — 브랜치 `worktree-agent-a8b297ced2e6a5c51`에 커밋 `ef8f528`(rebase 최신, 미push·미머지), 테스트 통과(기존 notify 4건 시한폭탄 실패 제외). B는 브랜치 `worktree-agent-a3436f048497ac777` 팁이 dba784b — 커밋된 부분 작업 없음.
+- **Wave1 A·B를 워크트리 격리로 발사, 사용자 중단 지시("중단 후 진행상황/계획 저장 후 커밋/푸시") 이후 둘 다 자체 완주 — 실측 확인.** A(ATC-20260907-001-A)는 브랜치 `worktree-agent-a8b297ced2e6a5c51`에 커밋 `ef8f528`(rebase 최신, 미push·미머지), 테스트 통과(기존 notify 4건 시한폭탄 실패 제외). B(ATC-20260907-001-B)는 브랜치 `worktree-agent-a3436f048497ac777`에 커밋 `27bae5d`(미push·미머지), 테스트 통과(기존 notify 실패 제외) — deploy_jobs는 설계 우선 규칙에 따라 미구현(D 단위 몫).
 - 발견 큐 결정 3건: ACME 표준 접수구 **보류** / Prometheus 메트릭 최소셋 **보류** / `.claude/rules/` 부재는 템플릿 동기화로 **복구 완료**(54be393, CLAUDE.md 프로젝트 절·.gitattributes 커스터마이즈는 백업 복원).
-- learn 수신함에 2건 들어옴: `docs/learn/2026-09-07-sync-gitattributes.md` · `docs/learn/2026-09-07-notify-fixture-clock.md` — 다음 유인 세션 `/learn` 대상.
+- learn 수신함에 3건 들어옴: `docs/learn/2026-09-07-sync-gitattributes.md` · `docs/learn/2026-09-07-notify-fixture-clock.md` · `docs/learn/2026-09-07-npx-deny.md` — 다음 유인 세션 `/learn` 대상.
 - 확정 결정 6건(정본은 스펙): ACME 게이트웨이 먼저 / 배포는 별도 에이전트 신설(센서 확장 아님) / 발급 승인은 정책 스위치(신규 승인 기본 ON, 갱신 자동) / 키는 우리가 생성+CSR 제출 / 크리덴셜(app_id/secret)은 관리 페이지 입력·암호화 저장 / 배포 대상 nginx+Apache 먼저.
 - 사전 조사 3건 로컬 보관(untracked): `.claude/tmp/autoissue/{api-docs,codebase,sensor-deploy}/summary.md`.
 - 릴리스 1.2.0(VERSION·compose 태그·CHANGELOG·frontend/package.json 4곳 동기), 최신 마이그레이션 0022.
 - **P1.5 분해안은 그대로 승인 대기**(planner 산출): 9단위, Wave1 병렬(U8·U7a·U1·U2·U3·U4·U5) → Wave2 U6·U7b. 착수 전 결정 1건: 소유자 후보 디렉토리 API 공개 범위(현 system_administrator 전용). 상세는 git의 d2cb7e5 시점 STATE.
 
 ## 다음 할 일 (우선순위 순)
-1. **Wave1 A·B 후속** — A는 재발사가 아니라 **3자 검토 배치(설계자+검사관2, 판정 3장 중 2 pass) → 머지·push부터**(대상 `ef8f528`). B는 잔재 확인(`git worktree list`, `git log --all --grep=ATC-20260907-001-`) 후 재발사 여부 판단 — 재발사 시 스펙 보관 위임장 그대로. 이후 C(발급 파이프라인+UI) → D(배포 실행) → E(자동 갱신·재배포) 순.
+1. **Wave1 A·B 후속** — A·B 두 단위 3자 검토 배치(각 단위 판정 3장, 2/3 pass) → land(워크트리 머지)·push → C(발급 파이프라인+UI) 착수. 대상 커밋 A `ef8f528` / B `27bae5d`. 이후 D(배포 실행) → E(자동 갱신·재배포) 순.
 2. **notify 테스트 픽스처 시계 의존 수정 단위** — 픽스처 not_after가 2026-09-01 고정이라 2026-09-02부터 4건 상시 실패. 별도 수정 단위 필요(`docs/learn/2026-09-07-notify-fixture-clock.md`).
 3. **E2E 실검증 준비** — 사용자 제공 데모 계정(app_id/secret) 필요. A 단위 완성 후 관리 페이지에 입력받는 흐름.
 4. **CLAUDE.md '범위 통제 — Phase 1만' 절 문구 갱신** — P2+P3 승인과 어긋남(스펙이 이김).
