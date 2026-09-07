@@ -58,10 +58,15 @@ func (s Subscriber) Validate() error {
 	if e != nil || a.Address != n.Email {
 		return errors.New("담당자 이메일이 올바르지 않습니다")
 	}
+	organization := false
 	for _, t := range n.Types {
 		if t != "organization" && t != "technical" && t != "billing" {
 			return errors.New("담당자 역할이 올바르지 않습니다")
 		}
+		organization = organization || t == "organization"
+	}
+	if !organization {
+		return errors.New("주문 신청자에게 organization 역할이 필요합니다")
 	}
 	return nil
 }

@@ -138,7 +138,21 @@ func (c *TLSManager) PlaceOrder(ctx context.Context, s Spec, csr string, subscri
 	if csr == "" {
 		return out, errors.New("CSR이 필요합니다")
 	}
-	in := map[string]any{"product_id": s.ProductID, "signing_ca_type": s.SigningCA, "subscriber": subscriber, "certificate": map[string]any{"csr": csr, "dns_names": s.DNSNames, "validity": map[string]any{"type": "length", "length_in_days": s.ValidityDays}}, "domain_validations": s.Validations}
+	// The CA validates the base domain; wildcard SANs stay in the certificate.
+	validations := make([]Validation, 0, len(s.Validations))
+	methods := make(map[string]string, len(s.Validations))
+	for _, validation := range s.Validations {
+		validation.Name = strings.TrimPrefix(validation.Name, "*.")
+		if method, exists := methods[validation.Name]; exists {
+			if method != validation.Method {
+				return out, errors.New("같은 도메인의 검증 방식이 서로 다릅니다")
+			}
+			continue
+		}
+		methods[validation.Name] = validation.Method
+		validations = append(validations, validation)
+	}
+	in := map[string]any{"product_id": s.ProductID, "signing_ca_type": s.SigningCA, "subscriber": subscriber, "certificate": map[string]any{"csr": csr, "dns_names": s.DNSNames, "validity": map[string]any{"type": "length", "length_in_days": s.ValidityDays}}, "domain_validations": validations}
 	e := c.call(ctx, "POST", "/v1/orders", in, &out)
 	if e == nil && out.Code == "" {
 		e = &HTTPError{Ambiguous: true}
