@@ -55,6 +55,7 @@ services:
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
       # 센서 CA 개인키 봉인 키 (hex 64자). 센서(Phase 3a)를 쓸 때만 필요하다.
       SENSOR_CA_ENC_KEY: ${SENSOR_CA_ENC_KEY:-}
+      ISSUANCE_ENC_KEY: ${ISSUANCE_ENC_KEY:-}
       # 센서 게이트웨이 리슨 주소와, 센서가 접속할 DNS/IP(콤마 구분 — 서버 인증서 SAN).
       # 리슨 포트는 위 ports의 컨테이너 쪽과 반드시 같아야 한다 — 어긋나면 리스너는
       # 떠 있는데 아무도 접속하지 못하므로, .env의 SENSOR_LISTEN_ADDR을 직접 받지 않고

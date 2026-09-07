@@ -53,6 +53,22 @@ export type CertificateStatus =
   | "replaced"
   | "unknown";
 
+export type IssuanceStatus =
+  | "requested"
+  | "approval_pending"
+  | "issuing"
+  | "awaiting_validation"
+  | "issued"
+  | "deploying"
+  | "completed"
+  | "cancelled"
+  | "issue_failed"
+  | "deploy_failed"
+  | "rolled_back"
+  | "manual_required";
+export type DeployJobStatus =
+  "pending" | "leased" | "running" | "completed" | "failed" | "rolled_back";
+
 export type CertificateType =
   | "server"
   | "client"

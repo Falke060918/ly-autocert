@@ -19,6 +19,7 @@ import (
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/auth"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/discovery"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/domain"
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/issuance"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/store"
 )
 
@@ -26,12 +27,13 @@ import (
 // routes는 등록된 "METHOD /path" 패턴 전체다 — OpenAPI 명세 정합 테스트가
 // 이 목록과 api/openapi.yaml을 대조한다 (openapi_conformance_test.go).
 type Server struct {
-	mux    *http.ServeMux
-	pool   *sql.DB
-	store  *store.Store
-	auth   *auth.Service
-	audit  *audit.Recorder
-	routes []string
+	issuance *issuance.Service
+	mux      *http.ServeMux
+	pool     *sql.DB
+	store    *store.Store
+	auth     *auth.Service
+	audit    *audit.Recorder
+	routes   []string
 
 	// 아래 다섯은 배선(cmd/server)이 있어야 채워지는 선택 의존성이다.
 	// 비어 있어도 코어 API는 정상 동작한다 (05-notifications 10.1 실패 격리).
@@ -298,6 +300,7 @@ func newServer(pool *sql.DB, authSvc *auth.Service, rec *audit.Recorder, sensorC
 	// OpenAPI 명세 제공 — 읽기 전용이라 전 역할, 폐쇄망 제품이므로 인증 뒤에 둔다
 	// (public은 healthz·login뿐이라는 원칙 유지).
 	s.protected("GET /api/v1/openapi.yaml", handleOpenAPISpec, domain.AllRoles...)
+	s.registerIssuanceRoutes(sensorCAKey)
 
 	return s
 }

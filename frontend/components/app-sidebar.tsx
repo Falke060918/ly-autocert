@@ -24,6 +24,7 @@ import { cn } from "@/lib/utils";
 const NAV_ITEMS = [
   { href: "/", label: "대시보드", icon: LayoutDashboard },
   { href: "/certificates", label: "인증서", icon: ShieldCheck },
+  { href: "/issuance", label: "발급", icon: ShieldCheck },
   { href: "/discovery", label: "Discovery", icon: Radar },
   { href: "/sensors", label: "센서", icon: RadioTower },
   { href: "/notifications", label: "알림", icon: Bell },
@@ -31,6 +32,7 @@ const NAV_ITEMS = [
 
 /** System Administrator에게만 보이는 메뉴 — 화면 자체도 같은 역할로 잠겨 있다. */
 const ADMIN_NAV_ITEMS = [
+  { href: "/agents", label: "배포 에이전트", icon: RadioTower },
   { href: "/users", label: "사용자", icon: Users },
   { href: "/settings/access", label: "접근 제한", icon: Lock },
 ] as const;

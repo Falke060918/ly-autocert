@@ -17,6 +17,7 @@ import (
 
 // Config는 서버 기동에 필요한 설정값이다.
 type Config struct {
+	IssuanceEncKey []byte
 	// HTTPAddr은 HTTP 리슨 주소다. 예: ":8080"
 	HTTPAddr string
 	// DatabaseURL은 PostgreSQL 접속 DSN이다.
@@ -266,6 +267,14 @@ func Load() (Config, error) {
 	// 알림·스윕뿐 아니라 센서 주소 검증도 이 파서의 경고 목록을 쓴다 —
 	// 잘못된 값은 기동을 막지 않고 경고 + 무시가 이 파일의 일관된 처리다.
 	l := &envLoader{channelErrors: map[string]string{}}
+	if raw := os.Getenv("ISSUANCE_ENC_KEY"); raw != "" {
+		key, err := hex.DecodeString(raw)
+		if err != nil || len(key) != 32 {
+			l.warnf("ISSUANCE_ENC_KEY must be 64 hex characters; issuance disabled")
+		} else {
+			cfg.IssuanceEncKey = key
+		}
+	}
 	if raw := os.Getenv("SENSOR_CA_ENC_KEY"); raw != "" {
 		// 오류에 키 값을 싣지 않는다 — 형식 요구사항만 알린다.
 		// 형식이 틀려도 기동은 계속한다: 게이트웨이만 비활성화되고 코어 API는 뜬다.

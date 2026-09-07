@@ -11,11 +11,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/agentgw"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/api"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/audit"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/auth"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/config"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/db"
+	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/issuance"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/sensorca"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/sensorgw"
 	"github.com/Falke060918/INHERIT_AutoCert/backend/internal/store"
@@ -147,6 +149,9 @@ func run(logger *slog.Logger) error {
 	// '등록된 인증서' 정기 스캔의 '지금 실행'이 곧 재스캔 1배치 발주이기 때문이다.
 	stopSchedules, scheduleCtl := startScanScheduleRunner(ctx, logger, cfg, discMgr)
 	defer stopSchedules()
+	issueSvc := issuance.New(st, cfg.IssuanceEncKey)
+	stopIssuance := issueSvc.Start(ctx, logger)
+	defer stopIssuance()
 
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
@@ -157,6 +162,7 @@ func run(logger *slog.Logger) error {
 		// 세션 쿠키 Secure는 SESSION_COOKIE_SECURE(기본 false) — HTTPS 리버스
 		// 프록시로 종단할 때만 켠다 (docs/manual/TLS.md).
 		Handler: api.NewServer(pool, authSvc, rec, cfg.SensorCAEncKey,
+			api.WithIssuance(issueSvc),
 			api.WithNotificationChannels(notifyChannels),
 			api.WithSweepDefaults(sweepDefaults(cfg.Sweep, cfg.ScanTLSProbeVersions)),
 			// 스캔 대상 제안에 운영자 지정 대역(SCAN_SUGGESTED_NETWORKS)을 싣는다.
@@ -191,7 +197,16 @@ func run(logger *slog.Logger) error {
 			if err != nil {
 				return nil, nil, err
 			}
-			return srv, gw.StartReaper(ctx), nil
+			ag, err := agentgw.New(ctx, st, cfg.SensorCAEncKey, cfg.IssuanceEncKey)
+			if err != nil {
+				return nil, nil, err
+			}
+			mux := http.NewServeMux()
+			mux.Handle("/agent/", ag.Handler())
+			mux.Handle("/", srv.Handler)
+			srv.Handler = mux
+			stopSensor, stopAgent := gw.StartReaper(ctx), ag.StartReaper(ctx)
+			return srv, func() { stopAgent(); stopSensor() }, nil
 		})
 		defer stopGateway()
 		if sensorSrv != nil {
