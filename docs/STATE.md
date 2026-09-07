@@ -7,12 +7,12 @@ INHERIT_AutoCert — 폐쇄망·레거시 환경용 온프레미스 인증서 �
 **P2+P3 범위 확장을 사용자가 승인**(2026-09-07) — 자동발급·갱신·배포 착수. 스펙 `docs/specs/ATC-20260907-001-auto-issuance.md` 확정·push(ae45dcf), Work Order 접두어 ATC 등록, `.claude/identity` 신설(project/done).
 - 확정 결정 6건(정본은 스펙): ACME 게이트웨이 먼저 / 배포는 별도 에이전트 신설(센서 확장 아님, 자동 업데이트는 보류) / 발급 승인은 정책 스위치(신규 승인 기본 ON, 갱신 자동) / 키는 우리가 생성+CSR 제출 / 크리덴셜(app_id/secret)은 관리 페이지 입력·암호화 저장 / 배포 대상 nginx+Apache 먼저.
 - 사전 조사 3건 로컬 보관(untracked): `.claude/tmp/autoissue/{api-docs,codebase,sensor-deploy}/summary.md`.
-- 진행 중: planner가 `docs/design/04-auto-issuance.md` 설계 작성 중 — 아직 미완.
+- 진행 중: planner가 `docs/design/07-auto-issuance.md` 설계 작성 중 — 아직 미완.
 - 릴리스 1.2.0(VERSION·compose 태그·CHANGELOG·frontend/package.json 4곳 동기), 최신 마이그레이션 0022.
 - **P1.5 분해안은 그대로 승인 대기**(planner 산출): 9단위, Wave1 병렬(U8 Origin/Edge 설계문서만·U7a WebtoB 파서·U1 소유자 지정·U2 알림 ack/snooze+에스컬레이션·U3 정책 위반 점수·U4 리포트+coverage·U5 커넥터 공통 프레임) → Wave2 U6 K8s·U7b WebtoB 대사 배선. 착수 전 결정 1건: 소유자 후보 디렉토리 API(사용자 목록) 공개 범위 — 현재 system_administrator 전용. 상세는 git의 d2cb7e5 시점 STATE.
 
 ## 다음 할 일 (우선순위 순)
-1. **설계 사전 검사 → ATC-20260907-001 하위 단위 분배** — planner의 04-auto-issuance.md 완성분을 검토한 뒤 Wave 분해·병렬 위임.
+1. **설계 사전 검사 → ATC-20260907-001 하위 단위 분배** — planner의 07-auto-issuance.md 완성분을 검토한 뒤 Wave 분해·병렬 위임.
 2. **P1.5 트랙** — 사용자 승인 + U1 권한 결정 후 Wave1 7단위 병렬 위임.
 3. **정리 필요 2건** — ① `.claude/rules/` 디렉터리가 저장소에 없음(CLAUDE.md 조건부 로드 표·notion 규칙 참조와 불일치) ② CLAUDE.md '범위 통제 — Phase 1만' 절이 P2+P3 승인과 어긋남(스펙이 이김, 문구 갱신 필요).
 4. **보류 2건** — 오프라인 라이선스 선행 결정 논의(설계 docs/design/03-license.md 완료, `backend/cmd/licensegen` 미작성) / dangling docker volume 정리(도커 기동 시).

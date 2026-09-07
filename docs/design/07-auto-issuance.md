@@ -1,8 +1,8 @@
-# 설계 05 — 인증서 자동발급·갱신·배포 (ATC-20260907-001)
+# 설계 07 — 인증서 자동발급·갱신·배포 (ATC-20260907-001)
 
 - Work Order: `ATC-20260907-001` — 정본 스펙: `docs/specs/ATC-20260907-001-auto-issuance.md`
 - 작성: 2026-09-07 (planner) / 근거 조사: `.claude/tmp/autoissue/{api-docs,codebase,sensor-deploy}/summary.md`(로컬 전용) / 관련 명세: `docs/00-spec.md` 7.5~7.8장·15장 Phase 2
-- 경로 주석: 문서 번호는 05다 — `04-port-autoscan.md`와의 번호 충돌을 재번호로 해소했다(2026-09-07, 오케스트레이터 결정).
+- 경로 주석: 문서 번호는 07이다 — `04-port-autoscan.md`·`05-notifications.md`와의 번호 충돌을 재번호로 해소했다(2026-09-07, 오케스트레이터 결정).
 
 **내가 이해한 설계 범위**: 내부 ACME 게이트웨이 골격 + TLS Manager 커넥터로 발급·자동 갱신을 세우고, 신설 배포 에이전트가 nginx/Apache에 인증서를 교체·reload까지 하는 전 경로(크리덴셜 관리·승인 정책·콘솔 UI·마이그레이션 0023~·감사·권한 포함)를 설계한다 — 코드는 쓰지 않는다.
 

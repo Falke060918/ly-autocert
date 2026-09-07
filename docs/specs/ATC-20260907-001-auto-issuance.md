@@ -48,7 +48,7 @@
 
 이미 승인됨 — 확인 질문 없이 완료까지. status unit: `ATC-20260907-001-A` / 작업 내용: CA 연동·발급 정책 설정. 3자 검토 대상 — push는 오케스트레이터가 게이트 확인 후 별도 위임한다(직접 push 금지).
 
-기준 텍스트(사용자 확인본): "TLS Manager 접속 계정(app_id/secret)은 솔루션 관리 페이지에서 입력할 수 있도록 구현". 원문·범위·성공 기준은 ATC-20260907-001 기준: `docs/specs/ATC-20260907-001-auto-issuance.md`. 설계 정본: `docs/design/05-auto-issuance.md`의 A 단위 절(크리덴셜 §6·정책 §9·마이그레이션 0023). 시작하면 먼저 `git rebase main`을 실행하고 두 문서를 읽어라. 충돌로 rebase가 중단되면 `git rebase --abort` 후 멈추고 보고하라.
+기준 텍스트(사용자 확인본): "TLS Manager 접속 계정(app_id/secret)은 솔루션 관리 페이지에서 입력할 수 있도록 구현". 원문·범위·성공 기준은 ATC-20260907-001 기준: `docs/specs/ATC-20260907-001-auto-issuance.md`. 설계 정본: `docs/design/07-auto-issuance.md`의 A 단위 절(크리덴셜 §6·정책 §9·마이그레이션 0023). 시작하면 먼저 `git rebase main`을 실행하고 두 문서를 읽어라. 충돌로 rebase가 중단되면 `git rebase --abort` 후 멈추고 보고하라.
 
 단위 성공 기준: 관리 페이지에서 app_id/secret을 입력하면 암호화 저장되고(평문 저장·로그 노출 0), 연결 테스트가 로그인 성공/실패를 보여주며, 발급 정책 스위치(신규 발급 승인 요구 기본 ON·갱신 자동)가 저장·조회된다. 변경 API 전부 감사 로그(같은 tx 마지막 문장)+권한 검사. openapi.yaml과 frontend/lib/api.ts는 같은 커밋.
 
@@ -60,11 +60,11 @@
 
 이미 승인됨 — 확인 질문 없이 완료까지. status unit: `ATC-20260907-001-B` / 작업 내용: 배포 에이전트 기반(신원·등록·관리). 3자 검토 대상 — push는 오케스트레이터가 게이트 확인 후 별도 위임한다(직접 push 금지).
 
-기준 텍스트(사용자 원문): "근데 갱신을 하려면, 당연히 서버도 재기동이 필요할거야. 서버 재기동시키는것까지 가능한가?" → 확인 라운드에서 배포는 별도 에이전트 신설로 확정. 원문·범위·성공 기준은 ATC-20260907-001 기준: `docs/specs/ATC-20260907-001-auto-issuance.md`. 설계 정본: `docs/design/05-auto-issuance.md`의 B 단위 절(agents 테이블·enroll·mTLS·관리 UI·마이그레이션 0024). 시작하면 먼저 `git rebase main` 실행, 충돌 시 `git rebase --abort` 후 멈추고 보고하라.
+기준 텍스트(사용자 원문): "근데 갱신을 하려면, 당연히 서버도 재기동이 필요할거야. 서버 재기동시키는것까지 가능한가?" → 확인 라운드에서 배포는 별도 에이전트 신설로 확정. 원문·범위·성공 기준은 ATC-20260907-001 기준: `docs/specs/ATC-20260907-001-auto-issuance.md`. 설계 정본: `docs/design/07-auto-issuance.md`의 B 단위 절(agents 테이블·enroll·mTLS·관리 UI·마이그레이션 0024). 시작하면 먼저 `git rebase main` 실행, 충돌 시 `git rebase --abort` 후 멈추고 보고하라.
 
 단위 성공 기준: 새 에이전트 바이너리가 enroll 토큰으로 등록되고(mTLS 신원 확립), 콘솔 에이전트 관리 화면에서 등록·상태(온라인/오프라인)·해제가 보인다. 작업 채널은 pull 리스 신설(`deploy_jobs` 골격 — scan_jobs 무접촉). 변경 API 감사+권한, openapi.yaml·api.ts 동일 커밋.
 
-명문화 의무(설계 검사 지적): 00-spec.md:532의 "모든 작업 서명 및 검증"은 이 설계에서 mTLS 채널 인증+폐쇄 enum 작업 정의로 갈음한다 — 이 해석을 코드 주석과 `docs/design/05-auto-issuance.md` 해당 절에 1문장씩 명문화하라.
+명문화 의무(설계 검사 지적): 00-spec.md:532의 "모든 작업 서명 및 검증"은 이 설계에서 mTLS 채널 인증+폐쇄 enum 작업 정의로 갈음한다 — 이 해석을 코드 주석과 `docs/design/07-auto-issuance.md` 해당 절에 1문장씩 명문화하라.
 
 하지 말 것: 배포 실행 로직(D 단위) 선구현 금지. 에이전트에 임의 셸 실행 능력 금지. 센서 코드 경로 수정은 공용 추출만 허용. 개인키 전달 경로는 이번 단위 금지.
 
