@@ -203,6 +203,13 @@ func (s *Service) process(ctx context.Context, o *store.IssuanceOrder) error {
 			result.Status = "completed"
 			result.Kind = "issued"
 		}
+	case "ready":
+		// The demo CA may accept an order before its asynchronous signing finishes.
+		// Keep its code and poll; a fresh POST could create a duplicate order.
+		result.Status = "issuing"
+		if o.Code == "" {
+			result.Kind = "order_placed"
+		}
 	case "pending":
 		result.Status = "issuing"
 		for _, v := range snap.Validation {

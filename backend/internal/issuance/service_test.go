@@ -115,6 +115,7 @@ type fakeCA struct {
 	places int
 	fail   error
 	issued bool
+	ready  bool
 }
 
 func (f *fakeCA) TestConnection(context.Context) error { return nil }
@@ -126,6 +127,9 @@ func (f *fakeCA) PlaceOrder(_ context.Context, _ upstream.Spec, csr string, _ up
 	f.csr = csr
 	if f.fail != nil {
 		return upstream.Snapshot{}, f.fail
+	}
+	if f.ready {
+		return upstream.Snapshot{Code: "fake-order", Status: "ready"}, nil
 	}
 	return upstream.Snapshot{Code: "fake-order", Status: "pending", Validation: []upstream.DomainValidation{{Name: "app.example.test", Status: "pending", TXT: "public-challenge"}}}, nil
 }
@@ -175,6 +179,38 @@ func integration(t *testing.T) (*sql.DB, *Service, *store.CAConnection, *fakeCA)
 	})
 	return pool, svc, c, fake
 }
+func TestReadyOrderPollsToIssuedWithoutResubmission(t *testing.T) {
+	pool, s, c, fake := integration(t)
+	ctx := context.Background()
+	a := store.IssuanceActor{}
+	if err := s.Store.SaveIssuanceSettings(ctx, store.IssuanceSettings{ApprovalRequired: false}, a); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Store.SaveIssuanceSettings(ctx, store.IssuanceSettings{ApprovalRequired: true, AutoRenew: true}, a)
+	fake.ready = true
+	o, err := s.Create(ctx, c.ID, specFixture(), a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	o, err = s.Store.GetIssuanceOrder(ctx, o.ID)
+	if err != nil || o.Status != "issuing" || o.Code != "fake-order" || o.UpstreamStatus != "ready" || o.LastError != "" {
+		t.Fatalf("ready order must retain its CA code and remain in progress: %+v %v", o, err)
+	}
+	if _, err = pool.Exec(`UPDATE issuance_orders SET next_action_at=now() WHERE id=$1::uuid`, o.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	o, err = s.Store.GetIssuanceOrder(ctx, o.ID)
+	if err != nil || o.Status != "completed" || o.CertificateID == nil || fake.places != 1 {
+		t.Fatalf("ready order did not complete by GET-only polling: %+v %v; submissions=%d", o, err, fake.places)
+	}
+}
+
 func TestIssuanceToDeploymentLeaseMaterialAndAudit(t *testing.T) {
 	pool, s, c, fake := integration(t)
 	ctx := context.Background()
