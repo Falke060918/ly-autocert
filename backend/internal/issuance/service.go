@@ -8,7 +8,6 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/pem"
 	"errors"
 	"log/slog"
 	"sync"
@@ -190,7 +189,7 @@ func (s *Service) process(ctx context.Context, o *store.IssuanceOrder) error {
 		if e != nil {
 			return e
 		}
-		cert, certPEM, chainPEM, e := ValidateIssued(snap, csr, o.Spec.DNSNames)
+		cert, certPEM, chainPEM, comparison, e := InspectIssued(snap, csr, o.Spec)
 		if e != nil {
 			result.Status = "issue_failed"
 			result.Error = e.Error()
@@ -200,6 +199,7 @@ func (s *Service) process(ctx context.Context, o *store.IssuanceOrder) error {
 			result.Certificate = &described
 			result.CertPEM = certPEM
 			result.ChainPEM = chainPEM
+			result.Comparison = comparison
 			result.Status = "completed"
 			result.Kind = "issued"
 		}
@@ -275,60 +275,6 @@ func certificateData(raw string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(raw)
 }
 func ValidateIssued(s upstream.Snapshot, csrPEM string, names []string) (*x509.Certificate, string, string, error) {
-	fail := func() (*x509.Certificate, string, string, error) {
-		return nil, "", "", errors.New("발급 인증서의 CSR·도메인·유효기간 검증 실패")
-	}
-	data, e := certificateData(s.Certificate.Base64)
-	if e != nil {
-		return fail()
-	}
-	certs, e := certparse.Parse(data)
-	if e != nil || len(certs) != 1 {
-		return fail()
-	}
-	c := certs[0]
-	block, _ := pem.Decode([]byte(csrPEM))
-	if block == nil {
-		return fail()
-	}
-	csr, e := x509.ParseCertificateRequest(block.Bytes)
-	if e != nil || csr.CheckSignature() != nil {
-		return fail()
-	}
-	pub, e := x509.MarshalPKIXPublicKey(csr.PublicKey)
-	if e != nil || !bytes.Equal(pub, c.RawSubjectPublicKeyInfo) || c.IsCA || !time.Now().Before(c.NotAfter) || c.NotBefore.After(time.Now().Add(5*time.Minute)) {
-		return fail()
-	}
-	if len(c.DNSNames) != len(names) {
-		return fail()
-	}
-	set := map[string]bool{}
-	for _, n := range c.DNSNames {
-		set[n] = true
-	}
-	for _, n := range names {
-		if !set[n] {
-			return fail()
-		}
-	}
-	chain := ""
-	if s.Certificate.Chain != "" {
-		b, e := certificateData(s.Certificate.Chain)
-		if e != nil {
-			return fail()
-		}
-		cs, e := certparse.Parse(b)
-		if e != nil {
-			return fail()
-		}
-		prev := c
-		for _, ca := range cs {
-			if !ca.IsCA || prev.CheckSignatureFrom(ca) != nil {
-				return fail()
-			}
-			chain += string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Raw}))
-			prev = ca
-		}
-	}
-	return c, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.Raw})), chain, nil
+	cert, leaf, chain, _, err := InspectIssued(s, csrPEM, upstream.Spec{DNSNames: names})
+	return cert, leaf, chain, err
 }

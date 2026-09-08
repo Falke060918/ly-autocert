@@ -18,6 +18,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { CertStatusBadge, DdayText } from "@/components/cert-badges";
+import { IssuanceWarnings } from "@/components/issuance-warnings";
+import { IssuanceComparisonPanel } from "@/components/issuance-comparison";
 import { RiskFindingRow, RiskSeverityBadge } from "@/components/risk-badges";
 import { FreshnessText } from "@/components/freshness";
 import { useTicker } from "@/components/notification-bell";
@@ -229,6 +231,8 @@ export default function CertificateDetailPage() {
         <DdayText notAfter={c.not_after} />
       </div>
 
+      <IssuanceWarnings warnings={data.issuance_warnings} />
+      <IssuanceComparisonPanel comparison={data.issuance_comparison} />
       {c.status === "replaced" && (
         <Alert>
           <AlertDescription>

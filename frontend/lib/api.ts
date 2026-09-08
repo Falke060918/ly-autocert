@@ -181,7 +181,30 @@ export interface RiskAssessment {
  * 목록 1행 = 인증서 + 목록 전용 파생 열.
  * last_seen_at은 인증서의 속성이 아니라 설치 위치 집계라 상세 응답·CSV에는 없다.
  */
+export interface IssuanceWarning {
+  code: string;
+  message: string;
+}
+
+export interface IssuedCertificateInfo {
+  subject: string; issuer: string; common_name: string; dns_names: string[];
+  ski: string; aki: string; fingerprint_sha256: string; public_key_sha256: string;
+  key_algorithm: string; key_size: number; not_before: string; not_after: string;
+  is_ca: boolean; signs_previous?: boolean;
+}
+
+export interface IssuanceComparison {
+  requested: { dns_names: string[]; key_algorithm: string; validity_days: number };
+  actual: IssuedCertificateInfo;
+  csr_public_key_sha256: string; csr_signature_valid: boolean; csr_key_matches: boolean | null;
+  dns_matches: boolean; requested_key_matches: boolean; currently_valid: boolean;
+  validity_days: number; validity_matches: boolean;
+  provided_chain: IssuedCertificateInfo[]; chain_parseable: boolean; chain_source_sha256: string;
+  warnings: IssuanceWarning[]; checked_at: string;
+}
+
 export interface CertificateListItem extends Certificate {
+  issuance_warnings?: IssuanceWarning[];
   /**
    * 이 인증서의 설치 위치 중 가장 최근 확인 시각
    * (max(certificate_locations.last_verified_at)). 위치가 없거나 한 번도
@@ -282,6 +305,8 @@ export interface CertificateOwner {
 }
 
 export interface CertificateDetailResponse {
+  issuance_warnings?: IssuanceWarning[];
+  issuance_comparison?: IssuanceComparison;
   request_id: string;
   certificate: Certificate;
   /** 소유자 미지정이거나 계정이 사라졌으면 null (certificate.owner_id로 구분). */

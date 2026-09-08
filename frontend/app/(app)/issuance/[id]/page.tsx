@@ -1,5 +1,7 @@
 "use client";
 import Link from "next/link";
+import { IssuanceWarnings } from "@/components/issuance-warnings";
+import { IssuanceComparisonPanel } from "@/components/issuance-comparison";
 import { useParams } from "next/navigation";
 import { useAuth, isSystemAdministrator } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
@@ -74,6 +76,7 @@ export default function Page() {
               {o.upstream_order_code || "접수 전"}
             </p>
             <Notice text={o.last_error} />
+            <IssuanceWarnings warnings={o.comparison?.warnings ?? o.events?.filter((e) => ["chain_warning", "validation_warning"].includes(e.kind)).map((e) => ({ code: e.detail.code, message: e.detail.reason }))} />
             {o.certificate_id && (
               <Link
                 className="text-sm underline"
@@ -131,6 +134,7 @@ export default function Page() {
               ))}
             </Panel>
           )}
+          <IssuanceComparisonPanel comparison={o.comparison} />
           <Panel title="처리 이력">
             <ol className="space-y-3">
               {o.events?.map((e, i) => (

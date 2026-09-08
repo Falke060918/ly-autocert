@@ -61,15 +61,15 @@ func TestSealedKeyAlgorithmsAndCertificateValidation(t *testing.T) {
 			if _, _, _, e = ValidateIssued(snap, k.CSR, spec.DNSNames); e != nil {
 				t.Fatal(e)
 			}
-			if _, _, _, e = ValidateIssued(snap, k.CSR, []string{"other.example.test"}); e == nil {
-				t.Fatal("domain mismatch accepted")
+			if _, _, _, comparison, e := InspectIssued(snap, k.CSR, upstream.Spec{DNSNames: []string{"other.example.test"}}); e != nil || comparison.DNSMatches {
+				t.Fatal("domain mismatch not recorded")
 			}
 			other, e := GenerateKey(spec, seal)
 			if e != nil {
 				t.Fatal(e)
 			}
-			if _, _, _, e = ValidateIssued(snap, other.CSR, spec.DNSNames); e == nil {
-				t.Fatal("CSR mismatch accepted")
+			if _, _, _, comparison, e := InspectIssued(snap, other.CSR, spec); e != nil || comparison.CSRKeyMatches == nil || *comparison.CSRKeyMatches {
+				t.Fatal("CSR mismatch not recorded")
 			}
 		})
 	}

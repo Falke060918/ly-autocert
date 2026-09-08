@@ -175,6 +175,7 @@ type IssuanceOrder struct {
 	SubmissionStarted *time.Time                  `json:"-"`
 	LeasedUntil       *time.Time                  `json:"-"`
 	Events            []IssuanceEvent             `json:"events,omitempty"`
+	Comparison        *IssuanceComparison         `json:"comparison,omitempty"`
 }
 type IssuanceEvent struct {
 	At     time.Time       `json:"at"`
@@ -253,6 +254,13 @@ func (s *Store) GetIssuanceOrder(ctx context.Context, id string) (*IssuanceOrder
 			return nil, e
 		}
 		o.Events = append(o.Events, v)
+		if v.Kind == "certificate_comparison" {
+			var comparison IssuanceComparison
+			if e = json.Unmarshal(v.Detail, &comparison); e != nil {
+				return nil, e
+			}
+			o.Comparison = &comparison
+		}
 	}
 	return o, rows.Err()
 }
@@ -357,6 +365,7 @@ type IssuanceResult struct {
 	Attempts                                  int
 	Certificate                               *domain.Certificate
 	CertPEM, ChainPEM                         string
+	Comparison                                *IssuanceComparison
 	Actor                                     IssuanceActor
 }
 
@@ -382,12 +391,30 @@ func (s *Store) FinishIssuanceStep(ctx context.Context, o *IssuanceOrder, in Iss
 			return e
 		}
 		certID = &id
-		_, e = tx.ExecContext(ctx, `UPDATE issuance_private_keys SET certificate_id=$2::uuid WHERE order_id=$1::uuid`, o.ID, id)
+		var keyCertificateID *string
+		if in.Comparison != nil && in.Comparison.CSRKeyMatches != nil && *in.Comparison.CSRKeyMatches {
+			keyCertificateID = &id
+		}
+		_, e = tx.ExecContext(ctx, `UPDATE issuance_private_keys SET certificate_id=$2::uuid WHERE order_id=$1::uuid`, o.ID, keyCertificateID)
 		if e != nil {
 			return e
 		}
 		if e = orderEvent(ctx, tx, o.ID, "inventory_registered", map[string]string{"certificate_id": id}); e != nil {
 			return e
+		}
+		if in.Comparison != nil {
+			if e = orderEvent(ctx, tx, o.ID, "certificate_comparison", in.Comparison); e != nil {
+				return e
+			}
+			for _, w := range in.Comparison.Warnings {
+				kind := "validation_warning"
+				if strings.HasPrefix(w.Code, "ca_chain_") {
+					kind = "chain_warning"
+				}
+				if e = orderEvent(ctx, tx, o.ID, kind, map[string]string{"code": w.Code, "reason": w.Message}); e != nil {
+					return e
+				}
+			}
 		}
 	}
 	v := in.Validation

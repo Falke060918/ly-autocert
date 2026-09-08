@@ -1,4 +1,4 @@
-import { apiFetch, type IssuanceStatus, type DeployJobStatus } from "./api";
+import { apiFetch, type IssuanceStatus, type DeployJobStatus, type IssuanceComparison } from "./api";
 export type KeyAlgorithm =
   "rsa2048" | "rsa3072" | "rsa4096" | "ecdsa_p256" | "ecdsa_p384";
 export type ValidationMethod = "txt_dns_record" | "txt_http_file";
@@ -48,6 +48,7 @@ export interface IssuanceSpec {
   domain_validations: { name: string; method: ValidationMethod }[];
 }
 export interface Order {
+  comparison?: IssuanceComparison;
   id: string;
   ca_connection_id: string;
   status: IssuanceStatus;
@@ -128,6 +129,9 @@ export const STEP: Record<string, string> = {
   rollback: "이전 인증서 복원",
 };
 export const EVENT: Record<string, string> = {
+  certificate_comparison: "요청·발급 비교 결과 기록",
+  validation_warning: "발급 검증 경고",
+  chain_warning: "CA 체인 경고",
   created: "발급 요청",
   approved: "승인",
   order_placed: "CA 주문 접수",

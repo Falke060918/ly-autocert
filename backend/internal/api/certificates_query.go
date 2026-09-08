@@ -32,8 +32,10 @@ type certificateListResponse struct {
 }
 
 type certificateDetailResponse struct {
-	RequestID   string             `json:"request_id"`
-	Certificate domain.Certificate `json:"certificate"`
+	IssuanceWarnings   []store.IssuanceWarning   `json:"issuance_warnings,omitempty"`
+	IssuanceComparison *store.IssuanceComparison `json:"issuance_comparison,omitempty"`
+	RequestID          string                    `json:"request_id"`
+	Certificate        domain.Certificate        `json:"certificate"`
 	// Owner는 certificate.owner_id가 가리키는 계정의 표시용 요약이다.
 	// 미지정이거나 계정이 사라졌으면 null — 화면이 UUID를 그대로 띄우지 않게 한다.
 	Owner     *store.OwnerRef            `json:"owner"`
@@ -261,12 +263,14 @@ func handleGetCertificate(st *store.Store) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, certificateDetailResponse{
-			RequestID:   deref(requestIDFrom(r.Context())),
-			Certificate: res.Certificate,
-			Owner:       res.Owner,
-			Locations:   res.Locations,
-			Chain:       res.Chain,
-			Risk:        res.Risk,
+			RequestID:          deref(requestIDFrom(r.Context())),
+			Certificate:        res.Certificate,
+			Owner:              res.Owner,
+			Locations:          res.Locations,
+			Chain:              res.Chain,
+			Risk:               res.Risk,
+			IssuanceWarnings:   res.IssuanceWarnings,
+			IssuanceComparison: res.IssuanceComparison,
 		})
 	}
 }

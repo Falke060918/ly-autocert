@@ -2459,7 +2459,7 @@ components:
         payload: {type: string, format: byte, maxLength: 21848}
         signature: {type: string, format: byte}
     IssuanceSettings: {"type":"object","properties":{"approval_required_new":{"type":"boolean"},"auto_renew":{"type":"boolean"}},"required":["approval_required_new","auto_renew"]}
-    IssuanceOrder: {"type":"object","properties":{"id":{"type":"string","format":"uuid"},"ca_connection_id":{"type":"string","format":"uuid"},"status":{"$ref":"#/components/schemas/IssuanceStatus"},"origin":{"type":"string","enum":["manual","renewal"]},"spec":{"$ref":"#/components/schemas/IssuanceSpec"},"upstream_order_code":{"type":"string"},"upstream_status":{"type":"string"},"domain_validation":{"type":"array","items":{"type":"object","properties":{"domain_name":{"type":"string"},"validation_method":{"type":"string"},"validation_key":{"type":"string"},"dns_txt_record":{"type":"string"},"http_file_url":{"type":"string"},"status":{"type":"string"}},"required":["domain_name","validation_method","validation_key","dns_txt_record","http_file_url","status"]}},"certificate_id":{"type":"string","format":"uuid","nullable":true},"created_at":{"type":"string","format":"date-time"},"finished_at":{"type":"string","format":"date-time","nullable":true},"last_error":{"type":"string"},"attempt_count":{"type":"integer"},"events":{"type":"array","items":{"type":"object","properties":{"at":{"type":"string","format":"date-time"},"kind":{"type":"string"},"detail":{"type":"object","additionalProperties":true}},"required":["at","kind","detail"]}}},"required":["id","ca_connection_id","status","spec"]}
+    IssuanceOrder: {"type":"object","properties":{"id":{"type":"string","format":"uuid"},"ca_connection_id":{"type":"string","format":"uuid"},"status":{"$ref":"#/components/schemas/IssuanceStatus"},"origin":{"type":"string","enum":["manual","renewal"]},"spec":{"$ref":"#/components/schemas/IssuanceSpec"},"upstream_order_code":{"type":"string"},"upstream_status":{"type":"string"},"domain_validation":{"type":"array","items":{"type":"object","properties":{"domain_name":{"type":"string"},"validation_method":{"type":"string"},"validation_key":{"type":"string"},"dns_txt_record":{"type":"string"},"http_file_url":{"type":"string"},"status":{"type":"string"}},"required":["domain_name","validation_method","validation_key","dns_txt_record","http_file_url","status"]}},"certificate_id":{"type":"string","format":"uuid","nullable":true},"created_at":{"type":"string","format":"date-time"},"finished_at":{"type":"string","format":"date-time","nullable":true},"last_error":{"type":"string"},"attempt_count":{"type":"integer"},"events":{"type":"array","items":{"type":"object","properties":{"at":{"type":"string","format":"date-time"},"kind":{"type":"string"},"detail":{"type":"object","additionalProperties":true}},"required":["at","kind","detail"]}},"comparison":{"$ref":"#/components/schemas/IssuanceComparison"}},"required":["id","ca_connection_id","status","spec"]}
     DeploymentTarget: {"type":"object","properties":{"id":{"type":"string","format":"uuid"},"agent_id":{"type":"string","format":"uuid"},"kind":{"type":"string","enum":["nginx","apache"]},"service_unit":{"type":"string","enum":["nginx","httpd","apache2"]},"cert_path":{"type":"string"},"key_path":{"type":"string"},"chain_path":{"type":"string"},"verify_host":{"type":"string","description":"Loopback IP only."},"verify_port":{"type":"integer","minimum":1,"maximum":65535},"sni_name":{"type":"string"},"active":{"type":"boolean"},"current_certificate_id":{"type":"string","format":"uuid","readOnly":true,"nullable":true},"current_fingerprint":{"type":"string","readOnly":true}},"required":["agent_id","kind","service_unit","cert_path","key_path","verify_host","verify_port","active"]}
     DeployJob: {"type":"object","properties":{"id":{"type":"string","format":"uuid"},"order_id":{"type":"string","format":"uuid"},"deployment_target_id":{"type":"string","format":"uuid"},"agent_id":{"type":"string","format":"uuid"},"status":{"type":"string","enum":["pending","leased","running","completed","failed","rolled_back"]},"steps":{"type":"array","items":{"type":"object","properties":{"at":{"type":"string"},"name":{"type":"string"},"ok":{"type":"boolean"},"message":{"type":"string"}},"required":["at","name","ok","message"]}},"error":{"type":"string"},"observed_fingerprint":{"type":"string"},"created_at":{"type":"string"},"finished_at":{"type":"string","nullable":true}},"required":["id","order_id","deployment_target_id","agent_id","status","steps","error","observed_fingerprint","created_at","finished_at"]}
     Agent: {"type":"object","properties":{"id":{"type":"string","format":"uuid"},"name":{"type":"string"},"status":{"type":"string","enum":["pending","active","disabled"]},"last_seen_at":{"type":"string","nullable":true},"token_expires_at":{"type":"string"},"created_at":{"type":"string"}},"required":["id","name","status","last_seen_at","token_expires_at","created_at"]}
@@ -2662,6 +2662,50 @@ components:
           description: >
             판정 항목별 건수. 인증서 1건이 여러 항목에 걸리므로 합은 total과 다르다.
           items: { $ref: "#/components/schemas/RiskFindingCount" }
+    IssuanceWarning:
+      type: object
+      required: [code, message]
+      description: CA 원본 체인 검증 결과. 원본은 보정하지 않으며 발급 이벤트에 보존한다. 이후 배포나 추론 체인이 이 경고를 지우지 않는다.
+      properties:
+        code: { type: string, enum: [ca_chain_missing, ca_chain_parse_failed, ca_chain_signature_failed, csr_key_unknown, csr_key_mismatch, csr_signature_invalid, dns_mismatch, certificate_time_invalid, validity_mismatch, key_algorithm_mismatch, certificate_is_ca] }
+        message: { type: string }
+    IssuedCertificateInfo:
+      type: object
+      description: 실제 받은 인증서의 공개 메타데이터. PEM이나 개인키는 포함하지 않는다.
+      properties:
+        subject: { type: string }
+        issuer: { type: string }
+        common_name: { type: string }
+        dns_names: { type: array, items: { type: string } }
+        ski: { type: string }
+        aki: { type: string }
+        fingerprint_sha256: { type: string }
+        public_key_sha256: { type: string }
+        key_algorithm: { type: string }
+        key_size: { type: integer }
+        not_before: { type: string, format: date-time }
+        not_after: { type: string, format: date-time }
+        is_ca: { type: boolean }
+        signs_previous: { type: boolean, description: 첫 항목은 발급 leaf를, 이후 항목은 직전 전달 인증서를 서명하는지 검사한 결과. 전체 신뢰 검증이 아니다. }
+    IssuanceComparison:
+      type: object
+      description: 요청과 실제 발급의 비교 스냅샷. 불일치는 등록 차단과 별개인 경고이며 CA 체인은 보정하지 않는다. chain 문자열은 원래 운송 형식 그대로 저장하고 검사에만 디코딩한다. leaf는 DER 내용을 보존한다.
+      properties:
+        requested: { $ref: "#/components/schemas/IssuanceSpec" }
+        actual: { $ref: "#/components/schemas/IssuedCertificateInfo" }
+        csr_public_key_sha256: { type: string }
+        csr_signature_valid: { type: boolean }
+        csr_key_matches: { type: boolean, nullable: true, description: null은 확인 불가. true일 때만 요청 개인키의 certificate_id를 연결한다. }
+        dns_matches: { type: boolean }
+        requested_key_matches: { type: boolean }
+        currently_valid: { type: boolean }
+        validity_days: { type: number }
+        validity_matches: { type: boolean, description: 실제 기간과 요청 기간의 차이가 5분 이내인지. }
+        provided_chain: { type: array, items: { $ref: "#/components/schemas/IssuedCertificateInfo" } }
+        chain_parseable: { type: boolean }
+        chain_source_sha256: { type: string }
+        warnings: { type: array, items: { $ref: "#/components/schemas/IssuanceWarning" } }
+        checked_at: { type: string, format: date-time }
     CertificateListItem:
       description: >
         목록 1행 = 인증서 + 목록 전용 파생 열. last_seen_at은 인증서의 속성이 아니라
@@ -2671,6 +2715,9 @@ components:
         - type: object
           required: [tls_versions, risk]
           properties:
+            issuance_warnings:
+              type: array
+              items: { $ref: "#/components/schemas/IssuanceWarning" }
             last_seen_at:
               type: string
               format: date-time
@@ -3190,6 +3237,10 @@ components:
       type: object
       required: [request_id, certificate, locations, chain, risk]
       properties:
+        issuance_comparison: { $ref: "#/components/schemas/IssuanceComparison" }
+        issuance_warnings:
+          type: array
+          items: { $ref: "#/components/schemas/IssuanceWarning" }
         request_id: { type: string }
         certificate: { $ref: "#/components/schemas/Certificate" }
         risk:

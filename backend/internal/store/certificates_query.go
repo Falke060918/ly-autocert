@@ -91,6 +91,7 @@ type ListCertificatesInput struct {
 // 이 파생 열이 필요 없고, CSV 내보내기도 인증서 열만 담는다.
 type CertificateListItem struct {
 	domain.Certificate
+	IssuanceWarnings []IssuanceWarning `json:"issuance_warnings,omitempty"`
 	// LastSeenAt은 이 인증서의 설치 위치 중 가장 최근 확인 시각이다
 	// (max(certificate_locations.last_verified_at)). 위치가 없거나 한 번도
 	// 확인되지 않았으면 nil이다. **정렬 화이트리스트에는 넣지 않는다** —
@@ -171,7 +172,9 @@ type OwnerRef struct {
 
 // CertificateDetail은 상세 조회 결과다 (설치 위치 목록 + 체인 포함).
 type CertificateDetail struct {
-	Certificate domain.Certificate
+	Certificate        domain.Certificate
+	IssuanceWarnings   []IssuanceWarning
+	IssuanceComparison *IssuanceComparison
 	// Owner는 owner_id가 가리키는 계정이다. 소유자 미지정이면 nil이고,
 	// owner_id가 있는데 계정 행이 없으면(정상 경로에선 FK ON DELETE SET NULL이
 	// 막지만) 역시 nil이다 — 호출자는 두 경우를 owner_id 유무로 구분한다.
@@ -476,6 +479,20 @@ func (s *Store) ListCertificates(ctx context.Context, in ListCertificatesInput) 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate certificates: %w", err)
 	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID)
+	}
+	warnings, err := s.certificateIssuanceWarnings(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		items[i].IssuanceWarnings = warnings[items[i].ID]
+	}
 	return &CertificateList{Items: items, Total: total, Page: page, PageSize: size}, nil
 }
 
@@ -563,8 +580,18 @@ func (s *Store) GetCertificateDetail(ctx context.Context, id string) (*Certifica
 		Locations:   locationRiskInputs(locations),
 		Now:         time.Now(),
 	})
+	warnings, err := s.certificateIssuanceWarnings(ctx, []string{id})
+	if err != nil {
+		return nil, err
+	}
+	comparison, err := s.certificateIssuanceComparison(ctx, id)
+	if err != nil {
+		return nil, err
+	}
 	return &CertificateDetail{
 		Certificate: cert, Owner: owner, Locations: locations, Chain: chain, Risk: risk,
+		IssuanceWarnings:   warnings[id],
+		IssuanceComparison: comparison,
 	}, nil
 }
 

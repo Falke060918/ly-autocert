@@ -30,6 +30,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CertStatusBadge, DdayText } from "@/components/cert-badges";
+import { IssuanceWarnings } from "@/components/issuance-warnings";
 import { RiskSummaryBadge } from "@/components/risk-badges";
 import { FreshnessText } from "@/components/freshness";
 import { useTicker } from "@/components/notification-bell";
@@ -658,6 +659,7 @@ function CertificatesBody() {
                     </TableCell>
                     <TableCell>
                       <CertStatusBadge status={c.status} notAfter={c.not_after} />
+                      <IssuanceWarnings warnings={c.issuance_warnings} compact />
                     </TableCell>
                     <TableCell>
                       <RiskSummaryBadge risk={c.risk} />
