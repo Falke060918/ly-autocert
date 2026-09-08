@@ -93,6 +93,11 @@ func parseCertStatuses(vals []string, param string) ([]domain.CertificateStatus,
 func parseListParams(r *http.Request) (store.ListCertificatesInput, *paramError) {
 	q := r.URL.Query()
 	in := store.ListCertificatesInput{Page: 1, PageSize: 50}
+	scope, scopeErr := parseCertificateScope(r)
+	if scopeErr != nil {
+		return in, scopeErr
+	}
+	in.Scope = scope
 
 	in.Search = strings.TrimSpace(q.Get("q"))
 	if utf8.RuneCountInString(in.Search) > maxSearchLen {

@@ -25,7 +25,12 @@ type certificateRisksResponse struct {
 // exclude_status=replaced를 함께 보내야 숫자가 맞는다.
 func handleCertificateRisks(st *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		res, err := st.CertificateRisks(r.Context())
+		scope, perr := parseCertificateScope(r)
+		if perr != nil {
+			writeError(w, r, http.StatusBadRequest, perr.code, perr.message)
+			return
+		}
+		res, err := st.CertificateRisks(r.Context(), scope)
 		if err != nil {
 			slog.Error("certificate risks failed", "error", err.Error(),
 				"request_id", deref(requestIDFrom(r.Context())))

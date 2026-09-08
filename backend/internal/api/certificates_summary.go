@@ -19,7 +19,12 @@ type certificateSummaryResponse struct {
 // 만료 구간(7/30/60/90일)은 누적값이며, 자체 서명·소유자 없음 카운트를 함께 준다.
 func handleCertificateSummary(st *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		sum, err := st.CertificateSummary(r.Context())
+		scope, perr := parseCertificateScope(r)
+		if perr != nil {
+			writeError(w, r, http.StatusBadRequest, perr.code, perr.message)
+			return
+		}
+		sum, err := st.CertificateSummary(r.Context(), scope)
 		if err != nil {
 			slog.Error("certificate summary failed", "error", err.Error(), "request_id", deref(requestIDFrom(r.Context())))
 			writeError(w, r, http.StatusInternalServerError, "internal_error",

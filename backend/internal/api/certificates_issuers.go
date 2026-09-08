@@ -24,7 +24,12 @@ type certificateIssuersResponse struct {
 // 두 API가 같은 매칭 술어를 쓰므로 leaf_count와 목록 건수가 일치한다.
 func handleCertificateIssuers(st *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		res, err := st.CertificateIssuers(r.Context())
+		scope, perr := parseCertificateScope(r)
+		if perr != nil {
+			writeError(w, r, http.StatusBadRequest, perr.code, perr.message)
+			return
+		}
+		res, err := st.CertificateIssuers(r.Context(), scope)
 		if err != nil {
 			slog.Error("certificate issuers failed", "error", err.Error(),
 				"request_id", deref(requestIDFrom(r.Context())))

@@ -101,7 +101,8 @@ type caIssuerRow struct {
 }
 
 // CertificateIssuers는 발급 기관 분포와 CA 트리를 집계한다.
-func (s *Store) CertificateIssuers(ctx context.Context) (*CertificateIssuers, error) {
+func (s *Store) CertificateIssuers(ctx context.Context, scopes ...CertificateScope) (*CertificateIssuers, error) {
+	scope := selectedCertificateScope(scopes)
 	res := &CertificateIssuers{
 		Organizations: []IssuerOrgCount{},
 		CATree:        []CATreeNode{},
@@ -112,7 +113,7 @@ func (s *Store) CertificateIssuers(ctx context.Context) (*CertificateIssuers, er
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT issuer_organization, count(*)
 		  FROM certificates
-		 WHERE certificate_type <> 'ca' AND status <> 'replaced'
+ WHERE certificate_type <> 'ca' AND `+certificateAggregateScopeSQL(scope, "certificates")+`
 		 GROUP BY issuer_organization
 		 ORDER BY count(*) DESC, issuer_organization ASC NULLS LAST`)
 	if err != nil {
@@ -131,11 +132,11 @@ func (s *Store) CertificateIssuers(ctx context.Context) (*CertificateIssuers, er
 	}
 
 	// ② CA 인증서 전체 + 각자의 직접 발급 리프 수 (단일 쿼리) + 노드별 리프 미리보기.
-	cas, err := s.listCAIssuers(ctx)
+	cas, err := s.listCAIssuers(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
-	previews, err := s.listCALeafPreviews(ctx)
+	previews, err := s.listCALeafPreviews(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +146,7 @@ func (s *Store) CertificateIssuers(ctx context.Context) (*CertificateIssuers, er
 	err = s.db.QueryRowContext(ctx, `
 		SELECT count(*)
 		  FROM certificates child
-		 WHERE child.certificate_type <> 'ca' AND child.status <> 'replaced'
+		 WHERE child.certificate_type <> 'ca' AND `+certificateAggregateScopeSQL(scope, "child")+`
 		   AND NOT EXISTS (
 			SELECT 1 FROM certificates ca
 			 WHERE ca.certificate_type = 'ca' AND ca.id <> child.id
@@ -157,14 +158,14 @@ func (s *Store) CertificateIssuers(ctx context.Context) (*CertificateIssuers, er
 }
 
 // listCAIssuers는 CA 인증서 전체와 직접 발급 리프 수를 조회한다.
-func (s *Store) listCAIssuers(ctx context.Context) ([]caIssuerRow, error) {
+func (s *Store) listCAIssuers(ctx context.Context, scope CertificateScope) ([]caIssuerRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT ca.id, ca.subject_dn, ca.issuer_dn, ca.common_name, ca.not_after,
 		       ca.certificate_type, ca.status, ca.subject_key_id, ca.authority_key_id,
 		       count(child.id)
 		  FROM certificates ca
 		  LEFT JOIN certificates child
-		    ON child.certificate_type <> 'ca' AND child.status <> 'replaced'
+		    ON child.certificate_type <> 'ca' AND `+certificateAggregateScopeSQL(scope, "child")+`
 		   AND child.id <> ca.id AND `+issuedByMatchSQL+`
 		 WHERE ca.certificate_type = 'ca'
 		 GROUP BY ca.id
@@ -193,7 +194,7 @@ func (s *Store) listCAIssuers(ctx context.Context) ([]caIssuerRow, error) {
 // 한 쿼리로 모은다. 노드마다 따로 조회하면 CA 수만큼 왕복이 되고, 상한 없이 전부
 // 실으면 응답이 인벤토리 전체가 된다. 순서는 **만료 임박순**이다 — 미리보기의
 // 용도가 "이 CA 밑에서 먼저 손봐야 할 게 뭔가"이기 때문이다.
-func (s *Store) listCALeafPreviews(ctx context.Context) (map[string][]CALeafPreview, error) {
+func (s *Store) listCALeafPreviews(ctx context.Context, scope CertificateScope) (map[string][]CALeafPreview, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		WITH ranked AS (
 			SELECT ca.id AS ca_id, child.id AS leaf_id, child.common_name,
@@ -202,7 +203,7 @@ func (s *Store) listCALeafPreviews(ctx context.Context) (map[string][]CALeafPrev
 			                          ORDER BY child.not_after ASC, child.id ASC) AS rn
 			  FROM certificates ca
 			  JOIN certificates child
-			    ON child.certificate_type <> 'ca' AND child.status <> 'replaced'
+			    ON child.certificate_type <> 'ca' AND `+certificateAggregateScopeSQL(scope, "child")+`
 			   AND child.id <> ca.id AND `+issuedByMatchSQL+`
 			 WHERE ca.certificate_type = 'ca'
 		)

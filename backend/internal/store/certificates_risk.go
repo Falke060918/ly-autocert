@@ -234,7 +234,7 @@ type CertificateRiskSummary struct {
 // 빠져 있어 여기만 남기면 화면들이 서로를 부정한다(대시보드 요약과 같은 규약).
 // 따라서 이 집계에서 목록으로 이동할 때는 exclude_status=replaced를 함께 보낸다.
 // 조회 전용이라 감사 이벤트를 남기지 않는다 (00-spec 7.12 기록 대상에 조회 없음).
-func (s *Store) CertificateRisks(ctx context.Context) (*CertificateRiskSummary, error) {
+func (s *Store) CertificateRisks(ctx context.Context, scopes ...CertificateScope) (*CertificateRiskSummary, error) {
 	severities := certrisk.Severities()
 	rules := certrisk.Rules()
 
@@ -262,7 +262,7 @@ func (s *Store) CertificateRisks(ctx context.Context) (*CertificateRiskSummary, 
 	}
 
 	query := "SELECT " + strings.Join(exprs, ",\n\t") +
-		"\n FROM certificates WHERE status <> 'replaced'"
+		"\n FROM certificates WHERE " + certificateAggregateScopeSQL(selectedCertificateScope(scopes), "certificates")
 	if err := s.db.QueryRowContext(ctx, query).Scan(dest...); err != nil {
 		return nil, fmt.Errorf("store: certificate risks: %w", err)
 	}

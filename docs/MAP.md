@@ -1,5 +1,9 @@
 # MAP — 코드베이스 구조·명령 캐시
-확인일: 2026-09-07
+확인일: 2026-09-08
+
+## 대시보드 집계 범위
+
+- `frontend/app/(app)/page.tsx` → `frontend/components/console-dashboard.tsx`. 기본 서버 인증서/관리 인벤토리 토글은 목록·summary·issuers·risks API의 `scope=server|inventory`로 이어진다. `backend/internal/store/certificates_scope.go`가 현재 TLS 관측·검증 완료 배포 연결을 판별한다. summary의 `expiry_weeks`는 전체 90일 13구간 집계다.
 
 ## 저장소 구조
 - 발급·배포(C·D): `backend/internal/issuance/`·`store/issuance.go`·마이그레이션 0023/0025가 CA 연결·발급을, `backend/cmd/agent/`·`internal/agent/`·`agentgw/`·`agentwire/`·`store/agents.go`·`store/deployment.go`·0024/0026이 에이전트·배포를 담당한다. 콘솔은 `frontend/app/(app)/issuance/`·`settings/issuance/`·`agents/`, 별도 설치는 `scripts/install-agent.sh`, 운영·빌드·실환경 검증 한계는 `docs/manual/AGENT.md`를 따른다. 자동 갱신(E)은 후속 범위다. 보안 보완: `backend/internal/deploysign/`·`cmd/deploy-signing-key/`는 봉인 Ed25519 signer·공개키 export를, `cmd/issuance-migrate/`·`store/issuance_migrate.go`·0027은 명시적 app_id 이행을 담당한다. agent의 `keysource.go`·`migrate_identity.go`·`replay.go`는 별도 identity.env 공급·신원 봉인 이행·프로세스 잠금/재전송 기록을 맡는다. 설정·이행은 `docs/manual/AGENT.md`의 운영 절차를 따른다.

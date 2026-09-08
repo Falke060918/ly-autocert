@@ -155,7 +155,7 @@ function CertificatesBody() {
 
   React.useEffect(() => {
     let cancelled = false;
-    getIssuerAggregation()
+    getIssuerAggregation(searchParams.get("scope") === "server" ? "server" : "inventory")
       .then((res) => {
         if (!cancelled) {
           setIssuerAgg(res);
@@ -165,7 +165,7 @@ function CertificatesBody() {
       .catch(() => {
         if (!cancelled) setIssuerAggError(true);
       });
-    getCertificateRisks()
+    getCertificateRisks(searchParams.get("scope") === "server" ? "server" : "inventory")
       .then((res) => {
         if (!cancelled) setRiskAgg(res);
       })
@@ -175,7 +175,7 @@ function CertificatesBody() {
     return () => {
       cancelled = true;
     };
-  }, [reloadKey]);
+  }, [reloadKey, searchParams]);
 
   // URL 쿼리 → API 쿼리 (허용 파라미터만 통과시킨다).
   //
@@ -185,7 +185,7 @@ function CertificatesBody() {
   const apiQuery = React.useMemo(() => {
     const out = new URLSearchParams();
     for (const key of [
-      "q", "status", "type", "expired", "expires_within_days",
+      "scope", "q", "status", "type", "expired", "expires_within_days",
       "self_signed", "unowned", "sort", "order", "page", "page_size",
     ]) {
       const v = searchParams.get(key);
@@ -193,7 +193,7 @@ function CertificatesBody() {
     }
     const includeReplaced = searchParams.get("include_replaced") === "true";
     const statusFilter = searchParams.get("status") ?? "";
-    if (!includeReplaced && !statusFilter.split(",").includes("replaced")) {
+    if (searchParams.get("scope") !== "server" && !includeReplaced && !statusFilter.split(",").includes("replaced")) {
       out.set("exclude_status", "replaced");
     }
     const org = issuerOrgFromSearch(searchParams);
@@ -257,7 +257,7 @@ function CertificatesBody() {
   const hasFilter =
     issuerOrgValue != null ||
     [
-      "q", "status", "type", "expired", "expires_within_days", "self_signed", "unowned",
+      "scope", "q", "status", "type", "expired", "expires_within_days", "self_signed", "unowned",
       "include_replaced", ISSUED_BY_PARAM, RISK_PARAM, RISK_CODE_PARAM,
       TLS_VERSION_PARAM,
     ].some((k) => searchParams.get(k));

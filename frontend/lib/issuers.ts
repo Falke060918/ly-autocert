@@ -123,9 +123,9 @@ function toCANode(node: CATreeNodeWire, depth = 0): IssuerCANode {
   };
 }
 
-export async function getIssuerAggregation(): Promise<IssuerAggregationResponse> {
+export async function getIssuerAggregation(scope?: import("./api").CertificateScope): Promise<IssuerAggregationResponse> {
   const res = await apiFetch<IssuerAggregationWire>(
-    "/api/v1/certificates/issuers",
+    `/api/v1/certificates/issuers${scope ? `?scope=${scope}` : ""}`,
   );
   return {
     request_id: res.request_id,

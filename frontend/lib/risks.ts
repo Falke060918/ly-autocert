@@ -48,9 +48,9 @@ export interface CertificateRisksResponse {
   findings: RiskFindingCount[];
 }
 
-export async function getCertificateRisks(): Promise<CertificateRisksResponse> {
+export async function getCertificateRisks(scope?: import("./api").CertificateScope): Promise<CertificateRisksResponse> {
   const res = await apiFetch<CertificateRisksResponse>(
-    "/api/v1/certificates/risks",
+    `/api/v1/certificates/risks${scope ? `?scope=${scope}` : ""}`,
   );
   return {
     request_id: res.request_id,

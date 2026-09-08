@@ -320,7 +320,10 @@ export interface CertificateDetailResponse {
   risk: RiskAssessment;
 }
 
+export type CertificateScope = "server" | "inventory";
+
 export interface CertificateSummary {
+  expiry_weeks: number[];
   request_id: string;
   total: number;
   expiring_7d: number;
@@ -891,8 +894,8 @@ export function getCertificate(id: string) {
   );
 }
 
-export function getCertificateSummary() {
-  return apiFetch<CertificateSummary>("/api/v1/certificates/summary");
+export function getCertificateSummary(scope?: CertificateScope) {
+  return apiFetch<CertificateSummary>(`/api/v1/certificates/summary${scope ? `?scope=${scope}` : ""}`);
 }
 
 /**

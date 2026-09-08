@@ -1,9 +1,10 @@
 "use client";
+import { usePolling } from "@/lib/use-polling";
 
 /**
  * 발급기관(O=) 분포 카드 — 상위 5 + 기타 도넛과 목록.
  *
- * 데이터는 `lib/issuers.ts`의 getIssuerAggregation() 하나뿐이다. 백엔드가 병행
+ * 데이터는 `lib/issuers.ts`의 getIssuerAggregation(scope) 하나뿐이다. 백엔드가 병행
  * 구현 중이라 **404·오류를 정상 상태("집계 준비 중")로 처리**한다 — 이 카드의
  * 실패가 대시보드 전체 오류로 번지지 않는다.
  *
@@ -61,22 +62,23 @@ const DOT_CLASSES = [
   "bg-chart-5",
 ];
 
-function orgHref(organization: string | null): string {
+function orgHref(organization: string | null, scope?: import("@/lib/api").CertificateScope): string {
   // 조직 미상은 URL 센티널(__none__)로 싣는다 — 목록 페이지의 URL 규약과
   // 통일한다. 빈 값(issuer_org=)을 실으면 Select 트리거가 공백으로 보인다.
   const params = new URLSearchParams({
     [ISSUER_ORG_PARAM]: organization ?? ISSUER_ORG_UNKNOWN,
   });
+  if (scope) params.set("scope", scope);
   return `/certificates?${params.toString()}`;
 }
 
-function toSlices(organizations: IssuerOrgCount[]): Slice[] {
+function toSlices(organizations: IssuerOrgCount[], scope?: import("@/lib/api").CertificateScope): Slice[] {
   const top: Slice[] = organizations.slice(0, TOP_N).map((o, i) => ({
     name: o.organization ?? UNKNOWN_LABEL,
     count: o.count,
     fill: CHART_VARS[i],
     dotClass: DOT_CLASSES[i],
-    href: orgHref(o.organization),
+    href: orgHref(o.organization, scope),
   }));
   const rest = organizations.slice(TOP_N);
   if (rest.length > 0) {
@@ -97,24 +99,20 @@ type State =
   | { status: "unavailable" }
   | { status: "ready"; slices: Slice[] };
 
-export function IssuerDistributionCard() {
+export function IssuerDistributionCard({ scope }: { scope?: import("@/lib/api").CertificateScope }) {
   const [state, setState] = React.useState<State>({ status: "loading" });
 
-  React.useEffect(() => {
-    let cancelled = false;
-    getIssuerAggregation()
+  usePolling(async (current) => {
+    await getIssuerAggregation(scope)
       .then((res) => {
-        if (!cancelled)
-          setState({ status: "ready", slices: toSlices(res.organizations) });
+        if (current())
+          setState({ status: "ready", slices: toSlices(res.organizations, scope) });
       })
       .catch(() => {
         // 404 = 집계 API 배선 전. 그 외 오류도 이 카드만 조용히 비운다.
-        if (!cancelled) setState({ status: "unavailable" });
+        if (current()) setState({ status: "unavailable" });
       });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  }, [scope]);
 
   return (
     // 높이는 대시보드 이웃 섹션과 통일(lg:h-[30rem]) — 기관 수가 많아 목록이

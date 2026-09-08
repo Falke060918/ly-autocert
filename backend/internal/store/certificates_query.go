@@ -45,6 +45,7 @@ func IsListSortField(name string) bool {
 
 // ListCertificatesInput은 목록 조회 조건이다. 제로값이면 전체를 기본 정렬로 반환한다.
 type ListCertificatesInput struct {
+	Scope    CertificateScope
 	Search   string                     // CN·Subject·Issuer·Serial·Fingerprint·SAN 부분 일치 (대소문자 무시)
 	Statuses []domain.CertificateStatus // 저장된 라이프사이클 상태 필터
 	// ExcludeStatuses는 결과에서 뺄 상태다(교체된 인증서 숨기기 등).
@@ -276,6 +277,9 @@ func escapeLike(s string) string {
 
 // buildListWhere는 WHERE 조건과 바인드 파라미터를 만든다.
 func buildListWhere(in ListCertificatesInput) (conds []string, args []any) {
+	if in.Scope == CertificateScopeServer {
+		conds = append(conds, certificateScopeSQL(in.Scope, "certificates"))
+	}
 	arg := func(v any) string {
 		args = append(args, v)
 		return fmt.Sprintf("$%d", len(args))

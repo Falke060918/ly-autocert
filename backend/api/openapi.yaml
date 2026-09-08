@@ -119,6 +119,10 @@ paths:
         읽기 전용이라 감사 이벤트를 남기지 않는다.
       tags: [certificates]
       parameters:
+        - name: scope
+          in: query
+          description: inventory keeps the existing inventory semantics; server selects non-CA certificates with a current successful TLS observation or verified completed current deployment, including currently bound replaced certificates.
+          schema: { type: string, enum: [server, inventory], default: inventory }
         - name: q
           in: query
           description: CN·Subject DN·Issuer DN·Serial·Fingerprint·SAN 부분 일치 검색 (대소문자 무시, 200자 이하)
@@ -252,7 +256,14 @@ paths:
         누적값이며 이미 만료된 것은 제외한다. 인증된 전 역할(6종) 접근 가능. 읽기 전용이라
         감사 이벤트를 남기지 않는다.
       tags: [certificates]
+      parameters:
+        - name: scope
+          in: query
+          description: inventory keeps the existing inventory semantics; server selects non-CA certificates with a current successful TLS observation or verified completed current deployment, including currently bound replaced certificates.
+          schema: { type: string, enum: [server, inventory], default: inventory }
       responses:
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "200":
           description: 요약 집계
           content:
@@ -276,11 +287,18 @@ paths:
         leaf_count가 leaf_preview 길이보다 크면 나머지가 있다는 뜻이다. 전체 리프는
         트리 노드의 id를 목록 API의 issued_by= 필터에 넣어 페이지네이션과 함께
         조회한다 — 두 API가 같은 매칭 술어를 쓰므로 leaf_count와 목록 건수가 일치한다.
-        status=replaced 인증서는 리프 수·미리보기·분포에서 제외한다
+        inventory 범위에서는 status=replaced 인증서를 리프 수·미리보기·분포에서 제외한다
         (대시보드 요약과 같은 규약). 인증된 전 역할(6종) 접근 가능. 읽기 전용이라
         감사 이벤트를 남기지 않는다.
       tags: [certificates]
+      parameters:
+        - name: scope
+          in: query
+          description: inventory keeps the existing inventory semantics; server selects non-CA certificates with a current successful TLS observation or verified completed current deployment, including currently bound replaced certificates.
+          schema: { type: string, enum: [server, inventory], default: inventory }
       responses:
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "200":
           description: 발급 기관 집계
           content:
@@ -306,13 +324,20 @@ paths:
         데이터에 따라 흔들리지 않게).
         severities의 severity를 목록 API의 risk=에, findings의 code를 risk_code=에
         넣으면 해당 인증서 목록으로 이동한다 — 두 API가 같은 술어를 쓴다.
-        집계는 status=replaced를 제외하므로(대시보드 요약과 같은 규약) 목록으로
-        이동할 때 exclude_status=replaced를 함께 보내야 숫자가 맞는다.
+        inventory 집계는 status=replaced를 제외하므로 목록 이동 시 같은 제외 조건을 쓴다.
+        server 범위는 현재 적용 연결을 우선하므로 replaced를 자동 제외하지 않는다.
         이번 판정 항목은 전부 사설 PKI에도 유효한 것뿐이다 — 공인(publicly trusted)
         인증서 전용 규칙은 포함하지 않는다(public_trust_only 필드가 그 구분 자리다).
         인증된 전 역할(6종) 접근 가능. 읽기 전용이라 감사 이벤트를 남기지 않는다.
       tags: [certificates]
+      parameters:
+        - name: scope
+          in: query
+          description: inventory keeps the existing inventory semantics; server selects non-CA certificates with a current successful TLS observation or verified completed current deployment, including currently bound replaced certificates.
+          schema: { type: string, enum: [server, inventory], default: inventory }
       responses:
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "200":
           description: 위험 판정 집계
           content:
@@ -337,6 +362,10 @@ paths:
         응답은 인벤토리 메타데이터뿐이며 인증서 원문(PEM/DER)·개인키는 포함되지 않는다.
       tags: [certificates]
       parameters:
+        - name: scope
+          in: query
+          description: inventory keeps the existing inventory semantics; server selects non-CA certificates with a current successful TLS observation or verified completed current deployment, including currently bound replaced certificates.
+          schema: { type: string, enum: [server, inventory], default: inventory }
         - name: q
           in: query
           description: CN·Subject DN·Issuer DN·Serial·Fingerprint·SAN 부분 일치 검색 (대소문자 무시, 200자 이하)
@@ -2434,6 +2463,11 @@ components:
       in: cookie
       name: autocert_session
   responses:
+    BadRequest:
+      description: Invalid query parameter
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     Unauthorized:
       description: 인증 실패 (토큰 없음·만료·폐기)
       content:
@@ -2986,12 +3020,18 @@ components:
       type: object
       description: >
         대시보드 요약 집계. expiring_* 값은 누적(30d는 7d 포함)이며 만료분 제외.
-        status=replaced인 인증서는 전 구간에서 제외한다 — 만료 알림에서 이미 빠져 있어
-        남겨 두면 두 화면이 서로를 부정한다(06-rescan-and-replacement 11.4).
+        inventory는 status=replaced를 제외한다. server는 최신 성공 관측 또는 검증 완료된
+        현재 배포 연결을 기준으로 하며, 현재 연결이 있으면 replaced도 포함한다.
       required:
         [request_id, total, expiring_7d, expiring_30d, expiring_60d, expiring_90d,
-         expired, self_signed, unowned]
+         expired, self_signed, unowned, expiry_weeks]
       properties:
+        expiry_weeks:
+          type: array
+          minItems: 13
+          maxItems: 13
+          description: Counts for consecutive 7-day buckets from now, capped at 90 days. Uses the same scope and timestamp as the totals.
+          items: { type: integer }
         request_id: { type: string }
         total: { type: integer }
         expiring_7d: { type: integer }
