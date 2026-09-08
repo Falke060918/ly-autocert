@@ -129,7 +129,29 @@ func (s *Service) Tick(ctx context.Context) error {
 }
 func (s *Service) process(ctx context.Context, o *store.IssuanceOrder) error {
 	result := store.IssuanceResult{Status: o.Status, Code: o.Code, UpstreamStatus: o.UpstreamStatus, Validation: o.Validation, Delay: time.Minute, Attempts: o.Attempts}
-	finish := func() error { return s.Store.FinishIssuanceStep(ctx, o, result) }
+	finish := func() error {
+		err := s.Store.FinishIssuanceStep(ctx, o, result)
+		if err != nil && result.UpstreamStatus == "issued" && result.Certificate != nil {
+			// The CA fact was committed separately. A failed inventory transaction
+			// must not become a CA failure or claim a successful registration.
+			result.Status = "issued"
+			result.Error = "CA 발급 완료. 인벤토리 저장을 완료하지 못했습니다. 결과를 다시 수집합니다."
+			result.Kind = "collection_warning"
+			result.Certificate, result.Comparison = nil, nil
+			result.CertPEM, result.ChainPEM = "", ""
+			return s.Store.FinishIssuanceStep(ctx, o, result)
+		}
+		return err
+	}
+	collectionWarning := func(message string) error {
+		result.Status, result.UpstreamStatus, result.Kind = "issued", "issued", "collection_warning"
+		result.Error = "CA 발급 완료. 결과 수집 확인 필요: " + message
+		result.Delay = min(time.Minute*time.Duration(1<<min(result.Attempts, 5)), 30*time.Minute)
+		return finish()
+	}
+	if o.Code == "" && (o.Status == "issued" || o.UpstreamStatus == "issued") {
+		return collectionWarning("CA 주문 식별자가 없어 자동 수집할 수 없습니다")
+	}
 	// Without a CA idempotency key, a crashed/ambiguous POST must never be replayed.
 	if o.Code == "" && o.SubmissionStarted != nil {
 		result.Status = "manual_required"
@@ -160,6 +182,9 @@ func (s *Service) process(ctx context.Context, o *store.IssuanceOrder) error {
 		if errors.As(e, &he) {
 			result.Error = he.Error()
 		}
+		if o.Code != "" && o.UpstreamStatus == "issued" {
+			return collectionWarning(result.Error)
+		}
 		result.Status = "issue_failed"
 		result.Kind = "failed"
 		if submitted {
@@ -174,6 +199,9 @@ func (s *Service) process(ctx context.Context, o *store.IssuanceOrder) error {
 		return finish()
 	}
 	if snap.Code == "" || o.Code != "" && snap.Code != o.Code {
+		if o.UpstreamStatus == "issued" {
+			return collectionWarning("CA 주문 식별자가 일치하지 않습니다")
+		}
 		result.Status = "manual_required"
 		result.Error = "CA 주문 식별자가 일치하지 않습니다"
 		result.Kind = "failed"
@@ -183,17 +211,23 @@ func (s *Service) process(ctx context.Context, o *store.IssuanceOrder) error {
 	result.UpstreamStatus = snap.Status
 	result.Validation = snap.Validation
 	result.Attempts = 0
+	if o.UpstreamStatus == "issued" && snap.Status != "issued" && snap.Status != "cancelled" && snap.Status != "refunded" && snap.Status != "expired" && snap.Status != "error" && snap.Status != "revoked" {
+		return collectionWarning("CA의 후속 주문 상태를 확인할 수 없습니다")
+	}
 	switch snap.Status {
 	case "issued":
+		if e := s.Store.RecordCAIssued(ctx, o, snap.Code); e != nil {
+			return e
+		}
 		csr, e := s.Store.GetIssuanceCSR(ctx, o.ID)
 		if e != nil {
-			return e
+			// A readable CA certificate can still be registered with an unknown
+			// CSR comparison; no requested private key is linked in that case.
+			csr = ""
 		}
 		cert, certPEM, chainPEM, comparison, e := InspectIssued(snap, csr, o.Spec)
 		if e != nil {
-			result.Status = "issue_failed"
-			result.Error = e.Error()
-			result.Kind = "failed"
+			return collectionWarning(e.Error())
 		} else {
 			described := certparse.Describe(cert, time.Now())
 			result.Certificate = &described

@@ -54,6 +54,7 @@ export interface Order {
   status: IssuanceStatus;
   spec: IssuanceSpec;
   upstream_order_code: string;
+  upstream_status?: string;
   certificate_id: string | null;
   created_at: string;
   finished_at: string | null;
@@ -100,7 +101,7 @@ export const STATUS: Record<IssuanceStatus, string> = {
   approval_pending: "승인 대기",
   issuing: "발급 중",
   awaiting_validation: "도메인 검증 필요",
-  issued: "발급 완료",
+  issued: "CA 발급 완료 · 결과 확인 필요",
   deploying: "배포 중",
   completed: "완료",
   cancelled: "취소됨",
@@ -129,6 +130,8 @@ export const STEP: Record<string, string> = {
   rollback: "이전 인증서 복원",
 };
 export const EVENT: Record<string, string> = {
+  ca_issued: "CA 발급 완료",
+  collection_warning: "발급 결과 수집 경고",
   certificate_comparison: "요청·발급 비교 결과 기록",
   validation_warning: "발급 검증 경고",
   chain_warning: "CA 체인 경고",
@@ -147,6 +150,10 @@ export const EVENT: Record<string, string> = {
   cancelled: "취소",
   cancel_failed: "취소 실패",
 };
+export const orderStatus = (order: Pick<Order, "status" | "upstream_status">) =>
+  order.upstream_status === "issued" && order.status === "issue_failed"
+    ? "CA 발급 완료 · 결과 확인 필요"
+    : STATUS[order.status];
 export const send = <T>(path: string, body?: unknown, method = "POST") =>
   apiFetch<T>("/api/v1" + path, {
     method,

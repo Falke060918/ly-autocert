@@ -12,7 +12,7 @@ import {
   useAction,
 } from "@/components/issuance-common";
 import { Deployment } from "@/components/issuance-deployment";
-import { send, STATUS, EVENT, type Order } from "@/lib/issuance";
+import { send, orderStatus, EVENT, type Order } from "@/lib/issuance";
 export default function Page() {
   const { id } = useParams<{ id: string }>();
   const { user } = useAuth();
@@ -43,16 +43,16 @@ export default function Page() {
           <Panel title={o.spec.dns_names.join(", ")}>
             <div className="flex flex-wrap items-center gap-3">
               <span className="rounded border px-3 py-1">
-                {STATUS[o.status]}
+                {orderStatus(o)}
               </span>
               {o.status === "approval_pending" && approve && (
                 <Button disabled={action.busy} onClick={() => act("approve")}>
                   승인
                 </Button>
               )}
-              {o.status === "issue_failed" && manage && (
+              {["issue_failed", "issued"].includes(o.status) && manage && (
                 <Button disabled={action.busy} onClick={() => act("retry")}>
-                  재시도
+                  {o.upstream_status === "issued" ? "결과 다시 수집" : "재시도"}
                 </Button>
               )}
               {[
@@ -139,7 +139,7 @@ export default function Page() {
             <ol className="space-y-3">
               {o.events?.map((e, i) => (
                 <li key={i} className="border-l-2 pl-4">
-                  <p className="text-sm">{EVENT[e.kind] ?? e.kind}</p>
+                  <p className="text-sm">{e.kind === "failed" && o.upstream_status === "issued" ? "처리 오류 (당시 기록)" : EVENT[e.kind] ?? e.kind}</p>
                   <time className="text-xs text-muted-foreground">
                     {new Date(e.at).toLocaleString("ko-KR")}
                   </time>

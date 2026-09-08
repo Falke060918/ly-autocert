@@ -265,7 +265,7 @@ func (s *Store) GetIssuanceOrder(ctx context.Context, id string) (*IssuanceOrder
 	return o, rows.Err()
 }
 func (s *Store) ListIssuanceOrders(ctx context.Context, status string, limit, offset int) ([]IssuanceOrder, error) {
-	rows, e := s.db.QueryContext(ctx, `SELECT `+orderCols+` FROM issuance_orders WHERE ($1::text='' OR status=$1::text) ORDER BY created_at DESC,id LIMIT $2 OFFSET $3`, status, limit, offset)
+	rows, e := s.db.QueryContext(ctx, `SELECT `+orderCols+` FROM issuance_orders WHERE ($1::text='' OR CASE WHEN status='issue_failed' AND upstream_status='issued' THEN 'issued' ELSE status END=$1::text) ORDER BY created_at DESC,id LIMIT $2 OFFSET $3`, status, limit, offset)
 	if e != nil {
 		return nil, e
 	}
@@ -301,10 +301,13 @@ func (s *Store) ChangeIssuanceOrder(ctx context.Context, id, action string, a Is
 			return ErrIssuanceConflict
 		}
 	case "retry":
-		if o.Status != "issue_failed" {
+		if o.Status != "issue_failed" && o.Status != "issued" {
 			return ErrIssuanceConflict
 		}
 		kind = "retried"
+		if o.UpstreamStatus == "issued" {
+			next = "issued"
+		}
 		if o.Code == "" && o.SubmissionStarted != nil {
 			return ErrIssuanceConflict
 		}
@@ -339,7 +342,7 @@ func (s *Store) ChangeIssuanceOrder(ctx context.Context, id, action string, a Is
 	return tx.Commit()
 }
 func (s *Store) ClaimIssuanceOrder(ctx context.Context) (*IssuanceOrder, error) {
-	return scanOrder(s.db.QueryRowContext(ctx, `UPDATE issuance_orders SET leased_until=now()+interval '2 minutes',lease_token=gen_random_uuid() WHERE id=(SELECT id FROM issuance_orders WHERE status IN ('issuing','awaiting_validation') AND next_action_at<=now() AND (leased_until IS NULL OR leased_until<now()) ORDER BY next_action_at,id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING `+orderCols))
+	return scanOrder(s.db.QueryRowContext(ctx, `UPDATE issuance_orders SET leased_until=now()+interval '2 minutes',lease_token=gen_random_uuid() WHERE id=(SELECT id FROM issuance_orders WHERE status IN ('issuing','awaiting_validation','issued') AND next_action_at<=now() AND (leased_until IS NULL OR leased_until<now()) ORDER BY next_action_at,id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING `+orderCols))
 }
 func (s *Store) ClaimIssuanceCancel(ctx context.Context, id string) (*IssuanceOrder, error) {
 	return scanOrder(s.db.QueryRowContext(ctx, `UPDATE issuance_orders SET leased_until=now()+interval '2 minutes',lease_token=gen_random_uuid() WHERE id=$1::uuid AND status IN ('issuing','awaiting_validation','issue_failed') AND upstream_order_code<>'' AND (leased_until IS NULL OR leased_until<now()) RETURNING `+orderCols, id))

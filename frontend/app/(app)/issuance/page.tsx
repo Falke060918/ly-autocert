@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Notice, useResource, inputClass } from "@/components/issuance-common";
-import { STATUS, type Order } from "@/lib/issuance";
+import { STATUS, orderStatus, type Order } from "@/lib/issuance";
 export default function Page() {
   const { user } = useAuth();
   const [status, setStatus] = useState("");
@@ -73,7 +73,7 @@ export default function Page() {
                   </Link>
                 </td>
                 <td className="min-w-40 p-3">
-                  <span className="whitespace-nowrap">{STATUS[o.status]}</span>
+                  <span className="whitespace-nowrap">{orderStatus(o)}</span>
                   {[
                     "approval_pending",
                     "awaiting_validation",
