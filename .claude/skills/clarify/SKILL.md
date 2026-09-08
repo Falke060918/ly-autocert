@@ -1,6 +1,6 @@
 ---
 name: clarify
-description: Turns a request into a spec draft, marks every ambiguity in-place with the literal colon-bearing 확인 필요 tag (the colon is part of the machine contract — exact form in step 2), eliminates the tags round by round via AskUserQuestion, and saves the completed spec under docs/specs/. A spec with a remaining tag is not delegatable — the delegation path counts the tag and stops. Use when the user invokes /clarify, or before delegating a request that leaves material decisions open. (spec-kit /clarify port — design/03 (a))
+description: "Turns a request into a spec draft, marks every ambiguity in-place with the literal colon-bearing 확인 필요 tag (the colon is part of the machine contract — exact form in step 2), eliminates the tags round by round via AskUserQuestion, and saves the completed spec under docs/specs/. A spec with a remaining tag is not delegatable — the delegation path counts the tag and stops. Use when the user invokes /clarify, or before delegating a request that leaves material decisions open. (spec-kit /clarify port — design/03 (a))"
 ---
 
 # /clarify — 모호점 소거로 스펙 완성

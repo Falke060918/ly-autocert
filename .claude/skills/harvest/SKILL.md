@@ -1,6 +1,6 @@
 ---
 name: harvest
-description: Feeds project-agnostic lessons (GOTCHAS entries, skills, rules) from a derived project back into the claude-starter-v2 template repo as a draft PR. Use when the user asks to harvest, 환류, or send lessons back to the template — or when /handoff spots a lesson that is not repo-specific.
+description: "Feeds project-agnostic lessons (GOTCHAS entries, skills, rules) from a derived project back into the claude-starter-v2 template repo as a draft PR. Use when the user asks to harvest, 환류, or send lessons back to the template — or when /handoff spots a lesson that is not repo-specific."
 ---
 
 # /harvest — 파생의 교훈을 템플릿 본체로 환류

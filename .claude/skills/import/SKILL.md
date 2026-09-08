@@ -1,6 +1,6 @@
 ---
 name: import
-description: Pulls an existing external local folder — its full product source, git history, and old settings/knowledge — INTO the current derived project (a claude-starter-v2 clone). Runs inside the initialized project (identity: project, setup: done), reads the external folder read-only, grafts its git history via merge, resolves overlaps template-first, migrates rules/state/gotchas into docs/, and archives old settings under docs/legacy/. This is a project-scope skill for a one-time absorption of a local folder you want to keep developing on the template — distinct from /template-update (which SYNCS template machinery into a project) and /harvest (which FEEDS lessons back to the template). Use when the user invokes /import <external absolute path>, or wants to continue developing an existing local folder inside a fresh template project. Refuses to run in the template original or an uninitialized clone.
+description: "Import an external local project's product code, history, and useful knowledge into an initialized unified starter-derived repository. Preserve the read-only source and both live Claude/Codex runtimes; archive only incoming legacy settings. Use for /import with an external absolute path, not template updates or lesson harvesting."
 ---
 
 # /import — pull an external folder into the current project (v2, 방향 역전형)
@@ -25,6 +25,7 @@ Orchestrator mode: delegate reading/investigation to **explorer** and every file
 | identity 파일 없음/이상값 | 중단. "SETUP.md 1단계로 identity를 생성하라." |
 
 **전제조건(진행 전 필수):**
+- `.claude/identity`와 `.codex/identity`가 모두 `identity: project`, `setup: done`인지 확인한다.
 - 현재 저장소가 git 저장소이고 **작업 트리가 clean**하다 — 아래 병합·checkout·백업 이동이 무경고로 덮어쓴다. dirty면 먼저 commit/stash. 이 clean 상태가 곧 롤백점(`git reset --hard HEAD`)이다.
 - 인자로 **외부 폴더 절대경로**가 주어졌고, 그 경로가 **존재하는 디렉토리**다.
 
@@ -33,7 +34,7 @@ Orchestrator mode: delegate reading/investigation to **explorer** and every file
 - 경로가 없거나 디렉토리가 아님 → 오류 보고 후 중단.
 - 경로가 현재 프로젝트 루트와 동일 → 중단(자기 자신 import 무의미).
 - 외부가 git 저장소가 아님 → 4절 **비-git 폴백**(무이력 복사).
-- 외부가 그 자체로 템플릿 파생 프로젝트임 → 정상 처리한다. 외부의 `.claude/`·CLAUDE.md·scripts 등 기계는 템플릿 우선으로 해소(ours), docs/의 constitution 하단·STATE·GOTCHAS는 3버킷으로 1:1 이관한다.
+- 외부가 그 자체로 템플릿 파생 프로젝트임 → 정상 처리한다. 현재 대상의 양쪽 실행기 기계는 유지하고 외부의 같은 경로는 라이브에 편입하지 않는다. docs/의 constitution 하단·STATE·GOTCHAS는 3버킷으로 이관한다.
 
 ## 1. 외부 설정·지식 조사 — explorer 위임 (3버킷)
 explorer에 위임해 외부 폴더의 **설정·지식 계층만** 읽는다(승인 대기 중 읽기 전용이라 선행 가능). source-code 스캔 목적이 아님을 프롬프트에 명시:
@@ -48,8 +49,8 @@ explorer에 위임해 외부 폴더의 **설정·지식 계층만** 읽는다(�
 
 ## 2. 겹침(충돌) 검출 — 읽기 전용
 외부 트리의 파일 목록과 현재 트리의 파일 목록을 비교해 **겹치는 경로**를 세 부류로 분류한다:
-- **(T) 템플릿 기계 경로** (`CLAUDE.md`·`SETUP.md`·`scripts/`·`.claude/{rules,agents,skills,output-styles,conventions,settings.json}`·`.claude/identity`) → **템플릿 우선(무음)**.
-- **(K) 지식·문서 경로** (`README.md`·`docs/`·`AGENTS.md`·`.cursorrules`) → **검토 대상**: 원본은 `docs/legacy/`, 내용은 3버킷/승인 반영.
+- **(T) 통합 템플릿 기계 경로** (`AGENTS.md`·`CLAUDE.md`·`SETUP.md`·`scripts/`·`.claude/`·`.codex/`·`.agents/`) → **현재 대상 보존**. 두 실행기의 라이브 파일은 legacy로 이동·삭제하거나 외부 버전으로 덮어쓰지 않는다.
+- **(K) 지식·문서 경로** (`README.md`·`docs/`·`.cursorrules`) → **검토 대상**: 외부 원본만 `docs/legacy/<외부명>/`, 내용은 3버킷/승인 반영. 외부 AGENTS/CLAUDE의 제품 규칙도 승인 범위에서 이 버킷으로 추출하되 대상의 라이브 진입점은 그대로 둔다.
 - **(P) 그 외 제품 소스 겹침** → 스택 중립 템플릿이라 드묾. 기본 템플릿 우선이되 **관문에 개별 나열**해 사용자가 반영을 지정할 수 있게 한다.
 
 외부가 git이면 `git ls-tree -r --name-only import-src/<branch>`, 아니면 폴더 walk로 목록을 얻는다.
@@ -69,6 +70,8 @@ explorer에 위임해 외부 폴더의 **설정·지식 계층만** 읽는다(�
 **[3계층(멈춤선)]** 이 관문은 무인 모드(`/automode on`)에서도 유지된다 — 이력 결합과 legacy 이동은 되돌리기 어렵고, 무인은 승인 관문을 대체하지 않는다. 계층 정의는 `.claude/agents/orchestrator.md`.
 
 ## 4. 소스 + 이력 병합
+병합 또는 비-git 복사 전 `python scripts/import-guard.py snapshot --snapshot .claude/tmp/import-<unit>.json`으로
+현재 대상의 양쪽 실행기 파일 지문을 남긴다. snapshot은 기존 파일을 덮어쓰지 않는다.
 승인 후 implementer에 위임. **외부가 git 저장소일 때(이력 보존 경로):**
 ```
 EXT="<외부폴더 절대경로>"                       # 인자
@@ -83,8 +86,9 @@ git merge --no-commit --no-ff --allow-unrelated-histories -X ours import-src/"$B
 - `--no-commit`: 커밋 직전 멈춰 secret 제외·승인 문서 반영을 끼워 넣을 창을 만든다.
 
 **병합 후 커밋 전:**
+- `-X ours`는 비충돌 변경·새 파일 유입까지 막지 못한다. `python scripts/import-guard.py check --snapshot .claude/tmp/import-<unit>.json`으로 AGENTS/CLAUDE/.claude/.codex/.agents 보존을 확인한다. 실패하면 커밋하지 않고 가져오기 전 대상 버전으로 보호 경로를 복원한다. 제품 파일까지 일괄 되돌리지 않는다. 비-git 복사 후에도 같은 검사를 실행한다.
 - **제외 적용**: `.env`·`.env.*`(단 `.env.example` 유지)·`*.local.*`·secret 의심 경로가 스테이지됐으면 `git rm --cached -r <경로>` 후 `rm -rf <경로>`.
-- **승격된 설정·지식 파일 정리**: 관문에서 legacy+버킷으로 분류된 외부 설정 파일(예: 루트에 편입된 `AGENTS.md`·`.cursorrules`)은 `docs/legacy/`에 보관 후 라이브 트리에서 제거 — 템플릿 기계가 그 역할을 대신한다.
+- **들어온 설정·지식 파일 정리**: 관문에서 legacy+버킷으로 분류한 외부 파일만 외부 폴더에서 직접 `docs/legacy/<외부명>/`에 보관한다. 외부 `.cursorrules`처럼 이번 import가 새로 만든 비운영 파일만 경로·소유권을 확인해 정리할 수 있다. 현재 대상의 `AGENTS.md`·`CLAUDE.md`·`.claude/`·`.codex/`·`.agents/`를 보관 뒤 제거하는 것은 금지한다.
 - **승인된 외부 문서 반영**: README 본문·아키텍처 노트 등 관문 승인분을 외부 측에서 가져와 반영.
 - 커밋: `chore: /import <외부명> — 소스·이력 병합 (외부→현재, 템플릿 우선)` (`<외부명>`=외부 경로 basename). 이후 `git remote remove import-src`.
 
@@ -93,7 +97,7 @@ git merge --no-commit --no-ff --allow-unrelated-histories -X ours import-src/"$B
 - 단일 커밋 `chore: /import <외부명> — 소스 복사 (외부 비-git, 이력 미보존)`. 보고에 "이력 미보존(외부가 git 아님)" 1줄.
 
 ## 5. 설정 원본 legacy 백업 + secret 제외
-implementer에 위임. 외부 **폴더에서 직접**(병합 결과가 아니라 — 겹친 설정은 ours로 버려졌으므로) 옛 설정 원본을 `docs/legacy/`로 무손실 복사: 옛 `CLAUDE.md`→`docs/legacy/CLAUDE.md`, 옛 `.claude/`→`docs/legacy/dot-claude/`, `AGENTS.md`·`.cursorrules` 등.
+implementer에 위임. 외부 **폴더에서 직접**(병합 결과나 현재 대상의 템플릿 파일이 아니다) 옛 설정 원본을 `docs/legacy/<외부명>/`로 복사한다: 외부 `CLAUDE.md`·`AGENTS.md`·`.claude/`·`.codex/`·`.agents/`·`.cursorrules` 등. 보관본은 실행하지 않으며 secret은 제외한다. 현재 대상의 같은 이름 운영 파일은 그대로 유지한다.
 
 **제외 규칙(병합·복사·legacy 백업 전부에 적용):**
 - 절대 가져오지 않음: `.env`·`.env.*`(단 `.env.example`은 유지), `*.local.*`(예: `settings.local.json`·`CLAUDE.local.md`), secret 의심 파일(API 키·토큰·비밀번호·개인키 `id_rsa`/`*.pem`/`credentials` 등), 외부 `.git/` 내부(이력은 fetch로 받지 폴더 복사로 받지 않는다).
@@ -108,6 +112,7 @@ implementer에 위임(본문은 메인 세션이 작성해 프롬프트에 전�
 - `README.md`는 프로젝트 소유 — 관문에서 반영 지정한 외부 본문만 검토 후 반영.
 
 ## 7. 커밋·보고
+- 최종 커밋 전에도 `import-guard.py check`를 같은 snapshot으로 다시 실행해 양쪽 라이브 기계가 보존됐음을 확인한다.
 - **커밋 직전 개인·secret 점검**: `git status --short`로 `.env`·`*.local.*`·secret 의심·`docs/legacy/` 하위 secret이 staged인지 확인. 있으면 `git restore --staged <경로>` + 외부에서 온 것이면 제거 후에만 커밋. secret 커밋은 `[금지]`.
 - 커밋은 원자적·검토 가능하게: 최소 (i) 소스+이력 병합(merge commit)과 (ii) 3버킷 지식 이관을 구분한다. 정확한 커밋 개수는 구현자 재량이되 secret은 어느 커밋에도 스테이지되지 않는다. push는 일반 규칙(자동 아님).
 - **보고(한국어)**: 변경 파일; 옛 설정 위치(`docs/legacy/`); 외부 폴더 불가침(읽기 전용); `git log`에 외부 이력 결합됨(또는 "이력 미보존 — 외부 비-git"); secret 제외 결과 + 필요 시 키 회전 경고; settings·훅 변경은 **Claude 재시작** 후 적용; 이후 템플릿 동기화는 `/template-update`.

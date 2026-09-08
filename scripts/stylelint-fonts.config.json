@@ -1,0 +1,16 @@
+{
+  "rules": {
+    "declaration-property-value-disallowed-list": {
+      "/^font-family$/i": [
+        "/-apple-system/i",
+        "/\\bsystem-ui\\b/i",
+        "/\\bui-sans-serif\\b/i",
+        "/\\bui-monospace\\b/i",
+        "/segoe ui/i"
+      ]
+    },
+    "declaration-property-value-allowed-list": {
+      "/^font-family$/i": ["/(Geist|Pretendard|D2Coding|var\\(--font)/"]
+    }
+  }
+}

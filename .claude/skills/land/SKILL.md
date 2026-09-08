@@ -1,6 +1,6 @@
 ---
 name: land
-description: Lands a finished work unit — merges the isolated worktree branches into the session branch, removes the worktrees, closes the related issues, and pushes. Use when parallel agents have reported done and their branches need collecting, or when the user asks to merge/clean up/wrap up the current work unit.
+description: "Lands a finished work unit — merges the isolated worktree branches into the session branch, removes the worktrees, closes the related issues, and pushes. Use when parallel agents have reported done and their branches need collecting, or when the user asks to merge/clean up/wrap up the current work unit."
 ---
 
 # /land — land a work unit

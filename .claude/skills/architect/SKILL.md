@@ -1,6 +1,6 @@
 ---
 name: architect
-description: Technical design gate between /kickoff (product scope + mockup approved) and implementation. Investigates the existing code/environment, has the planner compare technical alternatives, gets explicit user approval of the tech plan, records it, and only then scaffolds and decomposes work into issues. Use when the user invokes /architect, or when implementation is about to start on a project whose mockup is approved but whose technical plan is not.
+description: "Technical design gate between /kickoff (product scope + mockup approved) and implementation. Investigates the existing code/environment, has the planner compare technical alternatives, gets explicit user approval of the tech plan, records it, and only then scaffolds and decomposes work into issues. Use when the user invokes /architect, or when implementation is about to start on a project whose mockup is approved but whose technical plan is not."
 ---
 
 # /architect — from approved product scope to implementation-ready
@@ -20,7 +20,7 @@ This applies to every mockup path, including kickoff 4-0's (C) React+shadcn mock
 Delegate to the **explorer** subagent: existing code and structure (if any), current stack and versions, runtime/deployment environment, external services and credentials in use, plus the constraints stated in docs/01-plan.md and docs/02-goals.md. Receive a summary only.
 
 ## Stage 2 — Technical design (planner)
-Delegate the design to the **planner** subagent, passing the plan/goals, the mockup's screen structure, and the Stage 1 summary. Require the return to include (this matches the planner's return format):
+Delegate the design to the **planner** subagent, passing the plan/goals, the mockup's screen structure, and the Stage 1 summary. `docs/design-system.md`가 있으면 함께 넘긴다(브랜딩 토큰의 단일 원본). Require the return to include (this matches the planner's return format):
 - **At least 2 technical alternatives** compared — pros/cons and cost (money, ops burden, learning curve) for each — with a recommendation and its rationale
 - Data model, API contracts, auth/security boundaries, deployment approach
 - Risks, irreversible decisions, and the choices that need user approval

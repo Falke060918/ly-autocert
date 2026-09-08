@@ -1,13 +1,14 @@
 ---
 name: webapp-testing
-description: Drives a local web app in a real headless browser with Python + Playwright — loads pages, clicks through flows, captures screenshots and console/network errors. Use when verifying a UI/frontend change actually works, when reproducing a report like "white screen" / "404 in the console" / "the button does nothing", or when a review needs evidence beyond passing tests.
+description: "Drives a local web app in a real headless browser with Python + Playwright — loads pages, clicks through flows, captures screenshots and console/network errors. Use when verifying a UI/frontend change actually works, when reproducing a report like \"white screen\" / \"404 in the console\" / \"the button does nothing\", or when a review needs evidence beyond passing tests."
 ---
 
 <!--
 Ported from anthropics/skills — https://github.com/anthropics/skills/tree/main/skills/webapp-testing
 Licensed under the Apache License 2.0; full terms in LICENSE.txt next to this file.
 Local deviations: prerequisites section, artifact paths moved to the OS temp dir
-(the upstream `/mnt/user-data/outputs` path only exists in the claude.ai sandbox).
+(the upstream `/mnt/user-data/outputs` path only exists in the claude.ai sandbox),
+and a locally added "Visual regression (odiff)" section (not in upstream).
 -->
 
 # Web Application Testing
@@ -101,6 +102,19 @@ with sync_playwright() as p:
 - Add appropriate waits: `page.wait_for_selector()` or `page.wait_for_timeout()`
 - **Write automation scripts and screenshots outside the repo** — use the OS temp dir (`tempfile.gettempdir()`), never a path inside the working tree, so verification leaves no untracked artifacts behind.
 - Report what was actually observed (page title, visible text, console errors, screenshot path). A screenshot that was never taken is not evidence.
+
+## Visual regression (odiff)
+
+When a change touches an **existing** screen and a before/after screenshot pair exists, compare the two pixel-by-pixel with odiff (a single binary, fetched on demand) — always through the repo's runner script, never a bare `npx` call (the repo's own deny list blocks bare `npx` on the command line; the script route is the one that runs):
+
+```bash
+bash scripts/odiff-compare.sh <before.png> <after.png> [diff.png]
+```
+
+- **rc 0 = the images match** (or the tool is absent — the script prints a `SKIP:` line and exits 0). **rc 21/22 = the images differ**, and a diff image highlighting the changed pixels is written to `[diff.png]` when that argument was given. **Any other rc is a tool or input error, not a detected difference** — do not report it as "the screens changed".
+- All three paths go in the **OS temp dir** (`tempfile.gettempdir()`) — same artifact rule as screenshots above, never inside the working tree.
+- **If Node/npx is missing**, say so in one line and fall back to eyeball comparison of the two screenshots — do not silently skip the check, and do not report a pixel-level match you did not measure (same shape as the Prerequisites fallback).
+- **Baseline prerequisite**: `<before.png>` must have been captured from the pre-change state. If no baseline can be obtained (a brand-new screen, or the pre-change state is already gone), this check does not fire — there is nothing to compare against, and that is a stated limitation, not a failure.
 
 ## Reference Files
 

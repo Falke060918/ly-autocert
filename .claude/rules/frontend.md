@@ -44,6 +44,8 @@ If the brief does not pin down a product or subject, pin it down yourself before
 
 ## 3. Process: plan first, then code
 
+`docs/design-system.md`가 있으면 토큰 단일 원본은 그 파일이다: 새로 계획하지 말고 그 토큰에서 파생한다.
+
 AI-generated design today converges on three defaults: (1) cream background + high-contrast serif + terracotta, (2) black background + fluorescent single-color accent, (3) newspaper layout with hairline rules. If the brief specifies a visual direction, follow it, and do not spend your free axes on these defaults.
 
 Work in two stages. First plan a compressed token system — **color** (4–6 named hex values), **type** (size, weight, and spacing per display/body/utility role), **layout** (a one-sentence description + an ASCII wireframe), **signature** (the single element this page will be remembered for). Compare the plan against the brief and fix the parts that are "defaults any similar brief would also produce" — only then write code, deriving every color and type decision from the plan.
@@ -94,7 +96,7 @@ Same force and same scope as §6 — mockups and implementations both. The compl
 
 ## 9. shadcn ecosystem reference table
 
-Where to reach first before hand-building a block or a theme — React+shadcn projects only (on a non-React stack this table does not apply; daisyUI is the fallback there, see the note below). Verdicts summarize `docs/research/2026-09-07-frontend-kit-survey.md` §1 (measured 2026-09-07); go there for stars, licenses, and the full candidate list.
+Where to reach first before hand-building a block or a theme — React+shadcn projects only (on a non-React stack this table does not apply; daisyUI is the fallback there, see the note below). Verdicts summarize `docs/research/2026-09-07-frontend-kit-survey.md` §1 (measured 2026-09-07); go there for stars, licenses, and the full candidate list. kibo·cult-ui·svgl 3행의 근거는 `docs/specs/2026-09-07-frontend-absorption.md`다.
 
 | Source | What it is | Verdict (survey §1) |
 | --- | --- | --- |
@@ -104,5 +106,24 @@ Where to reach first before hand-building a block or a theme — React+shadcn pr
 | [tweakcn](https://github.com/jnsahaj/tweakcn) | Theme editor that exports shadcn CSS variables (Apache-2.0, 10k+) | Theme-settling tool — the exported variables feed mockup and implementation both |
 | [HyperUI](https://github.com/markmead/hyperui) | Copy-paste Tailwind markup sections (MIT, 12k+) | Landing-section source — same Tailwind markup, easy to port |
 | [awesome-shadcn-ui](https://github.com/birobirobiro/awesome-shadcn-ui) | Curated index of the shadcn ecosystem (20k+) | Exploration entry point when the rows above do not cover the need |
+| [Kibo UI](https://github.com/shadcnblocks/kibo) | Advanced-component registry on top of shadcn — editor, Gantt, kanban and the like (MIT, 3.9k, measured 2026-09-07) | 비고: 최근 push 4개월 정체(2026-05-04) — 채택 전 유지보수 상태 재확인 |
+| [cult-ui](https://github.com/nolly-studio/cult-ui) | Animation/marketing components in the shadcn family (MIT, 6.1k, measured 2026-09-07, push 2026-07-22) | 비고: Magic UI와 일부 겹침 — 겹치는 자리는 Magic UI 먼저 |
+| [svgl](https://github.com/pheralb/svgl) | Brand-logo SVG collection (MIT, 6.2k, measured 2026-09-07, push 2026-09-04) | 랜딩의 로고 월·기술 스택 표기용 |
 
 - Replacing shadcn itself was surveyed and **rejected** (survey §3): the copy-ownership model, 공식 Blocks, the theme tooling, and the marketing-block ecosystem exist only around shadcn, and §0's "do not rewrite primitives" leans on exactly that. [daisyUI](https://github.com/saadeghi/daisyui) stays only as the fallback for non-React stacks — its class system does not carry into a shadcn implementation.
+
+## 10. 표면별 기본값 — 아이콘·차트·이메일
+
+React+shadcn 프로젝트 기준의 기본값이다 (§9와 같은 전제).
+
+- **아이콘 = lucide** (shadcn 기본 아이콘 세트). 구현은 `lucide-react`, 목업은 unpkg의 lucide-static SVG(`https://unpkg.com/lucide-static@latest/icons/<이름>.svg`)로 **같은 아이콘 이름**을 쓴다 — 목업↔구현 연결. 목업 CDN 예외 목록의 단일 원본은 `.claude/skills/kickoff/SKILL.md` 4-1이다.
+- **차트 = recharts** (shadcn Charts가 딛는 라이브러리). 차트는 shadcn Charts 경유가 1순위, 그 밖은 recharts 직접.
+- **이메일 = react-email**. 단, 이메일 표면이 실제로 요청된 프로젝트에서만 — 미리 깔지 않는다(투기 금지).
+- **비React 스택**: 아이콘(lucide-static SVG)만 그대로 적용 가능하고, 차트·이메일 기본값은 미적용이다.
+
+## 11. 참고 링크 (전재 금지)
+
+본문 전재 금지 — 링크로만 참조한다.
+
+- [awesome-claude-design](https://github.com/VoltAgent/awesome-claude-design) — 디자인 시스템 프롬프트 큐레이션 인덱스 (MIT).
+- [Claude-Code-Frontend-Design-Toolkit](https://github.com/wilwaldon/Claude-Code-Frontend-Design-Toolkit) — 프론트엔드 산출물 개선 도구 모음. **라이선스 없음 — 링크만 가능, 본문·코드 복사 불가.**

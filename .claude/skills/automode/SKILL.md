@@ -1,6 +1,6 @@
 ---
 name: automode
-description: Turns unattended mode on or off for this checkout. `/automode on`, `/automode off`, or `/automode` with no argument to report the current mode. Unattended mode silences only mid-work "how should I do this" questions — scope/purpose rounds and stop-lines keep asking in either mode, while mid-work learn/harvest candidates go to the `docs/learn/` inbox with a one-line notice instead of a question. Use when the user wants to step away and let the session run, or wants to be asked again.
+description: "Turns unattended mode on or off for this checkout. `/automode on`, `/automode off`, or `/automode` with no argument to report the current mode. Unattended mode silences only mid-work \"how should I do this\" questions — scope/purpose rounds and stop-lines keep asking in either mode, while mid-work learn/harvest candidates go to the `docs/learn/` inbox with a one-line notice instead of a question. Use when the user wants to step away and let the session run, or wants to be asked again."
 ---
 
 # /automode — 무인·유인 모드 토글

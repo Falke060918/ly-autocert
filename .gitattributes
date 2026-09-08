@@ -1,4 +1,4 @@
-* text=auto
+* text=auto eol=lf
 *.ps1 text eol=crlf
 *.sh text eol=lf
 
@@ -20,3 +20,18 @@ scripts/fanout.sh export-ignore
 scripts/session-banner.sh export-ignore
 scripts/statusline.sh export-ignore
 scripts/template-update.sh export-ignore
+
+# Duet development runtime is excluded from customer source archives.
+.codex/ export-ignore
+.agents/ export-ignore
+AGENTS.md export-ignore
+docs/constitution.md export-ignore
+scripts/codex-*.sh export-ignore
+scripts/starter.py export-ignore
+scripts/sync-orchestrator.py export-ignore
+scripts/validate.py export-ignore
+scripts/sync-manifest.sh export-ignore
+scripts/sync-manifest.deletions export-ignore
+scripts/codex-sync-manifest.deletions export-ignore
+tests/test_starter.py export-ignore
+tests/test_dual_runtime.py export-ignore

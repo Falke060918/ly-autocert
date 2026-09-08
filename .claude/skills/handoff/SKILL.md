@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: Records the current work state into docs/STATE.md so the next session can take over without context. Use after completing a large unit of work, before ending a session, or when context has gotten heavy.
+description: "Records the current work state into docs/STATE.md so the next session can take over without context. Use after completing a large unit of work, before ending a session, or when context has gotten heavy."
 ---
 
 # /handoff — session handover

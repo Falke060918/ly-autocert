@@ -1,6 +1,6 @@
 ---
 name: perf
-description: Generates a markdown bottleneck report for recent sessions — top tool durations, subagent spawn-to-completion times, user approval-gate waits, and a wall-clock breakdown — from the session transcript JSONL plus optional hook timestamp logs. Use when the user asks where session time went, why a session felt slow, or for a performance report.
+description: "Generates a markdown bottleneck report for recent sessions — top tool durations, subagent spawn-to-completion times, user approval-gate waits, and a wall-clock breakdown — from the session transcript JSONL plus optional hook timestamp logs. Use when the user asks where session time went, why a session felt slow, or for a performance report."
 ---
 
 # /perf — 세션 병목 리포트

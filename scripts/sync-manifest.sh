@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # sync-manifest.sh — 템플릿→파생 동기화 + 삭제 manifest (v1 template-update.sh 의 후계)
 #
-# claude-starter-v2 에서 파생된 프로젝트 안에서 실행한다. 템플릿 원본에서는 실행을 거부한다
+# duet-starter 에서 파생된 프로젝트 안에서 실행한다. 템플릿 원본에서는 실행을 거부한다
 # (.claude/identity 의 `identity: template` 선언 기준 — v1 의 remote 추정 판별을 대체).
 # 템플릿 소유 기계(CLAUDE.md, SETUP.md, scripts, .claude/rules·agents·skills·output-styles·
-# conventions, settings.json)만 갱신하고 프로젝트 소유 파일은 건드리지 않는다.
+# conventions 및 Codex 대응 운영 파일)만 갱신한다. settings/config/hooks는 프로젝트 소유다.
 #
 # 사용법: bash scripts/sync-manifest.sh [템플릿 저장소 URL]
 #   - git remote `template` 이 있으면 그것을 쓴다
@@ -27,7 +27,7 @@
 # 더티 트리 중단 + 동기화 대상 10경로 **전부**를 덮어쓰기 전에 .sync-manifest-backup/<시각>/ 에
 # 백업하고 들어올 diff 를 먼저 보여준다. 다만 파생이 손대지 않은 파일(merge-base 기준)은
 # 덮어써도 잃을 것이 없으므로 요약 1줄로만 알린다 — 매번 전 경로의 diff 를 쏟으면 아무도
-# 안 읽는다. 파생이 흔히 고치는 CLAUDE.md·settings.json 은 그 억제에서 빠져 언제나
+# 안 읽는다. 파생이 흔히 고치는 CLAUDE.md·AGENTS.md는 그 억제에서 빠져 언제나
 # 백업+diff 한다(기존 동작 그대로).
 #
 # 이 스크립트는 git add/commit 을 하지 않는다 — checkout·git rm 결과는 index 에 올라가고,
@@ -41,16 +41,22 @@ manifest=scripts/sync-manifest.deletions
 # 스크립트·규칙은 건드리지 않는다. `.claude` 통째 동기화는 금지 — identity 를 되살린다
 # (아래 HARD EXCLUSIONS).
 paths=(
+  AGENTS.md
   CLAUDE.md
   SETUP.md
   .gitattributes
   scripts
+  tests
   .claude/rules
   .claude/agents
   .claude/skills
   .claude/output-styles
   .claude/conventions
-  .claude/settings.json
+  .codex/rules
+  .codex/roles
+  .codex/agents
+  .agents/skills
+  .codex/conventions
 )
 
 # 백업+diff 는 위 paths 전부에 적용된다. 아래 목록은 그중 "언제나 시끄러운" 등급 —
@@ -59,7 +65,7 @@ paths=(
 # 위 paths 와 동기화 유지: 여기 있는데 paths 에 없는 항목은 아무 일도 하지 않는다.
 customizable=(
   CLAUDE.md
-  .claude/settings.json
+  AGENTS.md
 )
 backup_root=.sync-manifest-backup
 diff_cap=200
@@ -82,12 +88,26 @@ backed_up=()
 
 protected_path() {
   case "$1" in
-    docs|docs/*|README.md|.claude/identity|.claude/settings.local.json|.mcp.json|.github/workflows/ci.yml)
+    docs|docs/*|README.md|.claude/identity|.claude/settings*.json|.claude/automode|.claude/perf|.claude/perf/*|.claude/review|.claude/review/*|.claude/index|.claude/index/*|.claude/snapshots|.claude/snapshots/*|.codex/identity|.codex/config.toml|.codex/hooks.json|.codex/local-notes.md|.codex/automode|.codex/perf|.codex/perf/*|.codex/review|.codex/review/*|.codex/index|.codex/index/*|.codex/snapshots|.codex/snapshots/*|.mcp.json|.github/workflows/ci.yml)
       return 0 ;;
-    "$self"|"$manifest")
+    scripts/sync-manifest.sh|scripts/codex-sync-manifest.sh|scripts/sync-manifest.deletions|scripts/codex-sync-manifest.deletions)
       return 0 ;;
   esac
   return 1
+}
+
+# A deletion manifest may remove only named files in template-owned areas.
+# This rejects ancestor directories, application paths, symlinks and pathspec magic.
+deletable_path() {
+  case "$1" in
+    scripts/*|tests/*|.claude/rules/*|.claude/agents/*|.claude/skills/*|.claude/output-styles/*|.claude/conventions/*|.codex/rules/*|.codex/roles/*|.codex/agents/*|.codex/conventions/*|.agents/skills/*) ;;
+    *) return 1 ;;
+  esac
+  case "$1" in *'\\'*|*':'*|*'*'*|*'?'*|*'['*|*'..'*|/*) return 1 ;; esac
+  [ ! -d "$root/$1" ] && [ ! -L "$root/$1" ] || return 1
+  # realpath resolves symlink parents too; the target must stay in this checkout.
+  resolved=$(realpath -m -- "$root/$1") || return 1
+  case "$resolved" in "$root"/*) return 0 ;; *) return 1 ;; esac
 }
 
 # 백업 폴더를 git status 에서 숨긴다 — .gitignore 는 프로젝트 소유라 로컬 exclude 에 넣는다.
@@ -186,6 +206,15 @@ main() {
   }
   cd "$root" || exit 1
 
+  # A unified project has two identity adapters. Never update only half a template.
+  for runtime in .claude .codex; do
+    identity_value=$(sed -n 's/^[[:space:]]*identity:[[:space:]]*//p' "$root/$runtime/identity" 2>/dev/null | head -1 | tr -d '[:space:]')
+    if [ "$identity_value" != project ]; then
+      echo "중단: $runtime/identity must be project; complete the unified SETUP.md first." >&2
+      exit 1
+    fi
+  done
+
   # -- 신분 확인: 템플릿 원본에서는 절대 돌지 않는다. -------------------------
   # 다른 무엇보다 먼저 검사해 원본에서는 아무것도 변형하지 않는다.
   idfile="$root/.claude/identity"
@@ -227,11 +256,11 @@ main() {
       # URL 화 규칙은 identity 주석과 동일: host/... 지문은 https:// 접두, 로컬 경로는 그대로.
       tfp=""
       if [ -f "$idfile" ]; then
-        tfp=$(grep -E '^[[:space:]]*template:' "$idfile" 2>/dev/null | head -1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '[:space:]')
+        tfp=$(grep -E '^[[:space:]]*template:' "$idfile" 2>/dev/null | head -1 | sed 's/^[^:]*:[[:space:]]*//;s/[[:space:]]*$//' | tr -d '\r')
       fi
       if [ -n "$tfp" ] && [ "$tfp" != "none" ]; then
         case "$tfp" in
-          /*|./*|../*|~*|?:*) trecover=$tfp ;;   # 로컬 경로 지문은 그대로 쓴다
+          *://*|git@*|/*|./*|../*|~*|?:*) trecover=$tfp ;;   # URL과 로컬 경로는 그대로 쓴다
           *) trecover="https://$tfp" ;;          # host/owner/repo 지문은 URL 화한다
         esac
         echo "알림: git remote 'template' 이 없어 .claude/identity 의 template: 지문으로 자동 복구한다 — $trecover"
@@ -255,6 +284,11 @@ main() {
 
   # 파생이 손댄 파일을 가려내는 기준점 — 없으면(공통 조상 없는 파생) 전부 손댄 것으로 본다.
   mbase=$(git merge-base HEAD template/main 2>/dev/null) || mbase=""
+
+  if ! in_template CLAUDE.md || ! in_template AGENTS.md || ! in_template .claude/identity || ! in_template .codex/identity || ! in_template scripts/starter.py; then
+    echo "중단: template/main is not a unified Claude/Codex starter." >&2
+    exit 1
+  fi
 
   # -- SELF-UPDATE FIRST — two-run lag 해소. -----------------------------------
   # 이 스크립트와 삭제 manifest 가 template/main 과 다르면, 그 둘만 먼저 checkout 하고
@@ -333,7 +367,8 @@ main() {
   # 등재는 1회차 실행부터 유효하다.
   deleted=()
   del_skipped=()
-  if [ -f "$root/$manifest" ]; then
+  for deletion_manifest in scripts/sync-manifest.deletions scripts/codex-sync-manifest.deletions; do
+  if [ -f "$root/$deletion_manifest" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
       entry=${line%%#*}
       entry=$(printf '%s' "$entry" | tr -d '\r')
@@ -346,7 +381,7 @@ main() {
           del_skipped+=("$entry (루트 상대 경로가 아님)")
           continue ;;
       esac
-      if protected_path "$entry"; then
+      if protected_path "$entry" || ! deletable_path "$entry"; then
         del_skipped+=("$entry (프로젝트 소유 — HARD EXCLUSIONS)")
         continue
       fi
@@ -356,7 +391,7 @@ main() {
         continue
       fi
       if git ls-files --error-unmatch -- "$entry" >/dev/null 2>&1; then
-        if git rm -r -q -- "$entry"; then
+        if git --literal-pathspecs rm -q -- "$entry"; then
           deleted+=("$entry")
         else
           echo "실패 (git rm 에러): $entry" >&2
@@ -364,10 +399,20 @@ main() {
         fi
       elif [ -e "$root/$entry" ]; then
         # 추적되지 않은 잔존물 — rm 으로 제거 (index 에는 아무 흔적 없음).
-        rm -rf -- "${root:?}/$entry" && deleted+=("$entry (untracked)")
+        rm -f -- "$root/$entry" && deleted+=("$entry (untracked)")
       fi
       # 파생에 이미 없으면 조용히 지나간다 — manifest 는 영구 누적이다.
-    done <"$root/$manifest"
+    done <"$root/$deletion_manifest"
+  fi
+  done
+
+  # Config and hooks stay project-owned. Detect stale generated main instructions;
+  # never replace user config as a side effect of a template update.
+  if [ -f scripts/sync-orchestrator.py ]; then
+    python scripts/sync-orchestrator.py --check || {
+      echo "ACTION REQUIRED: review .codex/roles/orchestrator.md, then run python scripts/sync-orchestrator.py." >&2
+      fail=1
+    }
   fi
 
   # -- 보고. -------------------------------------------------------------------

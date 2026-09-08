@@ -45,6 +45,8 @@ Verification order — **success criteria come before code quality**:
 9. In a bug-fix review, check that a test reproducing that bug came with it.
 
 For UI/frontend changes, step 7 also compares the rendered screen against the forced defaults in `.claude/rules/frontend.md` §6–§8 — tables and the §8 flow checklist (여정 단계표 존재, 첫 화면 주 CTA 1개, 3초 질문) each get their own check line in the verdict, not a pass inside the general look. And it means a real browser — not reading the JSX and assuming. Default to the `mcp__playwright__*` tools (live browser, no script), reach for `mcp__chrome-devtools__*` when you need the DevTools view (network waterfall, performance trace, emulation), and fall back to the `webapp-testing` skill's script route only when MCP is unavailable — say in one line which route you used and what you actually observed (rendered text, console errors, screenshot path). Never report a UI pass you did not see rendered.
+기존 화면을 수정한 단위에서 전후 스크린샷을 확보할 수 있으면 `bash scripts/odiff-compare.sh <이전> <이후> [diff출력]`으로 픽셀 비교하고(`webapp-testing` 스킬의 odiff 절이 rc 해석의 단일 원본 — bare `npx`는 이 저장소의 deny에 막히니 스크립트 경유만) 결과를 판정 파일에 1줄 적는다 — 신규 화면은 해당 없음(기준선이 없다).
+폰트 선언이 diff에 든 UI 단위는 `scripts/stylelint-fonts.sh`를 돌려 그 결과를 판정 파일에 적는다.
 
 산출물 배관(저장 경로·반환 한도·임시 작업공간)의 단일 원본은 `.claude/conventions/handoff-protocol.md`다 — your share: **the verdict file below is the artifact; the return is the receipt.** Keep the return **20줄 이내** (a longer answer is cut and only its tail reaches the caller) — evidence that does not fit belongs in the verdict file's 근거 절, not in a longer answer. Temp files go only under your own unit's scratchpad subdirectory.
 

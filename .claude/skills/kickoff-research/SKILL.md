@@ -1,6 +1,6 @@
 ---
 name: kickoff-research
-description: Research kickoff process that develops an investigation topic into a research plan → goals → report skeleton, then runs per-question parallel investigation, ending at report approval. Use when starting research/investigation work — when `.claude/identity` carries `purpose: research`, or the request itself is investigation in nature (조사·리서치·비교 분석·시장/기술 조사 등), or the user has just answered SETUP's closing purpose+idea question (SETUP.md §9's 2단 질문) with 조사·리서치. Not for repos whose `.claude/identity` declares `identity: template` (the template original itself — kickoff-style planning is disabled there). For product-building requests route to `kickoff`, for document-writing requests to `kickoff-docs`.
+description: "Research kickoff process that develops an investigation topic into a research plan → goals → report skeleton, then runs per-question parallel investigation, ending at report approval. Use when starting research/investigation work — when `.claude/identity` carries `purpose: research`, or the request itself is investigation in nature (조사·리서치·비교 분석·시장/기술 조사 등), or the user has just answered SETUP\u0027s closing purpose+idea question (SETUP.md §9\u0027s 2단 질문) with 조사·리서치. Not for repos whose `.claude/identity` declares `identity: template` (the template original itself — kickoff-style planning is disabled there). For product-building requests route to `kickoff`, for document-writing requests to `kickoff-docs`."
 ---
 
 # /kickoff-research — from question to report

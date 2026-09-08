@@ -1,6 +1,6 @@
 ---
 name: kickoff
-description: Project kickoff process that develops an idea into a plan → final goals → HTML mockup, ending at product-scope + mockup approval. Technical design and implementation start afterwards with /architect. Use when starting a new project or when the user brings a new idea. Even without an explicit invocation, use it automatically when a new-product request like "~를 만들어줘" arrives in a repo that has no `docs/02-goals.md`, or when the user has just answered SETUP's closing purpose+idea question (SETUP.md §9's 2단 질문) with a purpose that routes here. Not for repos whose `.claude/identity` declares `identity: template` (the template original itself — kickoff-style product planning is disabled there). Also not for document-writing or research purposes — when `.claude/identity` carries `purpose: docs` or `purpose: research`, or the request itself is document-writing or investigation in nature, route to `kickoff-docs` / `kickoff-research` instead.
+description: "Project kickoff process that develops an idea into a plan → final goals → HTML mockup, ending at product-scope + mockup approval. Technical design and implementation start afterwards with /architect. Use when starting a new project or when the user brings a new idea. Even without an explicit invocation, use it automatically when a new-product request like \"~를 만들어줘\" arrives in a repo that has no `docs/02-goals.md`, or when the user has just answered SETUP\u0027s closing purpose+idea question (SETUP.md §9\u0027s 2단 질문) with a purpose that routes here. Not for repos whose `.claude/identity` declares `identity: template` (the template original itself — kickoff-style product planning is disabled there). Also not for document-writing or research purposes — when `.claude/identity` carries `purpose: docs` or `purpose: research`, or the request itself is document-writing or investigation in nature, route to `kickoff-docs` / `kickoff-research` instead."
 ---
 
 # /kickoff — from idea to mockup
@@ -128,7 +128,7 @@ If C is chosen:
 4. The M1 (mockup approval) gate applies exactly as with A.
 
 ### 4-1. Static HTML mockup (default)
-- A single static HTML+CSS file with no external dependencies (no CDNs; styles in an inline `<style>`) — **exactly two exceptions: the font CDN links and the Basecoat CDN** below
+- A single static HTML+CSS file with no external dependencies (no CDNs; styles in an inline `<style>`) — **exactly three exceptions: the font CDN links, the Basecoat CDN, and the lucide SVG icons** below. This list is the single source of the CDN exception count
 - Fonts are a forced default, not a choice: apply the Geist + Pretendard stacks from `.claude/rules/fonts.md` (CDN `<link>`s at the very top of `<head>`, stacks in the inline `<style>`). No OS-default fallback in the stacks. Deviate only on an explicit user instruction
 - **Component look default is Basecoat** ([basecoatui.com](https://basecoatui.com/) — the shadcn look without React): load the CDN CSS (required — it is standalone, no Tailwind build) and the CDN JS **only when the mockup uses an interactive component** (dropdown, tabs, dialog 등 — most components are CSS-only):
   ```html
@@ -137,6 +137,7 @@ If C is chosen:
   <script src="https://cdn.jsdelivr.net/npm/basecoat-css@latest/dist/js/all.min.js" defer></script>
   ```
   Style with Basecoat's class vocabulary so the implementation maps each class onto the same-named shadcn/ui component (`.claude/rules/frontend.md` §0). An offline mockup drops these links like the font links and keeps the layout self-contained
+- **Icon default is lucide SVG** (`https://unpkg.com/lucide-static@latest/icons/<name>.svg`) — the third CDN exception, and only for mockups that actually use icons. Insert via `<img>` or inline SVG; no JS. The implementation maps the same icon names onto `lucide-react` (`.claude/rules/frontend.md` §10). An offline mockup drops these links exactly like the font and Basecoat links
 - On-screen text, table shape, and flow follow the forced defaults in `.claude/rules/frontend.md` §6–§8 (titles without standing subtitles, guidance text only where needed; table baseline; flow rules) — they bind the mockup, not just the real implementation
 - 1–3 core screens, filled with dummy data so it looks like a real service
 - Dummy data must not pass for a settled decision: whatever still carries a `[확인 필요: ...]` marker in the plan stays visibly unresolved on the screen too — mark those values with a "확인 필요" badge (dashed outline, no fill) instead of inventing a plausible-looking one. Filling an open item in silently makes the mockup claim a decision nobody made
@@ -149,8 +150,15 @@ If C is chosen:
 
 ## Kickoff close — after mockup approval
 When the user approves the mockup, `/kickoff` ends. Do **not** scaffold, decompose features, create issues, or start implementation here — all of that happens in `/architect`.
-1. Push the accumulated per-stage commits in one batch, under the `origin`-absent guard — protocol: `.claude/conventions/kickoff-common.md` §4
-2. Update docs/STATE.md in `/handoff` format (done: plan, goals, mockup approved / next: `/architect`)
-3. Report to the user, and the report must include this line:
+1. **Create `docs/design-system.md`** — extract it from the approved mockup, so the look survives across sessions and feeds `/architect` (it is an `/architect` input — the single source of branding tokens there). Values are **extracted, never invented**: every token comes from what the user just approved. Writing follows the kickoff convention — the orchestrator composes the body and delegates the write to an implementer. This step is the single source of the file's schema:
+   - **제품 컨텍스트** — 무엇을 만드나 · 무드 키워드, 1~3줄
+   - **브랜딩 토큰** — color(이름 붙인 hex 4~6개), font(확정 스택 — `.claude/rules/fonts.md` 강제값+디스플레이 예외 반영), spacing, shadow, layout(그리드·컨테이너)
+   - **모션 패턴**
+   - **특이 요구**
+
+   `docs/design-system.md`가 이미 있으면 조용히 덮지 않고 사용자에게 묻는다.
+2. Push the accumulated per-stage commits in one batch, under the `origin`-absent guard — protocol: `.claude/conventions/kickoff-common.md` §4. The batch includes the `docs/design-system.md` created in step 1
+3. Update docs/STATE.md in `/handoff` format (done: plan, goals, mockup approved / next: `/architect`)
+4. Report to the user, and the report must include this line:
    - Mockup approval is approval of **screens and UX only** — it is **not** approval of the tech stack, data model, or implementation approach. Those are designed, compared, and approved separately in `/architect`.
-4. **Then, in the same turn, enter `/architect` immediately** — same-turn chaining per `.claude/conventions/kickoff-common.md` §5, including its "여기까지만" exception. In kickoff the next phase's first user-approval question is `/architect`'s **technical-plan approval** — the turn stops there, not before it and not past it; the mockup gate above and that tech-plan gate both still ask, even in unattended mode.
+5. **Then, in the same turn, enter `/architect` immediately** — same-turn chaining per `.claude/conventions/kickoff-common.md` §5, including its "여기까지만" exception. In kickoff the next phase's first user-approval question is `/architect`'s **technical-plan approval** — the turn stops there, not before it and not past it; the mockup gate above and that tech-plan gate both still ask, even in unattended mode.

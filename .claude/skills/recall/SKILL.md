@@ -1,6 +1,6 @@
 ---
 name: recall
-description: Searches past Claude Code session transcripts (~/.claude/projects/<slug>/*.jsonl) via a local SQLite FTS5 index to answer "what did we decide/do about X in an earlier session". Use when the user invokes /recall, or asks things like "지난 세션에서 ○○ 뭐였지", "예전에 이거 어떻게 했더라", "그때 왜 그렇게 결정했지" — anything that needs conversation history from before the current context window.
+description: "Searches past Claude Code session transcripts (~/.claude/projects/\u003cslug\u003e/*.jsonl) via a local SQLite FTS5 index to answer \"what did we decide/do about X in an earlier session\". Use when the user invokes /recall, or asks things like \"지난 세션에서 ○○ 뭐였지\", \"예전에 이거 어떻게 했더라\", \"그때 왜 그렇게 결정했지\" — anything that needs conversation history from before the current context window."
 ---
 
 # /recall — 과거 세션에서 찾아 답하기
