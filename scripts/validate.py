@@ -2,6 +2,7 @@
 """Validate the starter without calling a model or external services."""
 import ast
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -9,6 +10,20 @@ import subprocess
 import sys
 import tomllib
 ROOT = Path(__file__).resolve().parent.parent
+RUNTIME_ARTIFACT_DIRS = {"tmp", "recordings", "review", "perf", "snapshots", "index", "worktrees"}
+
+
+def operating_files(directory):
+    """Prune runtime-owned artifacts while retaining custom operating files."""
+    runtime_roots = {ROOT / ".codex", ROOT / ".claude"}
+    for current, directories, filenames in os.walk(directory):
+        current = Path(current)
+        directories[:] = [name for name in directories if name != "__pycache__"
+                          and not (current in runtime_roots and name in RUNTIME_ARTIFACT_DIRS)]
+        for name in filenames:
+            path = current / name
+            if path.is_file() and path.suffix in (".md", ".py", ".sh", ".toml", ".json"):
+                yield path
 
 
 def identity_errors(root=ROOT):
@@ -91,9 +106,7 @@ def validate():
             errors.append(result.stderr.strip() or result.stdout.strip())
     active = [ROOT / "AGENTS.md", ROOT / "CLAUDE.md", ROOT / "README.md", ROOT / "SETUP.md"]
     for directory in (".agents", ".codex", ".claude", "scripts", "tests"):
-        active.extend(p for p in (ROOT / directory).rglob("*")
-                      if p.is_file() and "__pycache__" not in p.parts
-                      and p.suffix in (".md", ".py", ".sh", ".toml", ".json"))
+        active.extend(operating_files(ROOT / directory))
     for path in active:
         text = path.read_text(encoding="utf-8")
         if path.suffix == ".py":
