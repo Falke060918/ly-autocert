@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/starter.py\" hook",
-            "commandWindows": "powershell.exe -NoProfile -Command \"$starterRoot = git rev-parse --show-toplevel; if ($LASTEXITCODE -eq 0) { python (Join-Path $starterRoot 'scripts/starter.py') hook }\"",
+            "commandWindows": "powershell.exe -NoProfile -EncodedCommand JABQAHIAbwBnAHIAZQBzAHMAUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAnAFMAaQBsAGUAbgB0AGwAeQBDAG8AbgB0AGkAbgB1AGUAJwA7ACAAJABzAHQAYQByAHQAZQByAFIAbwBvAHQAIAA9ACAAZwBpAHQAIAByAGUAdgAtAHAAYQByAHMAZQAgAC0ALQBzAGgAbwB3AC0AdABvAHAAbABlAHYAZQBsADsAIABpAGYAIAAoACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAIAAtAGUAcQAgADAAKQAgAHsAIABwAHkAdABoAG8AbgAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAHMAdABhAHIAdABlAHIAUgBvAG8AdAAgACcAcwBjAHIAaQBwAHQAcwAvAHMAdABhAHIAdABlAHIALgBwAHkAJwApACAAaABvAG8AawAgAH0A",
             "timeout": 10
           }
         ]
@@ -19,7 +19,7 @@
           {
             "type": "command",
             "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/starter.py\" hook",
-            "commandWindows": "powershell.exe -NoProfile -Command \"$starterRoot = git rev-parse --show-toplevel; if ($LASTEXITCODE -eq 0) { python (Join-Path $starterRoot 'scripts/starter.py') hook }\"",
+            "commandWindows": "powershell.exe -NoProfile -EncodedCommand JABQAHIAbwBnAHIAZQBzAHMAUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAnAFMAaQBsAGUAbgB0AGwAeQBDAG8AbgB0AGkAbgB1AGUAJwA7ACAAJABzAHQAYQByAHQAZQByAFIAbwBvAHQAIAA9ACAAZwBpAHQAIAByAGUAdgAtAHAAYQByAHMAZQAgAC0ALQBzAGgAbwB3AC0AdABvAHAAbABlAHYAZQBsADsAIABpAGYAIAAoACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAIAAtAGUAcQAgADAAKQAgAHsAIABwAHkAdABoAG8AbgAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAHMAdABhAHIAdABlAHIAUgBvAG8AdAAgACcAcwBjAHIAaQBwAHQAcwAvAHMAdABhAHIAdABlAHIALgBwAHkAJwApACAAaABvAG8AawAgAH0A",
             "timeout": 10
           }
         ]
@@ -31,7 +31,7 @@
           {
             "type": "command",
             "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/starter.py\" hook",
-            "commandWindows": "powershell.exe -NoProfile -Command \"$starterRoot = git rev-parse --show-toplevel; if ($LASTEXITCODE -eq 0) { python (Join-Path $starterRoot 'scripts/starter.py') hook }\"",
+            "commandWindows": "powershell.exe -NoProfile -EncodedCommand JABQAHIAbwBnAHIAZQBzAHMAUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAnAFMAaQBsAGUAbgB0AGwAeQBDAG8AbgB0AGkAbgB1AGUAJwA7ACAAJABzAHQAYQByAHQAZQByAFIAbwBvAHQAIAA9ACAAZwBpAHQAIAByAGUAdgAtAHAAYQByAHMAZQAgAC0ALQBzAGgAbwB3AC0AdABvAHAAbABlAHYAZQBsADsAIABpAGYAIAAoACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAIAAtAGUAcQAgADAAKQAgAHsAIABwAHkAdABoAG8AbgAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAHMAdABhAHIAdABlAHIAUgBvAG8AdAAgACcAcwBjAHIAaQBwAHQAcwAvAHMAdABhAHIAdABlAHIALgBwAHkAJwApACAAaABvAG8AawAgAH0A",
             "timeout": 10
           }
         ]
@@ -43,7 +43,7 @@
           {
             "type": "command",
             "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/starter.py\" hook",
-            "commandWindows": "powershell.exe -NoProfile -Command \"$starterRoot = git rev-parse --show-toplevel; if ($LASTEXITCODE -eq 0) { python (Join-Path $starterRoot 'scripts/starter.py') hook }\"",
+            "commandWindows": "powershell.exe -NoProfile -EncodedCommand JABQAHIAbwBnAHIAZQBzAHMAUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAnAFMAaQBsAGUAbgB0AGwAeQBDAG8AbgB0AGkAbgB1AGUAJwA7ACAAJABzAHQAYQByAHQAZQByAFIAbwBvAHQAIAA9ACAAZwBpAHQAIAByAGUAdgAtAHAAYQByAHMAZQAgAC0ALQBzAGgAbwB3AC0AdABvAHAAbABlAHYAZQBsADsAIABpAGYAIAAoACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAIAAtAGUAcQAgADAAKQAgAHsAIABwAHkAdABoAG8AbgAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAHMAdABhAHIAdABlAHIAUgBvAG8AdAAgACcAcwBjAHIAaQBwAHQAcwAvAHMAdABhAHIAdABlAHIALgBwAHkAJwApACAAaABvAG8AawAgAH0A",
             "timeout": 10
           }
         ]
@@ -55,7 +55,7 @@
           {
             "type": "command",
             "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/starter.py\" hook",
-            "commandWindows": "powershell.exe -NoProfile -Command \"$starterRoot = git rev-parse --show-toplevel; if ($LASTEXITCODE -eq 0) { python (Join-Path $starterRoot 'scripts/starter.py') hook }\"",
+            "commandWindows": "powershell.exe -NoProfile -EncodedCommand JABQAHIAbwBnAHIAZQBzAHMAUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAnAFMAaQBsAGUAbgB0AGwAeQBDAG8AbgB0AGkAbgB1AGUAJwA7ACAAJABzAHQAYQByAHQAZQByAFIAbwBvAHQAIAA9ACAAZwBpAHQAIAByAGUAdgAtAHAAYQByAHMAZQAgAC0ALQBzAGgAbwB3AC0AdABvAHAAbABlAHYAZQBsADsAIABpAGYAIAAoACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAIAAtAGUAcQAgADAAKQAgAHsAIABwAHkAdABoAG8AbgAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAHMAdABhAHIAdABlAHIAUgBvAG8AdAAgACcAcwBjAHIAaQBwAHQAcwAvAHMAdABhAHIAdABlAHIALgBwAHkAJwApACAAaABvAG8AawAgAH0A",
             "timeout": 10
           }
         ]
@@ -67,7 +67,7 @@
           {
             "type": "command",
             "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/starter.py\" hook",
-            "commandWindows": "powershell.exe -NoProfile -Command \"$starterRoot = git rev-parse --show-toplevel; if ($LASTEXITCODE -eq 0) { python (Join-Path $starterRoot 'scripts/starter.py') hook }\"",
+            "commandWindows": "powershell.exe -NoProfile -EncodedCommand JABQAHIAbwBnAHIAZQBzAHMAUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAnAFMAaQBsAGUAbgB0AGwAeQBDAG8AbgB0AGkAbgB1AGUAJwA7ACAAJABzAHQAYQByAHQAZQByAFIAbwBvAHQAIAA9ACAAZwBpAHQAIAByAGUAdgAtAHAAYQByAHMAZQAgAC0ALQBzAGgAbwB3AC0AdABvAHAAbABlAHYAZQBsADsAIABpAGYAIAAoACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAIAAtAGUAcQAgADAAKQAgAHsAIABwAHkAdABoAG8AbgAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAHMAdABhAHIAdABlAHIAUgBvAG8AdAAgACcAcwBjAHIAaQBwAHQAcwAvAHMAdABhAHIAdABlAHIALgBwAHkAJwApACAAaABvAG8AawAgAH0A",
             "timeout": 10
           }
         ]
@@ -79,7 +79,7 @@
           {
             "type": "command",
             "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/starter.py\" hook",
-            "commandWindows": "powershell.exe -NoProfile -Command \"$starterRoot = git rev-parse --show-toplevel; if ($LASTEXITCODE -eq 0) { python (Join-Path $starterRoot 'scripts/starter.py') hook }\"",
+            "commandWindows": "powershell.exe -NoProfile -EncodedCommand JABQAHIAbwBnAHIAZQBzAHMAUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAnAFMAaQBsAGUAbgB0AGwAeQBDAG8AbgB0AGkAbgB1AGUAJwA7ACAAJABzAHQAYQByAHQAZQByAFIAbwBvAHQAIAA9ACAAZwBpAHQAIAByAGUAdgAtAHAAYQByAHMAZQAgAC0ALQBzAGgAbwB3AC0AdABvAHAAbABlAHYAZQBsADsAIABpAGYAIAAoACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAIAAtAGUAcQAgADAAKQAgAHsAIABwAHkAdABoAG8AbgAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAHMAdABhAHIAdABlAHIAUgBvAG8AdAAgACcAcwBjAHIAaQBwAHQAcwAvAHMAdABhAHIAdABlAHIALgBwAHkAJwApACAAaABvAG8AawAgAH0A",
             "timeout": 3
           }
         ]
