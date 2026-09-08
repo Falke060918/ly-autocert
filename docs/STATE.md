@@ -4,6 +4,8 @@
 INHERIT_AutoCert — 폐쇄망·레거시 환경용 온프레미스 인증서 라이프사이클 관리 플랫폼. 명세는 docs/00-spec.md, 승인 발급·배포 범위는 docs/specs/ATC-20260907-001-auto-issuance.md와 003-product-validation.md를 따른다.
 
 ## 현재 상태
+- 20260908 CA 발급 상태·비교 경고 복구(ATC-20260908-003): CA issued 사실과 결과 수집·등록을 분리하고 기간/DNS/키·체인 불일치는 등록 차단 대신 비교·경고로 보존한다. CA 원본 체인은 보정하지 않는다. A bd40b9e·08e94fc를 D 기존 소스에 최소 반영해 backend 33ddeebf / frontend a4198026 실행과 환경·키·DB·프록시 보존을 확인했다. test.com da5ac750, 이전906601da 및 동일 증상c997bbb0 3건을 기존 CA code GET으로 completed·인벤토리 연결까지 복구했다. leaf DER·원문 체인 SHA 동일, 목록/상세 경고와 당시 실패 이력·재처리 감사 유지. 직접 Go/프런트 검사·로컬 fixture Chromium과 실제 D 데이터/실행 검증을 구별하며 D 인증 로그인 화면 검증은 미실행이다. 현재 기준: docs/specs/ATC-20260908-003-ca-chain-warning.md, 실측: .codex/tmp/ca-issued-d-recovery/summary.md. 아래 데모 발급 미완료 항목은 각 당시 주문의 이력이다.
+- 검사 건너뛴 단위: Codex ATC-20260908-003-A(08e94fc, 2026-09-08T05:56:00Z), 사용자 원문 "검토 패스해.". 구현자 테스트를 독립 검토 통과로 해석하지 않는다.
 - 승인된 C·D와 필요한 CA 설정·agent 기반은 구현되어 있다. E 자동 갱신·재배포는 미구현이며 이번 작업에 포함하지 않는다. 릴리스 표기는 1.2.0을 유지한다.
 - 003-A 알림 테스트 날짜 의존 4건은 수정 후 통과했다. 고정 테스트 시계를 사용하며 실제 메시지 생성 시계는 유지한다. 근거: 30e3db5, .codex/tmp/ATC-20260907-003-A/summary.md.
 - 003-B 기존 제품 검증·커밋은 958416d에서 완료했으나 독립 검토는 사용자판 pass·위임장판 fail·스펙판 fail이었다. 기능 검증 통과를 보안 완료로 해석하지 않는다.
