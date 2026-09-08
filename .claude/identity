@@ -2,3 +2,6 @@ identity: project
 setup: done
 origin: https://github.com/Falke060918/INHERIT_AutoCert.git
 work-order-prefix: ATC
+template: https://github.com/Falke060918/duet-starter.git
+purpose: dev
+notion: pending

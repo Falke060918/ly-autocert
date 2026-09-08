@@ -21,3 +21,24 @@ frontend/CLAUDE.md
 # 실제 키·인증서는 저장소에 절대 커밋하지 않는다.
 deploy/tls/*
 !deploy/tls/README.md
+
+# Duet runtime artifacts (project rules above are preserved).
+.codex/local-notes.md
+.codex/worktrees/
+.codex/review/
+.codex/snapshots/
+.codex/perf/
+.codex/tmp/
+.codex/index/
+.codex/automode
+.sync-manifest-backup/
+.orca-worktree-trash/
+AGENTS.local.md
+.claude/review/
+.claude/compact-snapshot.md
+.claude/compact-snapshot.md.tmp.*
+.claude/perf/
+.claude/tmp/
+.claude/index/
+.claude/automode
+.codex/recordings/

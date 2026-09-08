@@ -1,0 +1,89 @@
+{
+  "description": "Codex starter: state, snapshots, timings and learning review pointers.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/starter.py\" hook",
+            "commandWindows": "powershell.exe -NoProfile -Command \"$starterRoot = git rev-parse --show-toplevel; if ($LASTEXITCODE -eq 0) { python (Join-Path $starterRoot 'scripts/starter.py') hook }\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/starter.py\" hook",
+            "commandWindows": "powershell.exe -NoProfile -Command \"$starterRoot = git rev-parse --show-toplevel; if ($LASTEXITCODE -eq 0) { python (Join-Path $starterRoot 'scripts/starter.py') hook }\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/starter.py\" hook",
+            "commandWindows": "powershell.exe -NoProfile -Command \"$starterRoot = git rev-parse --show-toplevel; if ($LASTEXITCODE -eq 0) { python (Join-Path $starterRoot 'scripts/starter.py') hook }\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/starter.py\" hook",
+            "commandWindows": "powershell.exe -NoProfile -Command \"$starterRoot = git rev-parse --show-toplevel; if ($LASTEXITCODE -eq 0) { python (Join-Path $starterRoot 'scripts/starter.py') hook }\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/starter.py\" hook",
+            "commandWindows": "powershell.exe -NoProfile -Command \"$starterRoot = git rev-parse --show-toplevel; if ($LASTEXITCODE -eq 0) { python (Join-Path $starterRoot 'scripts/starter.py') hook }\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/starter.py\" hook",
+            "commandWindows": "powershell.exe -NoProfile -Command \"$starterRoot = git rev-parse --show-toplevel; if ($LASTEXITCODE -eq 0) { python (Join-Path $starterRoot 'scripts/starter.py') hook }\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/starter.py\" hook",
+            "commandWindows": "powershell.exe -NoProfile -Command \"$starterRoot = git rev-parse --show-toplevel; if ($LASTEXITCODE -eq 0) { python (Join-Path $starterRoot 'scripts/starter.py') hook }\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}
