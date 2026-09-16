@@ -13,6 +13,7 @@ Fix: write files binary — `open(path,'wb').write(s.encode('utf-8'))`; write Ko
 **`docker run … -w /src` from Git Bash lands in `C:/Program Files/Git/src`**
 Cause: MSYS rewrites absolute POSIX-looking arguments into Windows paths before docker sees them, so `-w`, `-v` targets and in-container paths are mangled and the run fails with a confusing "no such file".
 Fix: prefix the whole command with `MSYS_NO_PATHCONV=1`, and pass the host side of `-v` as `$(pwd -W)`. (Windows / last recurrence: 2026-08)
+Caveat — the same flag cuts the other way: `MSYS_NO_PATHCONV=1` is per-command, and with it on `curl`'s file/cookie path args stop converting too, so `-F @path`, `--data @path` and `-b cookiejar` break. When one script needs both (e.g. `openssl req -subj "/C=.."` which requires the flag, plus a `curl` upload/session call which must not have it), scope the flag to the openssl call only and give curl relative paths from its own cwd. (Windows / last recurrence: 2026-09)
 
 ## Permissions & settings
 
